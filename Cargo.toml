@@ -1,0 +1,33 @@
+[package]
+name = "rsmalloc"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rustix = { version = "1.1.4", features = [
+    "linux_latest",
+    "mm",
+    "system",
+    "thread",
+    "rand",
+] }
+
+
+[[bench]]
+name = "speed"
+harness = false
+
+
+[dev-dependencies]
+criterion = "0.8.2"
+
+[lib]
+name = "rsmalloc"
+crate-type = ["cdylib", "rlib"]
+
+[profile.release]
+opt-level = 3
+panic = "abort"
+overflow-checks = false
+lto = "fat"
+codegen-units = 1

@@ -1,0 +1,249 @@
+use std::{os::raw::c_void, ptr::null_mut};
+
+use rustix::mm::{Advice, MapFlags, ProtFlags, madvise, mmap_anonymous, munmap};
+
+use crate::{
+    BigAllocMeta, Header, RSMallocError,
+    core_prim::wrappers::UnsafePointer,
+    internals::{hashmap::BIG_MAP, lock::SerialLock},
+    utility::align_to,
+};
+
+#[derive(Copy, Clone)]
+struct BigFreeBlock {
+    ptr: *mut u8,
+    total_size: usize,
+}
+
+struct BigFreeCache {
+    lock: SerialLock,
+    data: [Option<BigFreeBlock>; 16],
+}
+
+impl BigFreeCache {
+    const fn new() -> Self {
+        Self {
+            lock: SerialLock::new(),
+            data: [None; 16],
+        }
+    }
+}
+
+static mut BIG_FREE_CACHE: BigFreeCache = BigFreeCache::new();
+const TWO_MB: usize = 1024 * 1024 * 2;
+
+fn should_use_huge(size: usize) -> bool {
+    const PAGES_PER_HUGEPAGE: usize = 512;
+
+    let total_pages_needed = (size + 4095) / 4096;
+    let remaining_pages = total_pages_needed % PAGES_PER_HUGEPAGE;
+
+    if remaining_pages > 0 && remaining_pages < 64 {
+        false
+    } else {
+        true
+    }
+}
+
+fn estimate_and_align_2mb(size: usize) -> usize {
+    let remainder = size % TWO_MB;
+
+    if remainder > 0 && (TWO_MB - remainder) <= 1024 * 64 {
+        align_to(size, TWO_MB)
+    } else {
+        align_to(size, 4096)
+    }
+}
+
+#[inline(never)]
+pub unsafe fn big_malloc(size: usize) -> UnsafePointer<u8> {
+    let aligned_total = estimate_and_align_2mb(size + Header::SIZE);
+    let maybe_align_huge = should_use_huge(size + Header::SIZE);
+
+    let mut actual_ptr: *mut u8 = null_mut();
+    {
+        let _guard = BIG_FREE_CACHE.lock.lock();
+        let cache = &mut BIG_FREE_CACHE.data;
+        for i in 0..cache.len() {
+            if let Some(block) = cache[i] {
+                if block.total_size >= aligned_total {
+                    actual_ptr = block.ptr;
+                    let block_total = block.total_size;
+                    cache[i] = None;
+
+                    if block_total >= aligned_total + 4096 {
+                        let remainder_ptr = actual_ptr.add(aligned_total);
+                        let remainder_size = block_total - aligned_total;
+
+                        let mut pushed = false;
+                        for j in 0..cache.len() {
+                            if cache[j].is_none() {
+                                cache[j] = Some(BigFreeBlock {
+                                    ptr: remainder_ptr,
+                                    total_size: remainder_size,
+                                });
+                                pushed = true;
+                                break;
+                            }
+                        }
+
+                        if !pushed {
+                            if munmap(remainder_ptr as *mut c_void, remainder_size).is_err() {
+                                let _ = madvise(
+                                    remainder_ptr as *mut c_void,
+                                    remainder_size,
+                                    Advice::LinuxDontNeed,
+                                );
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    let mut aligned = false;
+    if actual_ptr.is_null() {
+        let huge_flags = if aligned_total % (1024 * 1024 * 1024) == 0 {
+            Some(MapFlags::PRIVATE | MapFlags::HUGETLB | MapFlags::HUGE_1GB)
+        } else if aligned_total % (1024 * 1024 * 2) == 0 {
+            Some(MapFlags::PRIVATE | MapFlags::HUGETLB | MapFlags::HUGE_2MB)
+        } else {
+            None
+        };
+
+        if let Some(flags) = huge_flags {
+            match mmap_anonymous(
+                null_mut(),
+                aligned_total,
+                ProtFlags::READ | ProtFlags::WRITE,
+                flags,
+            ) {
+                Ok(ptr) => {
+                    aligned = true;
+                    actual_ptr = ptr as *mut u8;
+                }
+                Err(_) => {
+                    match mmap_anonymous(
+                        null_mut(),
+                        aligned_total,
+                        ProtFlags::READ | ProtFlags::WRITE,
+                        MapFlags::PRIVATE,
+                    ) {
+                        Ok(ptr) => {
+                            aligned = false;
+                            actual_ptr = ptr as *mut u8;
+                        }
+                        Err(_) => return UnsafePointer::NULL,
+                    }
+                }
+            }
+        } else {
+            match mmap_anonymous(
+                null_mut(),
+                aligned_total,
+                ProtFlags::READ | ProtFlags::WRITE,
+                MapFlags::PRIVATE,
+            ) {
+                Ok(ptr) => {
+                    aligned = false;
+                    actual_ptr = ptr as *mut u8;
+                }
+                Err(_) => return UnsafePointer::NULL,
+            }
+        }
+    }
+
+    if maybe_align_huge && !aligned {
+        let _ = madvise(
+            actual_ptr as *mut c_void,
+            aligned_total,
+            Advice::LinuxHugepage,
+        );
+    }
+
+    let payload_ptr = actual_ptr.add(Header::SIZE);
+
+    BIG_MAP.insert(
+        payload_ptr as usize,
+        BigAllocMeta {
+            next: null_mut(),
+            size,
+        },
+    );
+
+    UnsafePointer::new(actual_ptr).walk_header()
+}
+
+#[inline(never)]
+pub unsafe fn big_free(ptr: usize) {
+    let header = BIG_MAP.remove(ptr).unwrap_or_else(|| {
+        RSMallocError::MemoryCorruption.log_and_abort(
+            null_mut(),
+            "missing header for big allocation",
+            None,
+        )
+    });
+    let payload_size = header.size;
+    let total_size = estimate_and_align_2mb(payload_size + Header::SIZE);
+    let mapping_base = (ptr - Header::SIZE) as *mut u8;
+
+    let mut pushed = false;
+    {
+        let _guard = BIG_FREE_CACHE.lock.lock();
+        let cache = &mut BIG_FREE_CACHE.data;
+        if total_size < 1024 * 1024 * 256 {
+            for i in 0..cache.len() {
+                if cache[i].is_none() {
+                    cache[i] = Some(BigFreeBlock {
+                        ptr: mapping_base,
+                        total_size,
+                    });
+                    pushed = true;
+                    break;
+                }
+            }
+        }
+
+        if !pushed {
+            if let Some(to_trim) = cache[0] {
+                if munmap(to_trim.ptr as *mut c_void, to_trim.total_size).is_err() {
+                    let _ = madvise(
+                        to_trim.ptr as *mut c_void,
+                        to_trim.total_size,
+                        Advice::LinuxDontNeed,
+                    );
+                }
+            }
+
+            for i in 0..cache.len() - 1 {
+                cache[i] = cache[i + 1];
+            }
+            cache[cache.len() - 1] = Some(BigFreeBlock {
+                ptr: mapping_base,
+                total_size,
+            });
+        }
+    }
+}
+
+pub unsafe fn trim_big_allocations() -> usize {
+    let _guard = BIG_FREE_CACHE.lock.lock();
+    let cache = &mut BIG_FREE_CACHE.data;
+    let mut freed = 0;
+    for i in 0..cache.len() {
+        if let Some(block) = cache[i] {
+            if munmap(block.ptr as *mut c_void, block.total_size).is_err() {
+                let _ = madvise(
+                    block.ptr as *mut c_void,
+                    block.total_size,
+                    Advice::LinuxDontNeed,
+                );
+            }
+            freed += block.total_size;
+            cache[i] = None;
+        }
+    }
+    freed
+}

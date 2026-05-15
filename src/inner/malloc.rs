@@ -14,7 +14,7 @@ use crate::{
 };
 
 static ONCE: Once = Once::new();
-const REFILL_ATTEMPTS: usize = 2;
+const REFILL_ATTEMPTS: usize = 3;
 const FILL_ATTEMPTS: usize = 2;
 
 #[inline(always)]

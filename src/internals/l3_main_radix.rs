@@ -166,7 +166,10 @@ impl RadixTree {
 
     #[inline(always)]
     pub unsafe fn is_owned(&self, addr: usize) -> bool {
-        let _guard = self.lock.spin_until_unlock();
+        self.lock.spin_until_unlock();
+        if unlikely(self.nodes.l1.is_null()) {
+            return false;
+        }
         self.nodes.get((addr / CHUNK_SIZE) % MAX_ADDR_IDX)
     }
 

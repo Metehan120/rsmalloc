@@ -3,7 +3,6 @@ use std::{
     hint::{likely, unlikely},
     ptr::{addr_of, null_mut},
     sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
-    thread::{self},
 };
 
 use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
@@ -46,12 +45,9 @@ pub struct RseqCache {
 unsafe impl Send for RseqCache {}
 unsafe impl Sync for RseqCache {}
 
+// TODO: Detect CPU count during initialization
 unsafe fn get_max_cpu() -> u32 {
-    if let Ok(cpuset) = thread::available_parallelism() {
-        cpuset.get() as u32
-    } else {
-        256
-    }
+    256
 }
 
 impl RseqCache {

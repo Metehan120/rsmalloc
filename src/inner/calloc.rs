@@ -62,7 +62,7 @@ pub unsafe fn rs_calloc(size: usize, zero_size: usize) -> UnsafePointer<Header> 
         }
         None => {
             let payload_size = BIG_ALLOC_MAP
-                .get(header.cast_usize())
+                .get(ptr.cast_usize())
                 .map(|meta| meta.size)
                 .unwrap_or_else(|| {
                     RSMallocError::AttackOrCorruption.log_and_abort(

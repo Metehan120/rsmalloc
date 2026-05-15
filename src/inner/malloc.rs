@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    GenericCache, Header, MAGIC, RSMallocError,
+    BIG_MAGIC, GenericCache, Header, MAGIC, RSMallocError,
     big_allocation::big_malloc,
     core_prim::{bootstrap::bootstrap, wrappers::UnsafePointer},
     inner::{fallback::malloc_usable_size_fallback, free::find_original_ptr},
@@ -14,7 +14,7 @@ use crate::{
 };
 
 static ONCE: Once = Once::new();
-const REFILL_ATTEMPTS: usize = 1;
+const REFILL_ATTEMPTS: usize = 2;
 const FILL_ATTEMPTS: usize = 2;
 
 #[inline(always)]
@@ -63,7 +63,7 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
         }
     }
 
-    UnsafePointer::NULL
+    RSEQ_CACHE.try_pop(class, 1).0
 }
 
 #[inline(always)]
@@ -106,25 +106,22 @@ pub unsafe fn usable_size(ptr: UnsafePointer<Header>) -> usize {
         let offset = ptr_addr - base_addr;
 
         let header = base_ptr.get_actual_header().apply_safe();
+
+        if header.magic == BIG_MAGIC {
+            let meta = BIG_ALLOC_MAP.get(base_addr).unwrap_or_else(|| {
+                RSMallocError::MemoryCorruption.log_and_abort(
+                    null_mut(),
+                    "missing header for big allocation",
+                    None,
+                )
+            });
+
+            return meta.size.saturating_sub(offset);
+        }
+
         let total_payload = SIZE_CLASSES[header.class as usize];
 
         return total_payload.saturating_sub(offset);
-    }
-
-    if BIG_ALLOC_MAP.is_ours(ptr_addr) {
-        let base_ptr = find_original_ptr(ptr);
-        let base_addr = base_ptr.cast_usize();
-        let offset = ptr_addr - base_addr;
-
-        let meta = BIG_ALLOC_MAP.get(base_addr).unwrap_or_else(|| {
-            RSMallocError::MemoryCorruption.log_and_abort(
-                null_mut(),
-                "missing header for big allocation",
-                None,
-            )
-        });
-
-        return meta.size.saturating_sub(offset);
     }
 
     malloc_usable_size_fallback(ptr.cast_as_ptr())

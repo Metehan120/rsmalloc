@@ -8,10 +8,12 @@ use crate::{core_prim::wrappers::UnsafePointer, rseq_core::rseq_main::rseq};
 
 pub(crate) static mut MAGIC: u16 = 0;
 pub(crate) static mut FREED_MAGIC: u16 = 1;
+pub(crate) static mut BIG_MAGIC: u16 = 2;
 pub(crate) const ALIGN_TAG: usize = usize::from_le_bytes(*b"RSMALIGN");
 pub(crate) const OFFSET_SIZE: usize = size_of::<usize>();
 pub(crate) const TAG_SIZE: usize = OFFSET_SIZE * 2;
 
+pub mod abi;
 pub mod big_allocation;
 pub mod core_prim;
 pub mod inner;
@@ -71,9 +73,7 @@ pub(crate) enum RSMallocError {
     MemoryCorruption = 0x1001,
     OutOfMemory = 0x1003,
     VAIinitFailed = 0x1005,
-    SecurityViolation = 0x100A,
     AttackOrCorruption = 0x100B,
-    ICCFailedToInitialize = 0x100C,
 }
 
 impl Debug for RSMallocError {
@@ -83,9 +83,7 @@ impl Debug for RSMallocError {
             Self::MemoryCorruption => write!(f, "MemoryCorruption (0x1001)"),
             Self::OutOfMemory => write!(f, "OutOfMemory (0x1003)"),
             Self::VAIinitFailed => write!(f, "VAIinitFailed (0x1005)"),
-            Self::SecurityViolation => write!(f, "SecurityViolation (0x100A)"),
             Self::AttackOrCorruption => write!(f, "AttackOrCorruption (0x100B)"),
-            Self::ICCFailedToInitialize => write!(f, "ICCFailedToInitialize (0x100C)"),
         }
     }
 }

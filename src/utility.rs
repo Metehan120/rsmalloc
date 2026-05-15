@@ -73,7 +73,7 @@ pub const RSEQ_MAX_BLOCKS: [usize; NUM_SIZE_CLASSES] = {
         let payload = SIZE_CLASSES[i];
         let block_size = align_to(payload + 16, 16);
         let mut blocks = if block_size > RSEQ_SMALL_CLASS_BYTES {
-            0
+            1
         } else {
             if payload < 256 {
                 RSEQ_SMALL_CLASS_BYTES / block_size

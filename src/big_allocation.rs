@@ -1,11 +1,14 @@
-use std::{os::raw::c_void, ptr::null_mut};
+use std::{
+    os::raw::c_void,
+    ptr::{null_mut, write},
+};
 
 use rustix::mm::{Advice, MapFlags, ProtFlags, madvise, mmap_anonymous, munmap};
 
 use crate::{
-    BigAllocMeta, Header, RSMallocError,
+    BIG_MAGIC, BigAllocMeta, Header, RSMallocError,
     core_prim::wrappers::UnsafePointer,
-    internals::{hashmap::BIG_MAP, lock::SerialLock},
+    internals::{hashmap::BIG_MAP, l3_main_radix::L3_RADIX, lock::SerialLock},
     utility::align_to,
 };
 
@@ -56,7 +59,7 @@ fn estimate_and_align_2mb(size: usize) -> usize {
 }
 
 #[inline(never)]
-pub unsafe fn big_malloc(size: usize) -> UnsafePointer<u8> {
+pub unsafe fn big_malloc(size: usize) -> UnsafePointer<Header> {
     let aligned_total = estimate_and_align_2mb(size + Header::SIZE);
     let maybe_align_huge = should_use_huge(size + Header::SIZE);
 
@@ -163,7 +166,20 @@ pub unsafe fn big_malloc(size: usize) -> UnsafePointer<u8> {
         );
     }
 
+    write(
+        actual_ptr as *mut Header,
+        Header {
+            next: null_mut(),
+            class: 100,
+            magic: BIG_MAGIC,
+            life_time: 0,
+            _padding: 0,
+        },
+    );
+
     let payload_ptr = actual_ptr.add(Header::SIZE);
+
+    L3_RADIX.set_range(actual_ptr as usize, aligned_total, true);
 
     BIG_MAP.insert(
         payload_ptr as usize,
@@ -173,11 +189,13 @@ pub unsafe fn big_malloc(size: usize) -> UnsafePointer<u8> {
         },
     );
 
-    UnsafePointer::new(actual_ptr).walk_header()
+    UnsafePointer::new(actual_ptr as *mut Header).walk_header()
 }
 
 #[inline(never)]
 pub unsafe fn big_free(ptr: usize) {
+    const BIG_CACHE_LIMIT: usize = 1024 * 1024 * 256;
+
     let header = BIG_MAP.remove(ptr).unwrap_or_else(|| {
         RSMallocError::MemoryCorruption.log_and_abort(
             null_mut(),
@@ -189,20 +207,32 @@ pub unsafe fn big_free(ptr: usize) {
     let total_size = estimate_and_align_2mb(payload_size + Header::SIZE);
     let mapping_base = (ptr - Header::SIZE) as *mut u8;
 
+    L3_RADIX.set_range(mapping_base as usize, total_size, false);
+
+    if total_size >= BIG_CACHE_LIMIT {
+        if munmap(mapping_base as *mut c_void, total_size).is_err() {
+            let _ = madvise(
+                mapping_base as *mut c_void,
+                total_size,
+                Advice::LinuxDontNeed,
+            );
+        }
+        return;
+    }
+
     let mut pushed = false;
     {
         let _guard = BIG_FREE_CACHE.lock.lock();
         let cache = &mut BIG_FREE_CACHE.data;
-        if total_size < 1024 * 1024 * 256 {
-            for i in 0..cache.len() {
-                if cache[i].is_none() {
-                    cache[i] = Some(BigFreeBlock {
-                        ptr: mapping_base,
-                        total_size,
-                    });
-                    pushed = true;
-                    break;
-                }
+
+        for i in 0..cache.len() {
+            if cache[i].is_none() {
+                cache[i] = Some(BigFreeBlock {
+                    ptr: mapping_base,
+                    total_size,
+                });
+                pushed = true;
+                break;
             }
         }
 

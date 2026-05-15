@@ -1,9 +1,6 @@
-use std::{
-    hint::black_box,
-    sync::{Arc, Barrier},
-};
+use std::hint::black_box;
 
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use rsmalloc::inner::{free::rs_free, malloc::alloc, realloc::rs_realloc};
 
 fn bench_alloc_free(c: &mut Criterion) {

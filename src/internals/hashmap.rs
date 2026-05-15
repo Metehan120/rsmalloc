@@ -147,30 +147,6 @@ impl BigAllocMap {
         None
     }
 
-    pub unsafe fn is_ours(&self, key: usize) -> bool {
-        let _guard = self.lock.lock();
-        let table = self.ptr.load(Ordering::Relaxed);
-        let cap = self.cap.load(Ordering::Relaxed);
-        if table.is_null() || cap == 0 {
-            return false;
-        }
-
-        let mut idx = hash_key(key) & (cap - 1);
-        for _ in 0..cap {
-            let entry = table.add(idx);
-            let state = (*entry).state;
-            if state == STATE_EMPTY {
-                return false;
-            }
-            if state == STATE_OCCUPIED && (*entry).key == key {
-                return true;
-            }
-            idx = (idx + 1) & (cap - 1);
-        }
-
-        false
-    }
-
     pub unsafe fn remove(&self, key: usize) -> Option<BigAllocMeta> {
         let _guard = self.lock.lock();
         let table = self.ptr.load(Ordering::Relaxed);

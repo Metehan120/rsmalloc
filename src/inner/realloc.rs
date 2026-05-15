@@ -3,7 +3,7 @@ use std::{os::raw::c_void, ptr::copy_nonoverlapping};
 use rustix::mm::{MremapFlags, mremap};
 
 use crate::{
-    BigAllocMeta, Header,
+    BIG_MAGIC, BigAllocMeta, Header,
     big_allocation::{big_free, big_malloc},
     core_prim::wrappers::{SafePointer, UnsafePointer},
     inner::{
@@ -134,7 +134,8 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
     let aligned_new = estimate_big_mapping_size(new_size + Header::SIZE);
 
     if let Ok(new_addr) = mremap(old_mapping, old_total, aligned_new, MremapFlags::MAYMOVE) {
-        let new_key = (new_addr as usize) + Header::SIZE;
+        let new_mapping = new_addr as usize;
+        let new_key = new_mapping + Header::SIZE;
         let new_meta = BigAllocMeta {
             next: std::ptr::null_mut(),
             size: new_size,
@@ -145,7 +146,10 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
         } else {
             let _ = BIG_ALLOC_MAP.remove(old_key);
             BIG_ALLOC_MAP.insert(new_key, new_meta);
+            L3_RADIX.set_range(old_mapping as usize, old_total, false);
         }
+
+        L3_RADIX.set_range(new_mapping, aligned_new, true);
 
         return UnsafePointer::new(new_addr as *mut Header).walk_header();
     }
@@ -208,18 +212,17 @@ pub unsafe fn rs_realloc(ptr: UnsafePointer<Header>, new_size: usize) -> UnsafeP
             return new_ptr;
         }
 
-        return small_realloc(searched.apply_safe(), new_size);
+        let searched_safe = searched.apply_safe();
+        let searched_header = searched_safe.get_actual_header();
+
+        if searched_header.magic == BIG_MAGIC {
+            return big_realloc(searched_safe, new_size);
+        }
+
+        return small_realloc(searched_safe, new_size);
     }
 
-    let ptr_copy_for_search = UnsafePointer::new(ptr.cast_as_ptr::<Header>());
-    let searched = find_original_ptr(ptr_copy_for_search);
-
-    if !BIG_ALLOC_MAP.is_ours(searched.cast_usize()) {
-        let out = realloc_fallback(ptr.cast_as_ptr(), new_size);
-        return UnsafePointer::new(out as *mut Header);
-    }
-
-    big_realloc(searched.apply_safe(), new_size)
+    UnsafePointer::new(realloc_fallback(ptr.cast_as_ptr() as *mut c_void, new_size) as *mut Header)
 }
 
 #[cfg(test)]

@@ -1,7 +1,11 @@
 [build]
 rustflags = [
-  "-C", "link-arg=-Wl,-z,now",
-  "-Z", "tls-model=initial-exec",
-  "-C", "force-unwind-tables=no",
-  "-C", "target-cpu=x86-64-v3"
+    "-C", "target-cpu=native",
+    "-C", "link-arg=-Wl,-z,now",
+    "-Z", "tls-model=initial-exec",
+    "-C", "force-unwind-tables=no",
+    "-C", "llvm-args=-align-all-functions=5",
+    "-C", "llvm-args=-x86-pad-for-align=false",
+    "-C", "llvm-args=--inline-threshold=275",
+    "-C", "code-model=small"
 ]

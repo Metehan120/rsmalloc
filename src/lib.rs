@@ -74,6 +74,7 @@ pub(crate) enum RSMallocError {
     OutOfMemory = 0x1003,
     VAIinitFailed = 0x1005,
     AttackOrCorruption = 0x100B,
+    SecurityViolation = 0x100C,
 }
 
 impl Debug for RSMallocError {
@@ -84,6 +85,7 @@ impl Debug for RSMallocError {
             Self::OutOfMemory => write!(f, "OutOfMemory (0x1003)"),
             Self::VAIinitFailed => write!(f, "VAIinitFailed (0x1005)"),
             Self::AttackOrCorruption => write!(f, "AttackOrCorruption (0x100B)"),
+            Self::SecurityViolation => write!(f, "SecurityViolation (0x100C)"),
         }
     }
 }

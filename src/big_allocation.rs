@@ -63,6 +63,7 @@ pub unsafe fn big_malloc(size: usize) -> UnsafePointer<Header> {
     let aligned_total = estimate_and_align_2mb(size + Header::SIZE);
     let maybe_align_huge = should_use_huge(size + Header::SIZE);
 
+    let mut registered = false;
     let mut actual_ptr: *mut u8 = null_mut();
     {
         let _guard = BIG_FREE_CACHE.lock.lock();
@@ -70,6 +71,7 @@ pub unsafe fn big_malloc(size: usize) -> UnsafePointer<Header> {
         for i in 0..cache.len() {
             if let Some(block) = cache[i] {
                 if block.total_size >= aligned_total {
+                    registered = true;
                     actual_ptr = block.ptr;
                     let block_total = block.total_size;
                     cache[i] = None;
@@ -158,7 +160,7 @@ pub unsafe fn big_malloc(size: usize) -> UnsafePointer<Header> {
         }
     }
 
-    if maybe_align_huge && !aligned {
+    if maybe_align_huge && !aligned && !registered {
         let _ = madvise(
             actual_ptr as *mut c_void,
             aligned_total,
@@ -166,20 +168,22 @@ pub unsafe fn big_malloc(size: usize) -> UnsafePointer<Header> {
         );
     }
 
-    write(
-        actual_ptr as *mut Header,
-        Header {
-            next: null_mut(),
-            class: 100,
-            magic: BIG_MAGIC,
-            life_time: 0,
-            _padding: 0,
-        },
-    );
-
     let payload_ptr = actual_ptr.add(Header::SIZE);
 
-    L3_RADIX.set_range(actual_ptr as usize, aligned_total, true);
+    if !registered {
+        write(
+            actual_ptr as *mut Header,
+            Header {
+                next: null_mut(),
+                class: 100,
+                magic: BIG_MAGIC,
+                life_time: 0,
+                _padding: 0,
+            },
+        );
+
+        L3_RADIX.set_range(actual_ptr as usize, aligned_total, true)
+    };
 
     BIG_MAP.insert(
         payload_ptr as usize,
@@ -207,9 +211,8 @@ pub unsafe fn big_free(ptr: usize) {
     let total_size = estimate_and_align_2mb(payload_size + Header::SIZE);
     let mapping_base = (ptr - Header::SIZE) as *mut u8;
 
-    L3_RADIX.set_range(mapping_base as usize, total_size, false);
-
     if total_size >= BIG_CACHE_LIMIT {
+        L3_RADIX.set_range(mapping_base as usize, total_size, false);
         if munmap(mapping_base as *mut c_void, total_size).is_err() {
             let _ = madvise(
                 mapping_base as *mut c_void,
@@ -238,6 +241,7 @@ pub unsafe fn big_free(ptr: usize) {
 
         if !pushed {
             if let Some(to_trim) = cache[0] {
+                L3_RADIX.set_range(to_trim.ptr as usize, to_trim.total_size, false);
                 if munmap(to_trim.ptr as *mut c_void, to_trim.total_size).is_err() {
                     let _ = madvise(
                         to_trim.ptr as *mut c_void,
@@ -264,6 +268,7 @@ pub unsafe fn trim_big_allocations() -> usize {
     let mut freed = 0;
     for i in 0..cache.len() {
         if let Some(block) = cache[i] {
+            L3_RADIX.set_range(block.ptr as usize, block.total_size, false);
             if munmap(block.ptr as *mut c_void, block.total_size).is_err() {
                 let _ = madvise(
                     block.ptr as *mut c_void,

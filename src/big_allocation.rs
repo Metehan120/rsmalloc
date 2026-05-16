@@ -168,20 +168,20 @@ pub unsafe fn big_malloc(size: usize) -> UnsafePointer<Header> {
         );
     }
 
+    write(
+        actual_ptr as *mut Header,
+        Header {
+            next: null_mut(),
+            class: 100,
+            magic: BIG_MAGIC,
+            life_time: 0,
+            _padding: 0,
+        },
+    );
+
     let payload_ptr = actual_ptr.add(Header::SIZE);
 
     if !registered {
-        write(
-            actual_ptr as *mut Header,
-            Header {
-                next: null_mut(),
-                class: 100,
-                magic: BIG_MAGIC,
-                life_time: 0,
-                _padding: 0,
-            },
-        );
-
         L3_RADIX.set_range(actual_ptr as usize, aligned_total, true)
     };
 

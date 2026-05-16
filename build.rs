@@ -17,7 +17,7 @@ fn main() {
     };
 
     println!(
-        "cargo:warning=🚀 rsmalloc configuring .cargo/config.toml with target-cpu={}",
+        "cargo:warning=rsmalloc configuring .cargo/config.toml with target-cpu={}",
         target_cpu
     );
     println!("cargo:rerun-if-env-changed=RSMALLOC_NATIVE");

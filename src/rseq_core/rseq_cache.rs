@@ -220,11 +220,11 @@ impl RseqCache {
         loop {
             list.trim_lock.spin_until_unlock();
 
-            let old = list_ptr.load(Ordering::Acquire);
+            let old = list_ptr.load(Ordering::Relaxed);
             (*tail).next = old;
 
             if list_ptr
-                .compare_exchange_weak(old, start, Ordering::AcqRel, Ordering::Acquire)
+                .compare_exchange_weak(old, start, Ordering::Release, Ordering::Relaxed)
                 .is_ok()
             {
                 usage_ptr.fetch_add(batch_size, Ordering::Relaxed);
@@ -243,11 +243,11 @@ impl RseqCache {
         loop {
             list.trim_lock.spin_until_unlock();
 
-            let old = list_ptr.load(Ordering::Acquire);
+            let old = list_ptr.load(Ordering::Relaxed);
             (*header).next = old;
 
             if list_ptr
-                .compare_exchange_weak(old, header, Ordering::AcqRel, Ordering::Acquire)
+                .compare_exchange_weak(old, header, Ordering::Release, Ordering::Relaxed)
                 .is_ok()
             {
                 usage_ptr.fetch_add(1, Ordering::Relaxed);
@@ -271,7 +271,7 @@ impl RseqCache {
         loop {
             list.trim_lock.spin_until_unlock();
 
-            let head = list_ptr.load(Ordering::Acquire);
+            let head = list_ptr.load(Ordering::Relaxed);
             if head.is_null() {
                 return None;
             }

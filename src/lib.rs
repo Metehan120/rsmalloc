@@ -9,6 +9,7 @@ use crate::{core_prim::wrappers::UnsafePointer, rseq_core::rseq_main::rseq};
 pub(crate) static mut MAGIC: u16 = 0;
 pub(crate) static mut FREED_MAGIC: u16 = 1;
 pub(crate) static mut BIG_MAGIC: u16 = 2;
+pub(crate) static mut MAX_BIG_CACHE: usize = 1024 * 1024 * 256;
 pub(crate) const ALIGN_TAG: usize = usize::from_le_bytes(*b"RSMALIGN");
 pub(crate) const OFFSET_SIZE: usize = size_of::<usize>();
 pub(crate) const TAG_SIZE: usize = OFFSET_SIZE * 2;

@@ -6,7 +6,7 @@ use std::{
 use rustix::mm::{Advice, MapFlags, ProtFlags, madvise, mmap_anonymous, munmap};
 
 use crate::{
-    BIG_MAGIC, BigAllocMeta, Header, RSMallocError,
+    BIG_MAGIC, BigAllocMeta, Header, MAX_BIG_CACHE, RSMallocError,
     core_prim::wrappers::UnsafePointer,
     internals::{hashmap::BIG_MAP, l3_main_radix::L3_RADIX, lock::SerialLock},
     utility::align_to,
@@ -59,37 +59,13 @@ pub unsafe fn big_malloc(size: usize) -> UnsafePointer<Header> {
                 if block.total_size >= aligned_total {
                     registered = true;
                     actual_ptr = block.ptr;
-                    let block_total = block.total_size;
                     cache[i] = None;
-
-                    if block_total >= aligned_total + 4096 {
-                        let remainder_ptr = actual_ptr.add(aligned_total);
-                        let remainder_size = block_total - aligned_total;
-
-                        let mut pushed = false;
-                        for j in 0..cache.len() {
-                            if cache[j].is_none() {
-                                cache[j] = Some(BigFreeBlock {
-                                    ptr: remainder_ptr,
-                                    total_size: remainder_size,
-                                });
-                                pushed = true;
-                                break;
-                            }
-                        }
-
-                        if !pushed {
-                            L3_RADIX.set_range(remainder_ptr as usize, remainder_size, false);
-                            let _ = munmap(remainder_ptr as *mut c_void, remainder_size);
-                        }
-                    }
                     break;
                 }
             }
         }
     }
 
-    let mut aligned = false;
     if actual_ptr.is_null() {
         match mmap_anonymous(
             null_mut(),
@@ -98,14 +74,13 @@ pub unsafe fn big_malloc(size: usize) -> UnsafePointer<Header> {
             MapFlags::PRIVATE,
         ) {
             Ok(ptr) => {
-                aligned = false;
                 actual_ptr = ptr as *mut u8;
             }
             Err(_) => return UnsafePointer::NULL,
         }
     }
 
-    if !aligned && !registered {
+    if !registered && aligned_total % (1024 * 1024 * 2) == 0 {
         let _ = madvise(
             actual_ptr as *mut c_void,
             aligned_total,
@@ -143,8 +118,6 @@ pub unsafe fn big_malloc(size: usize) -> UnsafePointer<Header> {
 
 #[inline(never)]
 pub unsafe fn big_free(ptr: usize) {
-    const BIG_CACHE_LIMIT: usize = 1024 * 1024 * 256;
-
     let header = BIG_MAP.remove(ptr).unwrap_or_else(|| {
         RSMallocError::MemoryCorruption.log_and_abort(
             null_mut(),
@@ -156,15 +129,9 @@ pub unsafe fn big_free(ptr: usize) {
     let total_size = estimate_and_align_2mb(payload_size + Header::SIZE);
     let mapping_base = (ptr - Header::SIZE) as *mut u8;
 
-    if total_size >= BIG_CACHE_LIMIT {
+    if payload_size > MAX_BIG_CACHE {
         L3_RADIX.set_range(mapping_base as usize, total_size, false);
-        if munmap(mapping_base as *mut c_void, total_size).is_err() {
-            let _ = madvise(
-                mapping_base as *mut c_void,
-                total_size,
-                Advice::LinuxDontNeed,
-            );
-        }
+        let _ = munmap(mapping_base as *mut c_void, total_size);
         return;
     }
 
@@ -187,13 +154,7 @@ pub unsafe fn big_free(ptr: usize) {
         if !pushed {
             if let Some(to_trim) = cache[0] {
                 L3_RADIX.set_range(to_trim.ptr as usize, to_trim.total_size, false);
-                if munmap(to_trim.ptr as *mut c_void, to_trim.total_size).is_err() {
-                    let _ = madvise(
-                        to_trim.ptr as *mut c_void,
-                        to_trim.total_size,
-                        Advice::LinuxDontNeed,
-                    );
-                }
+                let _ = munmap(to_trim.ptr as *mut c_void, to_trim.total_size);
             }
 
             for i in 0..cache.len() - 1 {
@@ -214,13 +175,7 @@ pub unsafe fn trim_big_allocations() -> usize {
     for i in 0..cache.len() {
         if let Some(block) = cache[i] {
             L3_RADIX.set_range(block.ptr as usize, block.total_size, false);
-            if munmap(block.ptr as *mut c_void, block.total_size).is_err() {
-                let _ = madvise(
-                    block.ptr as *mut c_void,
-                    block.total_size,
-                    Advice::LinuxDontNeed,
-                );
-            }
+            let _ = munmap(block.ptr as *mut c_void, block.total_size);
             freed += block.total_size;
             cache[i] = None;
         }

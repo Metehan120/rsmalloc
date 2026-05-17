@@ -113,18 +113,16 @@ pub unsafe fn big_malloc(size: usize) -> UnsafePointer<Header> {
         );
     }
 
-    if !registered {
-        write(
-            actual_ptr as *mut Header,
-            Header {
-                next: null_mut(),
-                class: 100,
-                magic: BIG_MAGIC,
-                life_time: 0,
-                _padding: 0,
-            },
-        );
-    }
+    write(
+        actual_ptr as *mut Header,
+        Header {
+            next: null_mut(),
+            class: 100,
+            magic: BIG_MAGIC,
+            life_time: 0,
+            _padding: 0,
+        },
+    );
 
     let payload_ptr = actual_ptr.add(Header::SIZE);
 

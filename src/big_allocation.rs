@@ -35,19 +35,6 @@ impl BigFreeCache {
 static mut BIG_FREE_CACHE: BigFreeCache = BigFreeCache::new();
 const TWO_MB: usize = 1024 * 1024 * 2;
 
-fn should_use_huge(size: usize) -> bool {
-    const PAGES_PER_HUGEPAGE: usize = 512;
-
-    let total_pages_needed = (size + 4095) / 4096;
-    let remaining_pages = total_pages_needed % PAGES_PER_HUGEPAGE;
-
-    if remaining_pages > 0 && remaining_pages < 64 {
-        false
-    } else {
-        true
-    }
-}
-
 fn estimate_and_align_2mb(size: usize) -> usize {
     let remainder = size % TWO_MB;
 
@@ -61,7 +48,6 @@ fn estimate_and_align_2mb(size: usize) -> usize {
 #[inline(never)]
 pub unsafe fn big_malloc(size: usize) -> UnsafePointer<Header> {
     let aligned_total = estimate_and_align_2mb(size + Header::SIZE);
-    let maybe_align_huge = should_use_huge(size + Header::SIZE);
 
     let mut registered = false;
     let mut actual_ptr: *mut u8 = null_mut();
@@ -93,13 +79,8 @@ pub unsafe fn big_malloc(size: usize) -> UnsafePointer<Header> {
                         }
 
                         if !pushed {
-                            if munmap(remainder_ptr as *mut c_void, remainder_size).is_err() {
-                                let _ = madvise(
-                                    remainder_ptr as *mut c_void,
-                                    remainder_size,
-                                    Advice::LinuxDontNeed,
-                                );
-                            }
+                            L3_RADIX.set_range(remainder_ptr as usize, remainder_size, false);
+                            let _ = munmap(remainder_ptr as *mut c_void, remainder_size);
                         }
                     }
                     break;
@@ -110,57 +91,21 @@ pub unsafe fn big_malloc(size: usize) -> UnsafePointer<Header> {
 
     let mut aligned = false;
     if actual_ptr.is_null() {
-        let huge_flags = if aligned_total % (1024 * 1024 * 1024) == 0 {
-            Some(MapFlags::PRIVATE | MapFlags::HUGETLB | MapFlags::HUGE_1GB)
-        } else if aligned_total % (1024 * 1024 * 2) == 0 {
-            Some(MapFlags::PRIVATE | MapFlags::HUGETLB | MapFlags::HUGE_2MB)
-        } else {
-            None
-        };
-
-        if let Some(flags) = huge_flags {
-            match mmap_anonymous(
-                null_mut(),
-                aligned_total,
-                ProtFlags::READ | ProtFlags::WRITE,
-                flags,
-            ) {
-                Ok(ptr) => {
-                    aligned = true;
-                    actual_ptr = ptr as *mut u8;
-                }
-                Err(_) => {
-                    match mmap_anonymous(
-                        null_mut(),
-                        aligned_total,
-                        ProtFlags::READ | ProtFlags::WRITE,
-                        MapFlags::PRIVATE,
-                    ) {
-                        Ok(ptr) => {
-                            aligned = false;
-                            actual_ptr = ptr as *mut u8;
-                        }
-                        Err(_) => return UnsafePointer::NULL,
-                    }
-                }
+        match mmap_anonymous(
+            null_mut(),
+            aligned_total,
+            ProtFlags::READ | ProtFlags::WRITE,
+            MapFlags::PRIVATE,
+        ) {
+            Ok(ptr) => {
+                aligned = false;
+                actual_ptr = ptr as *mut u8;
             }
-        } else {
-            match mmap_anonymous(
-                null_mut(),
-                aligned_total,
-                ProtFlags::READ | ProtFlags::WRITE,
-                MapFlags::PRIVATE,
-            ) {
-                Ok(ptr) => {
-                    aligned = false;
-                    actual_ptr = ptr as *mut u8;
-                }
-                Err(_) => return UnsafePointer::NULL,
-            }
+            Err(_) => return UnsafePointer::NULL,
         }
     }
 
-    if maybe_align_huge && !aligned && !registered {
+    if !aligned && !registered {
         let _ = madvise(
             actual_ptr as *mut c_void,
             aligned_total,

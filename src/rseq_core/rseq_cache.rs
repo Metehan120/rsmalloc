@@ -218,9 +218,7 @@ impl RseqCache {
         let usage_ptr = &list.usage;
 
         loop {
-            if unlikely(list.trim_lock.get_lock()) {
-                continue;
-            }
+            list.trim_lock.spin_until_unlock();
 
             let old = list_ptr.load(Ordering::Acquire);
             (*tail).next = old;
@@ -243,9 +241,7 @@ impl RseqCache {
         let usage_ptr = &list.usage;
 
         loop {
-            if unlikely(list.trim_lock.get_lock()) {
-                continue;
-            }
+            list.trim_lock.spin_until_unlock();
 
             let old = list_ptr.load(Ordering::Acquire);
             (*header).next = old;
@@ -273,9 +269,7 @@ impl RseqCache {
         let usage_ptr = &list.usage;
 
         loop {
-            if unlikely(list.trim_lock.get_lock()) {
-                return None;
-            }
+            list.trim_lock.spin_until_unlock();
 
             let head = list_ptr.load(Ordering::Acquire);
             if head.is_null() {

@@ -17,7 +17,6 @@ rustix = { version = "1.1.4", features = [
 name = "speed"
 harness = false
 
-
 [dev-dependencies]
 criterion = "0.8.2"
 

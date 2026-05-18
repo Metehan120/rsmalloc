@@ -16,6 +16,9 @@
 1. It's use of RSEQ as main core for slab allocation.
 2. Due to usage of RSEQ rsmalloc is essentially per-CPU allocator not per-Thread so its scaling with core count not threads.
 
+### What is AI comments meaning in the allocator?
+- To be rewritten or improved in future by humans, I am a single human working on this project alone so I cant really know and make everything myself naturally I am getting help of the AI.
+
 ### How core allocator works and what is the architecture?
 1- Architecture and folder structure:
   - abi: LD_PRELOAD interface:

@@ -1,3 +1,7 @@
+// This file is partially assisted by CODEX & Gemini
+//
+// TODO: Verify safety of the RadixTree implementation
+
 use crate::{RSMallocError, core_prim::wrappers::UnsafePointer, internals::lock::SerialLock};
 use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 use std::{hint::unlikely, ptr::null_mut};

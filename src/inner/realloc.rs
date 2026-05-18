@@ -27,7 +27,6 @@ fn estimate_big_mapping_size(size: usize) -> usize {
     }
 }
 
-// Audited and partially assisted by: GPT-Codex
 // TODO: Check for safety logic bugs
 unsafe fn small_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointer<Header> {
     let payload_ptr = ptr;
@@ -100,7 +99,6 @@ unsafe fn small_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePoin
     new_ptr
 }
 
-// Audited and partially assisted by: GPT-Codex
 // TODO: Check for safety logic bugs
 unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointer<Header> {
     let old_key = ptr.cast_usize();

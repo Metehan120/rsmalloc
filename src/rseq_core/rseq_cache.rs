@@ -170,6 +170,7 @@ impl GenericCache for RseqCache {
     }
 }
 
+// TODO: Add ABA safety for MailCache
 impl RseqCache {
     #[inline(always)]
     pub unsafe fn try_pop(

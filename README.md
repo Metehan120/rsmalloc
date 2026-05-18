@@ -95,7 +95,6 @@
 
             // Padding to align to 16 bytes
             ".balign 4",
-            // NOPs to pad to 16 bytes
             ".byte 0x0f, 0x1f, 0x05",
             // RSEQ signature
             ".long 0x53053053",

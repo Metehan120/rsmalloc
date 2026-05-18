@@ -1,3 +1,8 @@
+// This file is AI generated, I dont know how to make hashmap so I had to use AI: CODEX & Gemini.
+// - Metehan
+//
+// TODO: Rewrite this file in future, its good enough for now
+
 use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous, munmap};
 
 use crate::{BigAllocMeta, RSMallocError, internals::lock::SerialLock};

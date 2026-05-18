@@ -1,6 +1,6 @@
 # rsmalloc
 
-# ⚠️ Warning ⚠️: **Due to great and noble moderators of r/rust, I had to make this repo public before even become stable enough across various loads and missing implemention of GlobalAlloc interface & Trim (both of them non-exist) also Big Allocation path not ready yet. You can watch the development of this project via this repo. Thank you for understanding**.
+# Warning: **Due to great and noble moderators of r/rust, I had to make this repo public before even become stable enough across various loads and missing implemention of GlobalAlloc interface & Trim (both of them non-exist) also Big Allocation path not ready yet. You can watch the development of this project via this repo. Thank you for understanding**.
 
 ## ⚠️ Warning ⚠️: **Current developement is extremely early stage and unstable as it gets. Never use it in production**
 

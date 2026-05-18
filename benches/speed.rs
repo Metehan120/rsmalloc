@@ -1,3 +1,5 @@
+// WARNING: This benchmark only measures the speed bookkeeping speed of the allocator, not the real performance of the allocator.
+
 use std::{hint::black_box, os::raw::c_void};
 
 use criterion::{Criterion, criterion_group, criterion_main};

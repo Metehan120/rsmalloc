@@ -1,3 +1,5 @@
+// TODO: Add buddy allocator for big allocation path
+
 use std::{
     os::raw::c_void,
     ptr::{null_mut, write},

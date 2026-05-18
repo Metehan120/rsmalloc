@@ -126,7 +126,7 @@
 Contributions are welcome!
 
 ### You only have to follow these 3 rules for contributions:
-1. You can use AI tools but please mention which AI tool you used, why you used and how you prove the code is safe.
+1. You can use AI tools for audit or debugging but please mention which AI tool you used, why you used and how you prove the code is safe.
 2. Use rust-fmt for formatting.
 3. Do not bloat the code. Keep it as lean as possible.
 

@@ -6,6 +6,8 @@
 
 ### ⚠️ Warning ⚠️: **Current code is lack of documentation and comments, you have to understand it by reading the source code for now. Thanks for understanding**
 
+### ⚠️ Warning ⚠️: There are no benchmarks, or any speed garuentess yet.
+
 ### What rsmalloc is? 
 - rsmalloc is a memory allocator for general purpose use in across various loads and designed to handle massive concurrent allocations.
 - It is designed to be fast, scalable, and efficient, with a focus on concurrent safety and low overhead.

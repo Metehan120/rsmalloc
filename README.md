@@ -114,7 +114,7 @@
             header = in(reg) header,
             res = out(reg) res,
             usage = in(reg) usage_ptr,
-            options(nostack, preserves_flags),
+            options(nostack),
         );
   ```
   - As you can see from the code this is how RSEQ actually works in practice.

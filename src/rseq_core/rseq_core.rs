@@ -62,7 +62,7 @@ impl RseqCoreTrait for RseqCore {
             usage = in(reg) usage_ptr,
             tail = in(reg) tail,
             batch_size = in(reg) batch_size,
-            options(nostack, preserves_flags),
+            options(nostack),
         );
 
         res
@@ -118,7 +118,7 @@ impl RseqCoreTrait for RseqCore {
             header = in(reg) header,
             res = out(reg) res,
             usage = in(reg) usage_ptr,
-            options(nostack, preserves_flags),
+            options(nostack),
         );
 
         res
@@ -188,7 +188,7 @@ impl RseqCoreTrait for RseqCore {
             res = out(reg) res,
             usage = in(reg) usage_ptr,
             next = out(reg) _,
-            options(nostack, preserves_flags),
+            options(nostack),
         );
 
         res

@@ -17,7 +17,7 @@
 - `RS_BUDDY_PER_CACHE_SIZE`: Sets the initial buddy allocator region size for big allocations. Defaults to `268435456` bytes and is rounded up to a power of two.
 - `RS_BUDDY_ATTEMPT_HUGEPAGE`: Set to `1` to request transparent huge pages for buddy allocator regions.
 - `RS_DISABLE_THP`: Set to `1` to disable transparent huge page attempts.
-- `RS_DISABLE_RANDOMIZING`: Set to `1` to keep the static magic values instead of randomizing them during bootstrap.
+- `RS_DISABLE_RANDOMIZING`: Set to `0` to get a randomized magic value at bootstrap.
 
 ### What rsmalloc is? 
 - rsmalloc is a memory allocator for general purpose use in across various loads and designed to handle massive concurrent allocations.

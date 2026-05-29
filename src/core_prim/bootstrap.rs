@@ -74,7 +74,7 @@ pub unsafe fn bootstrap() {
 
     register_fork_handlers();
 
-    let random_magic = get_env_usize("RS_DISABLE_RANDOMIZING".as_bytes()).unwrap_or(0) != 1;
+    let random_magic = get_env_usize("RS_DISABLE_RANDOMIZING".as_bytes()).unwrap_or(0) == 0;
     if random_magic {
         init_magic()
     };

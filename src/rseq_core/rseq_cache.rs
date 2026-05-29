@@ -1,8 +1,9 @@
 use std::{
+    arch::x86_64::{_MM_HINT_T0, _mm_prefetch},
     cell::UnsafeCell,
-    hint::{likely, unlikely},
-    ptr::{addr_of, null_mut},
-    sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
+    hint::{likely, spin_loop, unlikely},
+    ptr::{addr_of, null_mut, read_volatile},
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
@@ -10,6 +11,7 @@ use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 use crate::{
     GenericCache, Header, RseqCoreTrait,
     core_prim::wrappers::UnsafePointer,
+    inner::libc_int::get_nprocs_conf,
     internals::{lock::SerialLock, once::Once},
     rseq_core::{rseq_core::RseqCore, rseq_main::get_rseq},
     utility::{NUM_SIZE_CLASSES, RSEQ_MAX_BLOCKS},
@@ -21,7 +23,7 @@ pub struct ClassCache {
 }
 
 pub struct MailCache {
-    list: AtomicPtr<Header>,
+    list: AtomicUsize,
     usage: AtomicUsize,
     trim_lock: SerialLock,
 }
@@ -45,9 +47,9 @@ pub struct RseqCache {
 unsafe impl Send for RseqCache {}
 unsafe impl Sync for RseqCache {}
 
-// TODO: Detect CPU count during initialization
 unsafe fn get_max_cpu() -> u32 {
-    256
+    let ncpu = get_nprocs_conf();
+    if ncpu > 0 { ncpu as u32 } else { 256 }
 }
 
 impl RseqCache {
@@ -95,25 +97,38 @@ impl GenericCache for RseqCache {
         let mut loop_count = 0;
 
         loop {
-            let list = &mut (*inner.cache.add(rseq.cpu_id as usize)).cache[class];
+            let current_cpu = read_volatile(&rseq.cpu_id) as usize;
+            let list = &mut (*inner.cache.add(current_cpu)).cache[class];
             let usage_ptr = &mut list.usage;
+
             if *usage_ptr > RSEQ_MAX_BLOCKS[class] {
-                self.mail_push_batch(class, header, tail, batch_size, rseq.cpu_id as usize);
+                self.mail_push_batch(class, header, tail, batch_size, current_cpu);
                 return;
             }
 
             let list_ptr = addr_of!(list.list) as *mut *mut Header;
             if likely(
-                RseqCore.push_tailed(list_ptr, usage_ptr, rseq, header, tail, batch_size) == 1,
+                RseqCore.push_tailed(
+                    list_ptr,
+                    usage_ptr,
+                    rseq,
+                    current_cpu,
+                    header,
+                    tail,
+                    batch_size,
+                ) == 1,
             ) {
+                _mm_prefetch(list.list.cast_as_ptr() as *mut i8, _MM_HINT_T0);
                 break;
-            } else {
-                if unlikely(loop_count > 2500) {
-                    self.mail_push_batch(class, header, tail, batch_size, rseq.cpu_id as usize);
-                    return;
-                }
-                loop_count += 1;
             }
+
+            if unlikely(loop_count > 5) {
+                self.mail_push_batch(class, header, tail, batch_size, current_cpu);
+                return;
+            }
+
+            loop_count += 1;
+            spin_loop();
         }
     }
 
@@ -124,23 +139,28 @@ impl GenericCache for RseqCache {
         let mut loop_count = 0;
 
         loop {
-            let list = &mut (*inner.cache.add(rseq.cpu_id as usize)).cache[class];
+            let current_cpu = read_volatile(&rseq.cpu_id) as usize;
+            let list = &mut (*inner.cache.add(current_cpu)).cache[class];
             let usage_ptr = &mut list.usage;
+
             if *usage_ptr > RSEQ_MAX_BLOCKS[class] {
-                self.mail_push_single(class, header, rseq.cpu_id as usize);
+                self.mail_push_single(class, header, current_cpu);
                 return;
             }
 
             let list_ptr = addr_of!(list.list) as *mut *mut Header;
-            if likely(RseqCore.push(list_ptr, usage_ptr, rseq, header) == 1) {
+            if likely(RseqCore.push(list_ptr, usage_ptr, rseq, current_cpu, header) == 1) {
+                _mm_prefetch(list.list.cast_as_ptr() as *mut i8, _MM_HINT_T0);
                 break;
-            } else {
-                if unlikely(loop_count > 2500) {
-                    self.mail_push_single(class, header, rseq.cpu_id as usize);
-                    return;
-                }
-                loop_count += 1;
             }
+
+            if unlikely(loop_count > 5) {
+                self.mail_push_single(class, header, current_cpu);
+                return;
+            }
+
+            loop_count += 1;
+            spin_loop();
         }
     }
 
@@ -148,15 +168,31 @@ impl GenericCache for RseqCache {
     unsafe fn pop(&self, class: usize) -> UnsafePointer<Header> {
         let inner = &mut *self.inner.get();
         let rseq = get_rseq();
+        let mut loop_count = 0;
+        let mut last_core = 0;
 
         loop {
-            let list = &mut (*inner.cache.add(rseq.cpu_id as usize)).cache[class];
+            let current_cpu = read_volatile(&rseq.cpu_id) as usize;
+
+            let list = &mut (*inner.cache.add(current_cpu)).cache[class];
             let list_ptr = addr_of!(list.list) as *mut *mut Header;
             let usage_ptr = &mut list.usage as *mut usize;
 
-            let header = RseqCore.pop(list_ptr, usage_ptr, rseq);
+            let header = RseqCore.pop(list_ptr, usage_ptr, rseq, current_cpu);
 
             if unlikely(header as isize == -1) {
+                if loop_count > 5 {
+                    if last_core != current_cpu {
+                        let mail = self.mail_pop_single(class, current_cpu);
+
+                        if !mail.is_null() {
+                            return mail;
+                        }
+                    }
+                    last_core = current_cpu;
+                    loop_count = 0;
+                }
+                loop_count += 1;
                 continue;
             }
 
@@ -170,15 +206,31 @@ impl GenericCache for RseqCache {
     }
 }
 
-// TODO: Add ABA safety for MailCache
+const PTR_ALIGN: usize = align_of::<Header>();
+const TAG_MASK: usize = PTR_ALIGN - 1;
+const PTR_MASK: usize = !TAG_MASK;
+
+#[inline(always)]
+fn pack(ptr: *mut Header, old_word: usize) -> usize {
+    let old_tag = old_word & TAG_MASK;
+    let new_tag = old_tag.wrapping_add(1) & TAG_MASK;
+
+    ((ptr as usize) & PTR_MASK) | new_tag
+}
+
+#[inline(always)]
+fn unpack_ptr(word: usize) -> *mut Header {
+    (word & PTR_MASK) as *mut Header
+}
+
 impl RseqCache {
     #[inline(always)]
     pub unsafe fn try_pop(
         &self,
         class: usize,
         batch_size: usize,
+        cpu_id: usize,
     ) -> (UnsafePointer<Header>, UnsafePointer<Header>, usize) {
-        let cpu_id = get_rseq().cpu_id as usize;
         let ncpu = (*self.inner.get()).ncpu;
 
         if let Some(popped) = self.mail_pop(class, cpu_id, batch_size) {
@@ -204,6 +256,34 @@ impl RseqCache {
         (UnsafePointer::NULL, UnsafePointer::NULL, 0)
     }
 
+    pub unsafe fn mail_pop_single(&self, class: usize, cpu_id: usize) -> UnsafePointer<Header> {
+        let inner = &mut *self.inner.get();
+        let list = &mut (*inner.cache.add(cpu_id)).mail[class];
+        let list_ptr = &list.list;
+        let usage_ptr = &list.usage;
+
+        loop {
+            list.trim_lock.spin_until_unlock();
+
+            let old = list_ptr.load(Ordering::Relaxed);
+            let head = unpack_ptr(old);
+
+            if head.is_null() {
+                return UnsafePointer::NULL;
+            }
+
+            let next = (*head).next;
+
+            if list_ptr
+                .compare_exchange(old, pack(next, old), Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+            {
+                usage_ptr.fetch_sub(1, Ordering::Relaxed);
+                return UnsafePointer::new(head);
+            }
+        }
+    }
+
     #[inline(always)]
     pub unsafe fn mail_push_batch(
         &self,
@@ -222,10 +302,14 @@ impl RseqCache {
             list.trim_lock.spin_until_unlock();
 
             let old = list_ptr.load(Ordering::Relaxed);
-            (*tail).next = old;
+            let old_head = unpack_ptr(old);
+
+            (*tail).next = old_head;
+
+            let new = pack(start, old);
 
             if list_ptr
-                .compare_exchange_weak(old, start, Ordering::Release, Ordering::Relaxed)
+                .compare_exchange(old, new, Ordering::Release, Ordering::Relaxed)
                 .is_ok()
             {
                 usage_ptr.fetch_add(batch_size, Ordering::Relaxed);
@@ -245,10 +329,14 @@ impl RseqCache {
             list.trim_lock.spin_until_unlock();
 
             let old = list_ptr.load(Ordering::Relaxed);
-            (*header).next = old;
+            let old_head = unpack_ptr(old);
+
+            (*header).next = old_head;
+
+            let new = pack(header, old);
 
             if list_ptr
-                .compare_exchange_weak(old, header, Ordering::Release, Ordering::Relaxed)
+                .compare_exchange(old, new, Ordering::Release, Ordering::Relaxed)
                 .is_ok()
             {
                 usage_ptr.fetch_add(1, Ordering::Relaxed);
@@ -272,7 +360,9 @@ impl RseqCache {
         loop {
             list.trim_lock.spin_until_unlock();
 
-            let head = list_ptr.load(Ordering::Relaxed);
+            let old = list_ptr.load(Ordering::Relaxed);
+            let head = unpack_ptr(old);
+
             if head.is_null() {
                 return None;
             }
@@ -287,8 +377,10 @@ impl RseqCache {
                 count += 1;
             }
 
+            let new = pack(next, old);
+
             if list_ptr
-                .compare_exchange_weak(head, next, Ordering::Acquire, Ordering::Relaxed)
+                .compare_exchange(old, new, Ordering::Acquire, Ordering::Relaxed)
                 .is_ok()
             {
                 usage_ptr.fetch_sub(count, Ordering::Relaxed);

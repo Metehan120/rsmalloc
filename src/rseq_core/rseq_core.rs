@@ -14,12 +14,14 @@ impl RseqCoreTrait for RseqCore {
         list_ptr: *mut *mut Header,
         usage_ptr: *mut usize,
         rseq: &rseq,
+        cpu_id: usize,
         header: *mut Header,
         tail: *mut Header,
         batch_size: usize,
     ) -> usize {
         let res: usize;
         let cs = get_cs_ptr(rseq);
+        let cpu_id_start = core::ptr::addr_of!(rseq.cpu_id_start);
 
         asm!(
             ".pushsection .data.rel.ro,\"aw\",@progbits",
@@ -35,6 +37,9 @@ impl RseqCoreTrait for RseqCore {
             "mov [{cs_ptr}], {tmp}",
 
             "1:",
+            "cmp dword ptr [{cpu_id_start}], {cpu_id:e}",
+            "jne 3f",
+
             "mov {tmp}, [{list}]",
             "mov [{tail}], {tmp}",
             "add qword ptr [{usage}], {batch_size}",
@@ -62,6 +67,8 @@ impl RseqCoreTrait for RseqCore {
             usage = in(reg) usage_ptr,
             tail = in(reg) tail,
             batch_size = in(reg) batch_size,
+            cpu_id_start = in(reg) cpu_id_start,
+            cpu_id = in(reg) cpu_id,
             options(nostack),
         );
 
@@ -74,10 +81,12 @@ impl RseqCoreTrait for RseqCore {
         list_ptr: *mut *mut Header,
         usage_ptr: *mut usize,
         rseq: &rseq,
+        cpu_id: usize,
         header: *mut Header,
     ) -> usize {
         let res: usize;
         let cs = get_cs_ptr(rseq);
+        let cpu_id_start = core::ptr::addr_of!(rseq.cpu_id_start);
 
         asm!(
             ".pushsection .data.rel.ro,\"aw\",@progbits",
@@ -93,6 +102,9 @@ impl RseqCoreTrait for RseqCore {
             "mov [{cs_ptr}], {tmp}",
 
             "1:",
+            "cmp dword ptr [{cpu_id_start}], {cpu_id:e}",
+            "jne 3f",
+
             "mov {tmp}, [{list}]",
             "mov [{header}], {tmp}",
             "inc qword ptr [{usage}]",
@@ -118,6 +130,8 @@ impl RseqCoreTrait for RseqCore {
             header = in(reg) header,
             res = out(reg) res,
             usage = in(reg) usage_ptr,
+            cpu_id_start = in(reg) cpu_id_start,
+            cpu_id = in(reg) cpu_id,
             options(nostack),
         );
 
@@ -130,9 +144,11 @@ impl RseqCoreTrait for RseqCore {
         list_ptr: *mut *mut Header,
         usage_ptr: *mut usize,
         rseq: &rseq,
+        cpu_id: usize,
     ) -> *mut Header {
         let res: *mut Header;
         let cs = get_cs_ptr(rseq);
+        let cpu_id_start = core::ptr::addr_of!(rseq.cpu_id_start);
 
         asm!(
             ".pushsection .data.rel.ro,\"aw\",@progbits",
@@ -151,6 +167,9 @@ impl RseqCoreTrait for RseqCore {
             "mov [{cs_ptr}], {tmp}",
 
             "1:",
+            "cmp dword ptr [{cpu_id_start}], {cpu_id:e}",
+            "jne 3f",
+
             "mov {tmp}, [{list}]",
             "test {tmp}, {tmp}",
             "jz 6f",
@@ -188,6 +207,8 @@ impl RseqCoreTrait for RseqCore {
             res = out(reg) res,
             usage = in(reg) usage_ptr,
             next = out(reg) _,
+            cpu_id_start = in(reg) cpu_id_start,
+            cpu_id = in(reg) cpu_id,
             options(nostack),
         );
 

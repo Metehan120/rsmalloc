@@ -49,6 +49,7 @@ macro_rules! impl_conversions {
 
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy)]
+#[must_use]
 pub struct SafePointer<T>(*mut T);
 
 unsafe impl<T> Sync for SafePointer<T> {}
@@ -126,6 +127,7 @@ impl<'a, T> UnsafePointerInner<'a, T> {
 
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy)]
+#[must_use]
 pub struct UnsafePointer<T>(*mut T);
 
 unsafe impl<T> Sync for UnsafePointer<T> {}

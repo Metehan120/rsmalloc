@@ -1,21 +1,24 @@
 #![feature(likely_unlikely)]
 #![feature(thread_local)]
+#![feature(linkage)]
 #![allow(binary_asm_labels, unsafe_op_in_unsafe_fn, static_mut_refs)]
 
 use std::{fmt::Debug, process::abort};
 
 use crate::{core_prim::wrappers::UnsafePointer, rseq_core::rseq_main::rseq};
 
-pub(crate) static mut MAGIC: u16 = 0;
-pub(crate) static mut FREED_MAGIC: u16 = 1;
-pub(crate) static mut BIG_MAGIC: u16 = 2;
-pub(crate) static mut MAX_BIG_CACHE: usize = 1024 * 1024 * 256;
+pub(crate) static mut MAGIC: u16 = u16::from_le_bytes(*b"RS");
+pub(crate) static mut FREED_MAGIC: u16 = u16::from_le_bytes(*b"RM");
+pub(crate) static mut BIG_MAGIC: u16 = u16::from_le_bytes(*b"RB");
+pub(crate) static mut RS_DISABLE_THP: bool = false;
+pub(crate) static mut IS_RSEQ_INTERNAL: bool = false;
+pub(crate) static mut BUDDY_INIT: bool = false;
 pub(crate) const ALIGN_TAG: usize = usize::from_le_bytes(*b"RSMALIGN");
 pub(crate) const OFFSET_SIZE: usize = size_of::<usize>();
 pub(crate) const TAG_SIZE: usize = OFFSET_SIZE * 2;
 
 pub mod abi;
-pub mod big_allocation;
+pub mod big_allocations;
 pub mod core_prim;
 pub mod inner;
 pub mod internals;
@@ -49,6 +52,7 @@ impl MetaData {
 pub struct BigAllocMeta {
     pub next: *mut BigAllocMeta,
     pub size: usize,
+    pub order: usize,
 }
 
 impl BigAllocMeta {
@@ -76,6 +80,7 @@ pub(crate) enum RSMallocError {
     VAIinitFailed = 0x1005,
     AttackOrCorruption = 0x100B,
     SecurityViolation = 0x100C,
+    RSEQRegFailed = 0x100D,
 }
 
 impl Debug for RSMallocError {
@@ -87,6 +92,7 @@ impl Debug for RSMallocError {
             Self::VAIinitFailed => write!(f, "VAIinitFailed (0x1005)"),
             Self::AttackOrCorruption => write!(f, "AttackOrCorruption (0x100B)"),
             Self::SecurityViolation => write!(f, "SecurityViolation (0x100C)"),
+            Self::RSEQRegFailed => write!(f, "RSEQRegFailed (0x100D)"),
         }
     }
 }
@@ -125,6 +131,7 @@ pub trait RseqCoreTrait {
         list_ptr: *mut *mut Header,
         usage_ptr: *mut usize,
         rseq: &rseq,
+        cpu_id: usize,
         header: *mut Header,
     ) -> usize;
     unsafe fn push_tailed(
@@ -132,6 +139,7 @@ pub trait RseqCoreTrait {
         list_ptr: *mut *mut Header,
         usage_ptr: *mut usize,
         rseq: &rseq,
+        cpu_id: usize,
         header: *mut Header,
         tail: *mut Header,
         batch_size: usize,
@@ -141,5 +149,6 @@ pub trait RseqCoreTrait {
         list_ptr: *mut *mut Header,
         usage_ptr: *mut usize,
         rseq: &rseq,
+        cpu_id: usize,
     ) -> *mut Header;
 }

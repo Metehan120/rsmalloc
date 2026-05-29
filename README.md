@@ -1,5 +1,7 @@
 # rsmalloc
 
+# BIG NEWS: RSMALLOC GOT A NEW UPDATE YOU CAN SEE ON [UPDATES.md](UPDATES.md)
+
 ## Warning: **I had to make this repo public before even become stable enough across various loads and missing implemention of GlobalAlloc interface & Trim (both of them non-exist) also Big Allocation path not ready yet. You can watch the development of this project via this repo. Thank you for understanding**.
 
 ## ⚠️ Warning ⚠️: **Current developement is extremely early stage and unstable as it gets. Never use it in production**
@@ -9,6 +11,13 @@
 ### ⚠️ Warning ⚠️: There are no benchmarks, or any speed garuentess yet.
 
 ### You can see TODO list in [TODO.md](TODO.md)
+
+### Runtime configuration
+- `RS_PREDICTOR_INIT_BATCH`: Sets the initial per-size-class predictor batch value for small allocation refills. Defaults to `8`.
+- `RS_BUDDY_PER_CACHE_SIZE`: Sets the initial buddy allocator region size for big allocations. Defaults to `268435456` bytes and is rounded up to a power of two.
+- `RS_BUDDY_ATTEMPT_HUGEPAGE`: Set to `1` to request transparent huge pages for buddy allocator regions.
+- `RS_DISABLE_THP`: Set to `1` to disable transparent huge page attempts.
+- `RS_DISABLE_RANDOMIZING`: Set to `1` to keep the static magic values instead of randomizing them during bootstrap.
 
 ### What rsmalloc is? 
 - rsmalloc is a memory allocator for general purpose use in across various loads and designed to handle massive concurrent allocations.

@@ -159,6 +159,14 @@ impl RadixTree {
     }
 
     #[inline(always)]
+    pub unsafe fn set_single_big(&mut self, addr: usize, val: bool) {
+        let _guard = self.lock.lock();
+        let start_idx = (addr / CHUNK_SIZE) % MAX_ADDR_IDX;
+
+        self.nodes.set(start_idx, val);
+    }
+
+    #[inline(always)]
     pub unsafe fn set_range(&self, addr: usize, size: usize, val: bool) {
         let _guard = self.lock.lock();
         let start_idx = (addr / CHUNK_SIZE) % MAX_ADDR_IDX;

@@ -59,16 +59,14 @@ unsafe fn init_blocks(
 }
 
 // TODO: Wire up time stamping
-pub unsafe fn bulk_fill(thread: &mut FreeList, class: usize) -> Result<(), Err> {
+pub unsafe fn bulk_fill(
+    thread: &mut FreeList,
+    class: usize,
+    max_init: usize,
+) -> Result<(*mut Header, *mut Header, usize), Err> {
     let payload_size = SIZE_CLASSES[class];
     let block_size = align_to(payload_size + Header::SIZE, 16);
 
-    let blocks_per_4k = 4096 / block_size;
-    let max_init = if blocks_per_4k >= 48 {
-        48
-    } else {
-        blocks_per_4k.max(1)
-    };
     let current_stamp = 0;
 
     let pending = thread.free[class];
@@ -76,11 +74,10 @@ pub unsafe fn bulk_fill(thread: &mut FreeList, class: usize) -> Result<(), Err> 
         let (head, tail, count) =
             init_blocks(class as u8, pending, block_size, max_init, current_stamp);
         if count > 0 {
-            RSEQ_CACHE.mail_push_batch(class, head, tail, count, get_rseq().cpu_id as usize);
             if remaining_blocks(pending, block_size) == 0 {
                 thread.free[class] = null_mut();
             }
-            return Ok(());
+            return Ok((head, tail, count));
         }
         thread.free[class] = null_mut();
     }
@@ -122,12 +119,11 @@ pub unsafe fn bulk_fill(thread: &mut FreeList, class: usize) -> Result<(), Err> 
     if count == 0 {
         return Err(Err::OutOfMemory);
     }
-    RSEQ_CACHE.mail_push_batch(class, head, tail, count, get_rseq().cpu_id as usize);
     if remaining_blocks(metadata, block_size) > 0 {
         thread.free[class] = metadata;
     }
 
-    Ok(())
+    Ok((head, tail, count))
 }
 
 pub unsafe fn drain_pending(thread: &mut FreeList, class: usize) {

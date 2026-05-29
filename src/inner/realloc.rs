@@ -9,28 +9,19 @@ use rustix::mm::{MremapFlags, mremap};
 
 use crate::{
     BIG_MAGIC, BigAllocMeta, Header,
-    big_allocation::{big_free, big_malloc},
+    big_allocations::{
+        big_allocation::{big_free, big_malloc, estimate_and_align_2mb},
+        buddy::{BIG_BUDDY_ALLOCATOR, BIG_BUDDY_MAX_ORDER},
+    },
     core_prim::wrappers::{SafePointer, UnsafePointer},
     inner::{
         fallback::realloc_fallback,
         free::{find_original_ptr, rs_free},
-        malloc::{alloc, usable_size},
+        malloc::{rs_alloc, usable_size},
     },
     internals::{hashmap::BIG_ALLOC_MAP, l3_main_radix::L3_RADIX},
     utility::{SIZE_CLASSES, align_to, match_size_class},
 };
-
-#[inline(always)]
-fn estimate_big_mapping_size(size: usize) -> usize {
-    const TWO_MB: usize = 1024 * 1024 * 2;
-
-    let remainder = size % TWO_MB;
-    if remainder > 0 && (TWO_MB - remainder) <= 1024 * 64 {
-        align_to(size, TWO_MB)
-    } else {
-        align_to(size, 4096)
-    }
-}
 
 // TODO: Check for safety logic bugs
 unsafe fn small_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointer<Header> {
@@ -39,6 +30,10 @@ unsafe fn small_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePoin
 
     let old_class = header_ptr.class as usize;
     let old_payload_size = SIZE_CLASSES[old_class];
+
+    if new_size <= old_payload_size {
+        return payload_ptr.apply_unsafe();
+    }
 
     let new_class = match match_size_class(new_size) {
         Some(class) => class,
@@ -90,7 +85,7 @@ unsafe fn small_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePoin
         }
     }
 
-    let new_ptr = alloc(new_size);
+    let new_ptr = rs_alloc(new_size);
     if new_ptr.is_null() {
         return UnsafePointer::NULL;
     }
@@ -106,55 +101,95 @@ unsafe fn small_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePoin
 
 // TODO: Check for safety logic bugs
 unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointer<Header> {
-    let old_key = ptr.cast_usize();
-    let old_mapping = (old_key - Header::SIZE) as *mut c_void;
-    let old_meta = match BIG_ALLOC_MAP.get(old_key) {
+    let old_ptr = ptr.cast_usize();
+    let old_mapping = (old_ptr - Header::SIZE) as *mut c_void;
+    let old_meta = match BIG_ALLOC_MAP.get(old_ptr) {
         Some(meta) => meta,
         None => return UnsafePointer::NULL,
     };
 
+    let old_mapped_size = 1usize << old_meta.order;
     if new_size <= old_meta.size {
         return ptr.apply_unsafe();
     }
 
     if match_size_class(new_size).is_some() {
-        let new_alloc = alloc(new_size);
+        let new_alloc = rs_alloc(new_size);
         if new_alloc.is_null() {
             return UnsafePointer::NULL;
         }
 
         copy_nonoverlapping(
-            old_key as *const u8,
+            old_ptr as *const u8,
             new_alloc.cast_as_ptr(),
             old_meta.size.min(new_size),
         );
-        big_free(old_key);
+        big_free(old_ptr);
 
         return new_alloc;
     }
 
-    let old_total = estimate_big_mapping_size(old_meta.size + Header::SIZE);
-    let aligned_new = estimate_big_mapping_size(new_size + Header::SIZE);
+    let old_total = old_mapped_size;
+    let aligned_new = estimate_and_align_2mb(new_size + Header::SIZE);
 
-    if let Ok(new_addr) = mremap(old_mapping, old_total, aligned_new, MremapFlags::MAYMOVE) {
-        let new_mapping = new_addr as usize;
-        let new_key = new_mapping + Header::SIZE;
-        let new_meta = BigAllocMeta {
-            next: std::ptr::null_mut(),
-            size: new_size,
-        };
+    if !BIG_BUDDY_ALLOCATOR.is_in_pool(old_ptr) {
+        if let Ok(new_addr) = mremap(old_mapping, old_total, aligned_new, MremapFlags::MAYMOVE) {
+            let new_mapping = new_addr as usize;
+            let new_key = new_mapping + Header::SIZE;
+            let new_meta = BigAllocMeta {
+                next: std::ptr::null_mut(),
+                size: new_size,
+                order: aligned_new.next_power_of_two().trailing_zeros() as usize,
+            };
 
-        if new_key == old_key {
-            let _ = BIG_ALLOC_MAP.replace(old_key, new_meta);
-        } else {
-            let _ = BIG_ALLOC_MAP.remove(old_key);
-            BIG_ALLOC_MAP.insert(new_key, new_meta);
-            L3_RADIX.set_range(old_mapping as usize, old_total, false);
+            if new_key == old_ptr {
+                let _ = BIG_ALLOC_MAP.replace(old_ptr, new_meta);
+            } else {
+                let _ = BIG_ALLOC_MAP.remove(old_ptr);
+                BIG_ALLOC_MAP.insert(new_key, new_meta);
+                L3_RADIX.set_range(old_mapping as usize, old_total, false);
+            }
+
+            L3_RADIX.set_range(new_mapping, aligned_new, true);
+
+            return UnsafePointer::new(new_addr as *mut Header).walk_header();
         }
+    } else {
+        let mut current_addr = old_ptr;
+        let mut current_order = old_meta.order;
 
-        L3_RADIX.set_range(new_mapping, aligned_new, true);
+        let mut tries = 0;
+        while current_order < BIG_BUDDY_MAX_ORDER {
+            if aligned_new.next_power_of_two().trailing_zeros() as usize > BIG_BUDDY_MAX_ORDER {
+                break;
+            }
 
-        return UnsafePointer::new(new_addr as *mut Header).walk_header();
+            if let Some((new_addr, new_order)) =
+                BIG_BUDDY_ALLOCATOR.try_grow_inplace(current_addr, current_order)
+            {
+                current_addr = new_addr;
+                current_order = new_order;
+
+                let new_mapped_size = 1usize << new_order;
+                if new_mapped_size >= aligned_new {
+                    let new_meta = BigAllocMeta {
+                        next: std::ptr::null_mut(),
+                        size: new_size,
+                        order: new_order,
+                    };
+                    let _ = BIG_ALLOC_MAP.replace(old_ptr, new_meta);
+
+                    return UnsafePointer::new(current_addr as *mut Header).walk_header();
+                } else {
+                    tries += 1;
+                    if tries > 15 {
+                        break;
+                    }
+                }
+            } else {
+                break;
+            }
+        }
     }
 
     let new_alloc = big_malloc(new_size);
@@ -163,26 +198,24 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
     }
 
     copy_nonoverlapping(
-        old_key as *const u8,
+        old_ptr as *const u8,
         new_alloc.cast_as_ptr(),
         old_meta.size.min(new_size),
     );
-    big_free(old_key);
+    big_free(old_ptr);
 
     new_alloc.cast()
 }
 
 #[inline(always)]
 pub unsafe fn rs_realloc(ptr: UnsafePointer<Header>, new_size: usize) -> UnsafePointer<Header> {
-    if new_size == 0 {
-        if !ptr.is_null() {
-            rs_free(ptr);
-        }
-        return UnsafePointer::NULL;
+    if ptr.is_null() {
+        return rs_alloc(new_size.max(1)).cast();
     }
 
-    if ptr.is_null() {
-        return alloc(new_size).cast();
+    if new_size == 0 {
+        rs_free(ptr);
+        return UnsafePointer::NULL;
     }
 
     let ptr_addr = ptr.cast_usize();
@@ -199,7 +232,7 @@ pub unsafe fn rs_realloc(ptr: UnsafePointer<Header>, new_size: usize) -> UnsafeP
                 return ptr;
             }
 
-            let new_ptr = alloc(new_size);
+            let new_ptr = rs_alloc(new_size);
             if new_ptr.is_null() {
                 return UnsafePointer::NULL;
             }
@@ -256,20 +289,25 @@ mod tests {
             let p = rs_realloc(UnsafePointer::NULL, 256);
             assert!(!p.is_null());
             rs_free(p);
+
+            let z = rs_realloc(UnsafePointer::NULL, 0);
+            assert!(!z.is_null());
+            rs_free(z);
         }
     }
 
     #[test]
     fn realloc_zero_frees_and_returns_null() {
         unsafe {
-            let p = alloc(128);
+            let p = rs_alloc(128);
             assert!(!p.is_null());
 
             let out = rs_realloc(p, 0);
             assert!(out.is_null());
 
             let out2 = rs_realloc(UnsafePointer::NULL, 0);
-            assert!(out2.is_null());
+            assert!(!out2.is_null());
+            rs_free(out2);
         }
     }
 
@@ -280,7 +318,7 @@ mod tests {
             let new_size = 2048usize;
             let seed = 0x5Au8;
 
-            let p = alloc(old_size);
+            let p = rs_alloc(old_size);
             assert!(!p.is_null());
             fill_pattern(&p, old_size, seed);
 
@@ -299,7 +337,7 @@ mod tests {
             let new_size = 96usize;
             let seed = 0x33u8;
 
-            let p = alloc(old_size);
+            let p = rs_alloc(old_size);
             assert!(!p.is_null());
             fill_pattern(&p, new_size, seed);
 
@@ -318,7 +356,7 @@ mod tests {
             let new_size = 79usize;
             let seed = 0xA7u8;
 
-            let p = alloc(old_size);
+            let p = rs_alloc(old_size);
             assert!(!p.is_null());
             fill_pattern(&p, old_size, seed);
 
@@ -337,7 +375,7 @@ mod tests {
             let huge_size = usize::MAX / 2;
             let seed = 0x11u8;
 
-            let p = alloc(old_size);
+            let p = rs_alloc(old_size);
             assert!(!p.is_null());
             fill_pattern(&p, old_size, seed);
 

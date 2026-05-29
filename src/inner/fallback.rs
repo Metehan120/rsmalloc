@@ -22,10 +22,13 @@ static REALLOC_PTR: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 static MUS_INIT: Once = Once::new();
 static MUS_PTR: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 
+static MALLOC_INIT: Once = Once::new();
+
 pub fn fallback_reinit_on_fork() {
     FREE_INIT.reset_at_fork();
     REALLOC_INIT.reset_at_fork();
     MUS_INIT.reset_at_fork();
+    MALLOC_INIT.reset_at_fork();
 }
 
 fn get_symbol(name: &[u8], init: &Once, slot: &AtomicPtr<c_void>) -> *mut c_void {

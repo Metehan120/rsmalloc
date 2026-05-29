@@ -7,7 +7,7 @@ use crate::{
     core_prim::wrappers::UnsafePointer,
     inner::{
         libc_int::{__errno_location, NOMEM},
-        malloc::alloc,
+        malloc::rs_alloc,
     },
     internals::hashmap::BIG_ALLOC_MAP,
     utility::{SIZE_CLASSES, match_size_class},
@@ -25,7 +25,7 @@ unsafe fn calc_and_get(size: Layout, nmem: usize) -> Option<(UnsafePointer<Heade
     };
 
     let effective_size = if total_size == 0 { 1 } else { total_size };
-    let ptr = alloc(effective_size);
+    let ptr = rs_alloc(effective_size);
     if ptr.is_null() {
         return None;
     }

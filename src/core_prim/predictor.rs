@@ -1,6 +1,7 @@
 use crate::{internals::once::Once, utility::NUM_SIZE_CLASSES};
 
 pub static mut PREDICTOR_INIT_BATCH: usize = 8;
+pub static mut EMA_ALPHA: f32 = 0.15;
 
 pub struct Predictor {
     ema: f32,
@@ -17,21 +18,18 @@ impl Predictor {
         }
     }
 
-    pub fn update_global_batch_value(&mut self) {
+    pub unsafe fn update_global_batch_value(&mut self) {
         self.once.call_once(|| {
             self.batch = unsafe { PREDICTOR_INIT_BATCH };
         });
     }
 
     #[inline(always)]
-    pub fn update_refill(&mut self, demand: usize, min: usize, max: usize) {
+    pub unsafe fn update_refill(&mut self, demand: usize, min: usize, max: usize) {
         self.update_global_batch_value();
-
-        const ALPHA: f32 = 0.15;
-
         let demand = demand.max(1);
 
-        self.ema = ALPHA * demand as f32 + (1.0 - ALPHA) * self.ema;
+        self.ema = EMA_ALPHA * demand as f32 + (1.0 - EMA_ALPHA) * self.ema;
         self.batch = (self.ema.ceil() as usize).clamp(min, max);
     }
 

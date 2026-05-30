@@ -40,3 +40,41 @@ pub unsafe fn get_env_usize(key: &[u8]) -> Option<usize> {
 
     Some(out)
 }
+
+pub unsafe fn get_env_f32(key: &[u8]) -> Option<f32> {
+    let val = getenv_raw(key)?;
+    let mut p = val;
+
+    let mut sign = 1.0f32;
+
+    if *p == b'-' {
+        sign = -1.0;
+        p = p.add(1);
+    } else if *p == b'+' {
+        p = p.add(1);
+    }
+
+    let mut out = 0.0f32;
+
+    while *p >= b'0' && *p <= b'9' {
+        out = out * 10.0 + (*p - b'0') as f32;
+        p = p.add(1);
+    }
+
+    if *p == b'.' {
+        p = p.add(1);
+
+        let mut frac = 0.0f32;
+        let mut div = 1.0f32;
+
+        while *p >= b'0' && *p <= b'9' {
+            frac = frac * 10.0 + (*p - b'0') as f32;
+            div *= 10.0;
+            p = p.add(1);
+        }
+
+        out += frac / div;
+    }
+
+    Some(sign * out)
+}

@@ -10,6 +10,7 @@
   - `RS_DISABLE_THP`
   - `RS_DISABLE_RANDOMIZING`
 - Added `RS_PREDICTOR_INIT_BATCH` to configure the initial predictor batch size for small allocation refills.
+- Added `RS_EMA_ALPHA` to configure the exponential moving average alpha value for the predictor.
 - Updated big allocation metadata to track allocation order so pooled blocks can be returned to the buddy allocator correctly.
 - Changed big allocation ownership tracking to use single radix entries for direct mappings and full ranges for buddy regions.
 - Added raw RSEQ registration support with an internal thread-local `rseq` fallback when libc TLS RSEQ symbols are unavailable.

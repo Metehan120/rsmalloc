@@ -14,6 +14,7 @@
 
 ### Runtime configuration
 - `RS_PREDICTOR_INIT_BATCH`: Sets the initial per-size-class predictor batch value for small allocation refills. Defaults to `8`.
+- `RS_EMA_ALPHA`: Sets the exponential moving average alpha value for the predictor. Defaults to `0.15`.
 - `RS_BUDDY_PER_CACHE_SIZE`: Sets the initial buddy allocator region size for big allocations. Defaults to `268435456` bytes and is rounded up to a power of two.
 - `RS_BUDDY_ATTEMPT_HUGEPAGE`: Set to `1` to request transparent huge pages for buddy allocator regions.
 - `RS_DISABLE_THP`: Set to `1` to disable transparent huge page attempts.

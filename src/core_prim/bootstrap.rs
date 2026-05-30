@@ -6,11 +6,12 @@ use crate::{
     BIG_MAGIC, FREED_MAGIC, IS_RSEQ_INTERNAL, MAGIC, RS_DISABLE_THP, RSMallocError,
     big_allocations::buddy::BIG_BUDDY_ALLOCATOR,
     core_prim::{
-        fork::register_fork_handlers, predictor::PREDICTOR_INIT_BATCH,
+        fork::register_fork_handlers,
+        predictor::{EMA_ALPHA, PREDICTOR_INIT_BATCH},
         rseq_register::register_rseq_raw,
     },
     internals::{
-        env::get_env_usize,
+        env::{get_env_f32, get_env_usize},
         l3_main_radix::{L3_RADIX, RadixTree},
     },
     rseq_core::{
@@ -55,6 +56,7 @@ pub unsafe fn bootstrap() {
         }
     };
 
+    EMA_ALPHA = get_env_f32("RS_EMA_ALPHA".as_bytes()).unwrap_or(0.15);
     let predictor = get_env_usize("RS_PREDICTOR_INIT_BATCH".as_bytes()).unwrap_or(8);
     PREDICTOR_INIT_BATCH = predictor;
 

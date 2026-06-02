@@ -1,6 +1,6 @@
 # rsmalloc
 
-# BIG NEWS: RSMALLOC GOT A NEW UPDATE YOU CAN SEE ON [UPDATES.md](UPDATES.md)
+## After 0.0.3-pre-alpha released rsmalloc going to get a GlobalAlloc interface, current version: 0.0.2-pre-alpha
 
 ## Warning: **I had to make this repo public before even become stable enough across various loads and missing implemention of GlobalAlloc interface & Trim (both of them non-exist) also Big Allocation path not ready yet. You can watch the development of this project via this repo. Thank you for understanding**.
 

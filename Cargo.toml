@@ -2,7 +2,7 @@
 name = "rsmalloc"
 description = "An experimental RSEQ-based general-purpose memory allocator written in Rust"
 license-file = "MIT"
-version = "0.1.0-alpha"
+version = "0.1.0-alpha-1"
 readme = "README.md"
 repository = "https://github.com/Metehan120/rsmalloc"
 edition = "2024"

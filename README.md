@@ -4,6 +4,8 @@ rsmalloc is an experimental Rust memory allocator focused on low-overhead concur
 
 Current release line: `0.1.0-alpha`.
 
+crates.io: https://crates.io/crates/rsmalloc
+
 See [UPDATES.md](UPDATES.md) for release notes and [TODO.md](TODO.md) for planned work.
 See [benchmarks/benchmarks.md](benchmarks/benchmarks.md) for benchmark results.
 

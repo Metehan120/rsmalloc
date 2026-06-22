@@ -1,4 +1,6 @@
-use std::{arch::asm, usize};
+// ! DO NOT TOUCH, CHANGE OR BREATHE NEAR ASSEMBLY unless you know how rseq or assembly works !
+
+use std::{arch::asm, ptr::addr_of, usize};
 
 use crate::{
     Header, RseqCoreTrait,
@@ -12,16 +14,14 @@ impl RseqCoreTrait for RseqCore {
     unsafe fn push_tailed(
         &self,
         list_ptr: *mut *mut Header,
-        usage_ptr: *mut usize,
         rseq: &rseq,
         cpu_id: usize,
         header: *mut Header,
         tail: *mut Header,
-        batch_size: usize,
     ) -> usize {
         let res: usize;
         let cs = get_cs_ptr(rseq);
-        let cpu_id_start = core::ptr::addr_of!(rseq.cpu_id_start);
+        let cpu_id_start = addr_of!(rseq.cpu_id_start);
 
         asm!(
             ".pushsection .data.rel.ro,\"aw\",@progbits",
@@ -37,12 +37,12 @@ impl RseqCoreTrait for RseqCore {
             "mov [{cs_ptr}], {tmp}",
 
             "1:",
-            "cmp dword ptr [{cpu_id_start}], {cpu_id:e}",
+            // Test cpu_id_start against cpu_id before entering critical section.
+            "cmp [{cpu_id_start}], {cpu_id:e}",
             "jne 3f",
 
             "mov {tmp}, [{list}]",
             "mov [{tail}], {tmp}",
-            "add qword ptr [{usage}], {batch_size}",
             "mov [{list}], {header}",
 
             "2:",
@@ -52,6 +52,7 @@ impl RseqCoreTrait for RseqCore {
 
             ".balign 4",
             ".byte 0x0f, 0x1f, 0x05",
+            // RSEQ abort signature, matches glibc/linux rseq convention.
             ".long 0x53053053",
             "3:",
             "mov qword ptr [{cs_ptr}], 0",
@@ -63,10 +64,8 @@ impl RseqCoreTrait for RseqCore {
             tmp = out(reg) _,
             list = in(reg) list_ptr,
             header = in(reg) header,
-            res = out(reg) res,
-            usage = in(reg) usage_ptr,
+            res = lateout(reg) res,
             tail = in(reg) tail,
-            batch_size = in(reg) batch_size,
             cpu_id_start = in(reg) cpu_id_start,
             cpu_id = in(reg) cpu_id,
             options(nostack),
@@ -79,14 +78,13 @@ impl RseqCoreTrait for RseqCore {
     unsafe fn push(
         &self,
         list_ptr: *mut *mut Header,
-        usage_ptr: *mut usize,
         rseq: &rseq,
         cpu_id: usize,
         header: *mut Header,
     ) -> usize {
         let res: usize;
         let cs = get_cs_ptr(rseq);
-        let cpu_id_start = core::ptr::addr_of!(rseq.cpu_id_start);
+        let cpu_id_start = addr_of!(rseq.cpu_id_start);
 
         asm!(
             ".pushsection .data.rel.ro,\"aw\",@progbits",
@@ -102,12 +100,12 @@ impl RseqCoreTrait for RseqCore {
             "mov [{cs_ptr}], {tmp}",
 
             "1:",
-            "cmp dword ptr [{cpu_id_start}], {cpu_id:e}",
+            // Test cpu_id_start against cpu_id before entering critical section.
+            "cmp [{cpu_id_start}], {cpu_id:e}",
             "jne 3f",
 
             "mov {tmp}, [{list}]",
             "mov [{header}], {tmp}",
-            "inc qword ptr [{usage}]",
             "mov [{list}], {header}",
 
             "2:",
@@ -117,6 +115,7 @@ impl RseqCoreTrait for RseqCore {
 
             ".balign 4",
             ".byte 0x0f, 0x1f, 0x05",
+            // RSEQ abort signature, matches glibc/linux rseq convention.
             ".long 0x53053053",
             "3:",
             "mov qword ptr [{cs_ptr}], 0",
@@ -128,8 +127,7 @@ impl RseqCoreTrait for RseqCore {
             tmp = out(reg) _,
             list = in(reg) list_ptr,
             header = in(reg) header,
-            res = out(reg) res,
-            usage = in(reg) usage_ptr,
+            res = lateout(reg) res,
             cpu_id_start = in(reg) cpu_id_start,
             cpu_id = in(reg) cpu_id,
             options(nostack),
@@ -139,16 +137,10 @@ impl RseqCoreTrait for RseqCore {
     }
 
     #[inline(always)]
-    unsafe fn pop(
-        &self,
-        list_ptr: *mut *mut Header,
-        usage_ptr: *mut usize,
-        rseq: &rseq,
-        cpu_id: usize,
-    ) -> *mut Header {
+    unsafe fn pop(&self, list_ptr: *mut *mut Header, rseq: &rseq, cpu_id: usize) -> *mut Header {
         let res: *mut Header;
         let cs = get_cs_ptr(rseq);
-        let cpu_id_start = core::ptr::addr_of!(rseq.cpu_id_start);
+        let cpu_id_start = addr_of!(rseq.cpu_id_start);
 
         asm!(
             ".pushsection .data.rel.ro,\"aw\",@progbits",
@@ -160,14 +152,12 @@ impl RseqCoreTrait for RseqCore {
             ".quad 3f",
             ".popsection",
 
-            "test {list}, {list}",
-            "jz 7f",
-
             "lea {tmp}, [rip + 4b]",
             "mov [{cs_ptr}], {tmp}",
 
             "1:",
-            "cmp dword ptr [{cpu_id_start}], {cpu_id:e}",
+            // Test cpu_id_start against cpu_id before entering critical section.
+            "cmp [{cpu_id_start}], {cpu_id:e}",
             "jne 3f",
 
             "mov {tmp}, [{list}]",
@@ -175,7 +165,12 @@ impl RseqCoreTrait for RseqCore {
             "jz 6f",
 
             "mov {next}, [{tmp}]",
-            "dec qword ptr [{usage}]",
+            // register to register test, test and jz should be fused into single uop.
+            "test {next}, {next}",
+            "jz 7f",
+            // prefetcht0 next caller likely touches the next header/cacheline soon.
+            "prefetcht0 [{next}]",
+            "7:",
             "mov [{list}], {next}",
 
             "2:",
@@ -185,15 +180,13 @@ impl RseqCoreTrait for RseqCore {
 
             "6:",
             "mov qword ptr [{cs_ptr}], 0",
-            "mov {res}, 0",
-            "jmp 5f",
-
-            "7:",
-            "mov {res}, 0",
+            // xor reg, reg: zero-idiom; smaller and breaks dependency chain.
+            "xor {res}, {res}",
             "jmp 5f",
 
             ".balign 4",
             ".byte 0x0f, 0x1f, 0x05",
+            // RSEQ abort signature, matches glibc/linux rseq convention.
             ".long 0x53053053",
             "3:",
             "mov qword ptr [{cs_ptr}], 0",
@@ -204,8 +197,7 @@ impl RseqCoreTrait for RseqCore {
             cs_ptr = in(reg) cs,
             tmp = out(reg) _,
             list = in(reg) list_ptr,
-            res = out(reg) res,
-            usage = in(reg) usage_ptr,
+            res = lateout(reg) res,
             next = out(reg) _,
             cpu_id_start = in(reg) cpu_id_start,
             cpu_id = in(reg) cpu_id,

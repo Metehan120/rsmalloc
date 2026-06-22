@@ -1,5 +1,4 @@
 use std::{
-    hint::unlikely,
     ops::{Deref, DerefMut},
     ptr::null_mut,
 };
@@ -57,11 +56,6 @@ unsafe impl<T> Send for SafePointer<T> {}
 
 impl<T> SafePointer<T> {
     #[inline(always)]
-    pub const fn new_unchecked(ptr: *mut T) -> Self {
-        Self(ptr as *mut T)
-    }
-
-    #[inline(always)]
     pub const fn get_actual_header(&self) -> Self {
         Self(unsafe { self.0.sub(1) })
     }
@@ -71,10 +65,11 @@ impl<T> SafePointer<T> {
         Self(unsafe { self.0.add(1) })
     }
 
-    #[inline(always)]
-    pub const fn cast<Y>(&self) -> SafePointer<Y> {
-        SafePointer(self.0 as _)
-    }
+    /*#[inline(always)]
+       pub const fn cast<Y>(&self) -> SafePointer<Y> {
+           SafePointer(self.0 as _)
+       }
+    */
 
     #[inline(always)]
     pub const fn cast_as_ptr<Y>(&self) -> *mut Y {
@@ -95,8 +90,6 @@ impl<T> SafePointer<T> {
     pub fn cast_usize(&self) -> usize {
         self.0 as usize
     }
-
-    pub const NULL: Self = Self(null_mut());
 }
 
 impl<T> Deref for SafePointer<T> {
@@ -114,17 +107,6 @@ impl<T> DerefMut for SafePointer<T> {
 
 impl_conversions!(SafePointer);
 
-pub enum UnsafePointerInner<'a, T> {
-    Null,
-    NonNull(&'a mut T),
-}
-
-impl<'a, T> UnsafePointerInner<'a, T> {
-    pub const fn is_null(&self) -> bool {
-        matches!(self, UnsafePointerInner::Null)
-    }
-}
-
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy)]
 #[must_use]
@@ -137,19 +119,6 @@ impl<T> UnsafePointer<T> {
     #[inline(always)]
     pub const fn new(ptr: *mut T) -> Self {
         Self(ptr as *mut T)
-    }
-
-    #[inline(always)]
-    pub const fn deref(&self) -> UnsafePointerInner<'_, T> {
-        if unlikely(self.is_null()) {
-            return UnsafePointerInner::Null;
-        }
-        UnsafePointerInner::NonNull(unsafe { &mut *self.0 })
-    }
-
-    #[inline(always)]
-    pub const fn deref_unchecked(&self) -> &'_ mut T {
-        unsafe { &mut *self.0 }
     }
 
     #[inline(always)]

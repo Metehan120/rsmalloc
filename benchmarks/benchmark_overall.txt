@@ -1,0 +1,131 @@
+# Results can change in your benchmarks, they are state dependent.
+
+# test    alloc   time  rss    user  sys  page-faults page-reclaims
+
+# And due to RSEQ as a core, single thread will be be slower than multi-thread.
+rsmalloc 0.1.0-alpha:
+# Ah yes some of them RSEQ-premium tax test results my favorite tax
+
+cfrac       sys   03.13 3856 3.11 0.00 0 681
+espresso    sys   02.98 5320 2.96 0.00 0 1018
+barnes      sys   01.76 58552 1.73 0.02 0 16772
+redis       sys   2.879 10964 0.09 0.03 0 2161
+
+# These tests are worst-case architectural scenarios, does not mean actual performance can be ignored or will be fixed in future I dunno
+leanN       sys   08.14 256668 18.87 0.39 0 61616
+larsonN-sized sys   4.084 69616 58.73 0.11 0 16906
+
+mstressN    sys   01.04 262872 7.56 0.30 0 66132
+rptestN     sys   .819 55592 1.65 0.27 0 13670
+gs          sys   00.22 37932 0.20 0.01 0 5357
+
+# 1.08-1.11s
+lua         sys   01.09 101540 5.82 0.67 1 180574
+
+alloc-test1 sys   02.47 16276 2.46 0.00 0 3388
+alloc-testN sys   03.31 18536 38.43 0.02 0 4069
+
+# Architectural worst case benchmark
+# Thread refill (not thread fast path, TLS refill paths for VA handling):
+sh6benchN   sys   00.51 367296 2.46 0.46 0 91797
+# CPU refill, too much refill locks:
+sh6benchN   sys   02.20 366856 20.03 0.17 0 91724
+
+# RSEQ-worst case test, expected to be slow
+sh8benchN   sys   01.38 137952 14.85 0.10 0 34518
+
+# Cross-CPU ownership test
+xmalloc-testN sys   0.881 16776 57.16 0.58 0 4162
+
+cache-scratch1 sys   00.86 4428 0.86 0.00 0 418
+cache-scratchN sys   00.15 4356 1.78 0.00 0 458
+
+# Perfect scheduler
+glibc-simple sys   01.59 2612 1.58 0.00 0 468
+# Noisy scheduler
+glibc-simple sys   02.30 2548 2.29 0.00 0 548
+
+glibc-thread sys   1.249 8220 23.76 0.04 0 2007
+
+# one thread test, normal to be slower
+rocksdb     sys   03.55 102208 3.12 0.72 0 22015
+# another possible result:
+rocksdb     sys   03.57 99544 3.12 0.75 0 21403
+
+# I mean most of the runs looking like this
+tcmalloc 4.6.5:
+cfrac       sys   02.91 9000 2.89 0.00 0 2493
+espresso    sys   02.89 9952 2.87 0.01 0 2652
+barnes      sys   01.78 64152 1.75 0.02 0 18677
+redis       sys   2.899 14164 0.10 0.03 0 3341
+leanN       sys   07.67 205248 17.66 0.35 0 49544
+larsonN-sized sys   3.003 77988 58.72 0.16 0 19874
+mstressN    sys   00.96 198012 7.16 0.27 0 51315
+rptestN     sys   .942 58672 2.10 0.23 0 15081
+gs          sys   00.23 43400 0.21 0.01 0 7459
+lua         sys   01.15 100896 5.96 0.95 3 279806
+alloc-test1 sys   02.20 16776 2.19 0.00 0 4461
+alloc-testN sys   02.83 18944 32.28 0.01 0 5097
+sh6benchN   sys   00.21 219132 1.90 0.14 0 55161
+sh8benchN   sys   03.33 128180 22.04 15.30 0 32466
+xmalloc-testN sys   12.920 43504 19.89 28.60 0 11242
+cache-scratch1 sys   00.88 8436 0.87 0.00 0 2283
+cache-scratchN sys   00.15 8352 1.80 0.00 0 2304
+glibc-simple sys   01.64 8444 1.63 0.00 0 2373
+glibc-thread sys   1.074 11052 23.89 0.00 0 3132
+rocksdb     sys   03.50 101656 3.00 0.80 0 22550
+
+mimalloc 3.3.2:
+cfrac       sys   02.89 6720 2.88 0.00 1 241
+espresso    sys   02.91 10872 2.89 0.01 0 621
+barnes      sys   01.68 68344 1.67 0.00 0 284
+redis       sys   2.800 23020 0.08 0.04 0 317
+leanN       sys   07.03 334172 16.35 0.32 0 9375
+larsonN-sized sys   3.403 111132 58.72 0.22 0 12067
+mstressN    sys   00.96 391532 7.18 0.50 0 972
+
+# Normal case:
+rptestN     sys   .877 86512 1.46 0.55 0 10346
+# Perfect case (I have 0 idea how mimalloc achieved this):
+rptestN     sys   .747 80616 1.38 0.46 0 15104
+
+gs          sys   00.22 55936 0.20 0.01 0 2191
+
+# Normal case:
+lua         sys   01.12 120936 5.99 0.88 0 114581
+# Rare case:
+lua         sys   01.10 121184 6.01 0.83 0 114629
+
+alloc-test1 sys   02.19 16628 2.18 0.00 0 331
+alloc-testN sys   02.66 49724 31.18 0.11 0 425
+sh6benchN   sys   00.19 221452 1.71 0.47 0 888
+sh8benchN   sys   00.47 252164 4.46 0.44 0 644
+xmalloc-testN sys   0.249 67744 56.34 0.45 0 12061
+cache-scratch1 sys   00.87 8280 0.87 0.00 0 308
+cache-scratchN sys   00.15 8392 1.80 0.00 0 330
+glibc-simple sys   01.34 6420 1.33 0.00 0 242
+glibc-thread sys   .981 37092 23.69 0.14 0 382
+rocksdb     sys   03.37 152796 2.94 0.72 0 3634
+
+# Will be tested more in the future
+jemalloc 5.3.0:
+cfrac       sys   02.97 3788 2.95 0.00 0 574
+espresso    sys   03.01 4240 2.98 0.02 0 667
+barnes      sys   01.77 59404 1.74 0.02 0 16806
+redis       sys   3.399 8936 0.12 0.03 0 1440
+leanN       sys   07.51 232444 16.97 0.40 0 65118
+larsonN-sized sys   3.429 106272 58.34 0.40 0 86730
+mstressN    sys   01.22 189464 3.70 4.54 0 1306908
+rptestN     sys   .921 55028 2.10 0.32 0 28547
+gs          sys   00.23 40936 0.21 0.01 0 6018
+lua         sys   01.11 91552 6.00 0.65 0 188740
+alloc-test1 sys   02.34 13216 2.32 0.00 0 2659
+alloc-testN sys   03.03 16500 35.45 0.01 0 3662
+sh6benchN   sys   00.28 222284 2.80 0.14 0 57208
+sh8benchN   sys   00.79 168812 8.19 0.10 0 43316
+xmalloc-testN sys   3.712 89036 57.43 0.81 0 42583
+cache-scratch1 sys   00.87 4896 0.87 0.00 0 429
+cache-scratchN sys   00.16 4760 1.75 0.00 0 456
+glibc-simple sys   01.98 3356 1.97 0.00 0 490
+glibc-thread sys   1.051 7168 23.77 0.00 0 1655
+rocksdb     sys   03.50 97180 3.07 0.73 0 27467

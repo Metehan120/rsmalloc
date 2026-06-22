@@ -1,7 +1,10 @@
-use std::{arch::asm, hint::unlikely};
+use std::arch::asm;
+#[cfg(feature = "legacy-glibc-support")]
+use std::hint::unlikely;
 
+#[cfg(feature = "legacy-glibc-support")]
 use crate::{
-    IS_RSEQ_INTERNAL,
+    IS_RSEQ_INTERNAL, RSMallocError,
     core_prim::rseq_register::{RSMALLOC_RSEQ, register_rseq_raw},
 };
 
@@ -17,6 +20,9 @@ pub struct rseq {
 }
 
 unsafe extern "C" {
+    // Weak libc rseq symbols are declared as pointers so a missing symbol
+    // resolves to null. When present, the pointer references the actual
+    // libc storage for the offset/size value.
     #[linkage = "weak"]
     pub static __rseq_offset: *const isize;
     #[linkage = "weak"]
@@ -25,9 +31,17 @@ unsafe extern "C" {
 
 #[inline(always)]
 pub unsafe fn get_rseq() -> &'static rseq {
+    #[cfg(feature = "legacy-glibc-support")]
     if IS_RSEQ_INTERNAL {
         if unlikely(RSMALLOC_RSEQ.cpu_id == u32::MAX) {
-            register_rseq_raw();
+            let ret = register_rseq_raw();
+            if unlikely(ret != 0 || RSMALLOC_RSEQ.cpu_id == u32::MAX) {
+                RSMallocError::RSEQRegFailed.log_and_abort(
+                    core::ptr::null_mut(),
+                    "thread-local RSEQ registration failed",
+                    None,
+                );
+            }
         }
         return &RSMALLOC_RSEQ;
     }

@@ -5,9 +5,9 @@ use std::{
 };
 
 use crate::{
-    ALIGN_TAG, BIG_MAGIC, FREED_MAGIC, GenericCache, Header, MAGIC, OFFSET_SIZE, RSMallocError,
-    TAG_SIZE, big_allocations::big_allocation::big_free, core_prim::wrappers::UnsafePointer,
-    inner::fallback::free_fallback, internals::l3_main_radix::L3_RADIX,
+    ALIGN_TAG, BIG_MAGIC, FREED_MAGIC, GenericCache, Header, MAGIC, MAGIC_DISABLE, OFFSET_SIZE,
+    RSMallocError, TAG_SIZE, big_allocations::big_allocation::big_free,
+    core_prim::wrappers::UnsafePointer, internals::l3_main_radix::L3_RADIX,
     rseq_core::rseq_cache::RSEQ_CACHE,
 };
 
@@ -26,23 +26,40 @@ pub unsafe fn find_original_ptr(ptr: UnsafePointer<Header>) -> UnsafePointer<Hea
 
 #[inline(always)]
 pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
+    if unlikely(ptr.is_null()) {
+        return;
+    }
+
     if unlikely(!L3_RADIX.is_owned(ptr.cast_usize())) {
-        if unlikely(ptr.is_null()) {
-            return;
+        #[cfg(feature = "preload")]
+        crate::inner::fallback::free_fallback(ptr.cast_as_ptr() as *mut c_void);
+
+        #[cfg(not(feature = "preload"))]
+        {
+            use crate::FOREIGN_POINTER_ABORT;
+
+            if FOREIGN_POINTER_ABORT {
+                crate::RSMallocError::ForeignPointer.log_and_abort(
+                    ptr.as_ptr() as *mut c_void,
+                    "Foreign pointer",
+                    None,
+                );
+            }
         }
 
-        free_fallback(ptr.cast_as_ptr() as *mut c_void);
         return;
     }
 
     let searched = find_original_ptr(ptr);
     let mut header = searched.cast::<Header>().get_actual_header().apply_safe();
 
+    #[cfg(feature = "canary")]
+    header.canary_mismatch(header.cast_as_ptr());
+
     if likely(header.magic == MAGIC) {
         header.magic = FREED_MAGIC;
 
-        let class = header.class as usize;
-        RSEQ_CACHE.push(class, header.as_ptr());
+        RSEQ_CACHE.push(header.class as usize, header.as_ptr());
         return;
     }
 
@@ -51,9 +68,15 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
         return;
     }
 
-    if header.magic == FREED_MAGIC {
-        RSMallocError::DoubleFree.log_and_abort(*header.cast(), "Magic mismatch", None)
-    }
+    if !MAGIC_DISABLE {
+        if header.magic == FREED_MAGIC {
+            RSMallocError::DoubleFree.log_and_abort(header.cast_as_ptr(), "Magic mismatch", None)
+        }
 
-    RSMallocError::AttackOrCorruption.log_and_abort(*header.cast(), "Magic mismatch", None)
+        RSMallocError::AttackOrCorruption.log_and_abort(
+            header.cast_as_ptr(),
+            "Magic mismatch",
+            None,
+        )
+    }
 }

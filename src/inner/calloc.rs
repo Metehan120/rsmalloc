@@ -1,14 +1,12 @@
 use std::{alloc::Layout, os::raw::c_void};
 
+#[cfg(feature = "preload")]
 use rustix::io::Errno;
 
 use crate::{
     Header, RSMallocError,
     core_prim::wrappers::UnsafePointer,
-    inner::{
-        libc_int::{__errno_location, NOMEM},
-        malloc::rs_alloc,
-    },
+    inner::alloc::rs_alloc,
     internals::hashmap::BIG_ALLOC_MAP,
     utility::{SIZE_CLASSES, match_size_class},
 };
@@ -19,13 +17,16 @@ unsafe fn calc_and_get(size: Layout, nmem: usize) -> Option<(UnsafePointer<Heade
     let total_size = match nmem.checked_mul(size) {
         Some(s) => s,
         None => {
-            *__errno_location() = Errno::NOMEM.raw_os_error();
+            #[cfg(feature = "preload")]
+            {
+                *crate::inner::libc_int::__errno_location() = Errno::NOMEM.raw_os_error();
+            }
             return None;
         }
     };
 
     let effective_size = if total_size == 0 { 1 } else { total_size };
-    let ptr = rs_alloc(effective_size);
+    let ptr = rs_alloc(effective_size, false);
     if ptr.is_null() {
         return None;
     }
@@ -37,7 +38,10 @@ pub unsafe fn rs_calloc(size: usize, zero_size: usize) -> UnsafePointer<Header> 
     let layout = match Layout::array::<u8>(size) {
         Ok(layout) => layout,
         Err(_) => {
-            *__errno_location() = NOMEM;
+            #[cfg(feature = "preload")]
+            {
+                *crate::inner::libc_int::__errno_location() = Errno::NOMEM.raw_os_error();
+            }
             return UnsafePointer::NULL;
         }
     };

@@ -4,7 +4,7 @@
 3. Add ABA Tags for MailCache - Done
 4. Rewrite entire RSEQ path in Assembly - Planned after Trim
 5. Find other way than HashMap for big allocations, maybe RB-Trees
-6. Change L3 Radix with dynamic radix tree if possible
-7. Add trimming logic and thread
-8. Add GlobalAlloc support
+6. Change L3 Radix with dynamic radix tree if possible - Done for alpha
+7. Add small-allocation/background trimming thread; requested-size buddy trim is done
+8. Add GlobalAlloc support - Done
 9. Audit entire allocator

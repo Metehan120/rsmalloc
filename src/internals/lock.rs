@@ -3,9 +3,14 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+#[cfg(feature = "debug-exact")]
+use crate::{GLOBAL_LOCK_RETRIES, GLOBAL_LOCKS};
+
+#[repr(transparent)]
 pub struct LockGuard(*const AtomicBool);
 
 impl Drop for LockGuard {
+    #[inline(always)]
     fn drop(&mut self) {
         unsafe {
             (*self.0).store(false, Ordering::Release);
@@ -28,17 +33,21 @@ impl SerialLock {
 
     #[inline(always)]
     pub fn lock(&self) -> LockGuard {
+        #[cfg(feature = "debug-exact")]
+        GLOBAL_LOCKS.fetch_add(1, Ordering::Relaxed);
+
         // Acquire the lock
         while self
             .state
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
+            #[cfg(feature = "debug-exact")]
+            GLOBAL_LOCK_RETRIES.fetch_add(1, Ordering::Relaxed);
             spin_loop();
         }
 
-        let guard = LockGuard(&self.state as *const AtomicBool);
-        guard
+        LockGuard(&self.state as *const AtomicBool)
     }
 
     #[inline(always)]
@@ -51,14 +60,5 @@ impl SerialLock {
     #[inline(always)]
     pub fn get_lock(&self) -> bool {
         self.state.load(Ordering::Relaxed)
-    }
-
-    #[inline(always)]
-    pub fn unlock(&self) {
-        self.state.store(false, Ordering::Release);
-    }
-
-    pub fn reset_on_fork(&self) {
-        self.unlock();
     }
 }

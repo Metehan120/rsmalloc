@@ -14,6 +14,7 @@ pub static mut RSMALLOC_RSEQ: rseq = rseq {
 
 const RSEQ_SIGNATURE: u32 = 0x53053053;
 
+#[inline(never)]
 pub unsafe fn register_rseq_raw() -> isize {
     let rseq_ptr = &raw mut RSMALLOC_RSEQ;
     let rseq_len = size_of::<rseq>() as usize;
@@ -31,9 +32,10 @@ pub unsafe fn register_rseq_raw() -> isize {
         in("rdx") flags,
         in("r10") sig,
         lateout("rax") ret,
-        options(nostack, preserves_flags)
+        lateout("rcx") _,
+        lateout("r11") _,
+        options(nostack),
     );
-
     #[cfg(target_arch = "aarch64")]
     asm!(
         "svc #0",

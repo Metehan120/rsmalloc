@@ -12,6 +12,7 @@ unsafe impl<T> Send for OnceLock<T> {}
 
 // Use Spinlock-based OnceLock implementation for better Fork Safety
 impl<T> OnceLock<T> {
+    #[inline(always)]
     pub const fn new() -> Self {
         Self {
             init: Once::new(),
@@ -19,6 +20,7 @@ impl<T> OnceLock<T> {
         }
     }
 
+    #[inline(always)]
     pub fn get_or_init<F>(&self, f: F) -> &T
     where
         F: FnOnce() -> T,
@@ -33,14 +35,11 @@ impl<T> OnceLock<T> {
         unsafe { &*(*self.value.get()).as_ptr() }
     }
 
+    #[cfg(feature = "preload")]
     pub fn get(&self) -> Option<&T> {
         if unlikely(self.init.get_state() != 2) {
             return None;
         }
         unsafe { Some(&*(*self.value.get()).as_ptr()) }
-    }
-
-    pub fn reset_on_fork(&self) {
-        self.init.reset_at_fork();
     }
 }

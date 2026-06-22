@@ -25,10 +25,13 @@ pub unsafe fn estimate_and_align_2mb(size: usize) -> usize {
     }
 }
 
+#[cold]
 #[inline(never)]
-pub unsafe fn big_malloc(size: usize) -> UnsafePointer<Header> {
-    let aligned_total = estimate_and_align_2mb(size + Header::SIZE);
-
+pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
+    let Some(requested_total) = size.checked_add(Header::SIZE) else {
+        return UnsafePointer::NULL;
+    };
+    let aligned_total = estimate_and_align_2mb(requested_total);
     let mut registered = false;
     let mut mapped_total = aligned_total;
     let mut actual_ptr: *mut u8 = null_mut();
@@ -44,20 +47,19 @@ pub unsafe fn big_malloc(size: usize) -> UnsafePointer<Header> {
     }
 
     if actual_ptr.is_null() {
-        match mmap_anonymous(
+        if let Ok(pointer) = mmap_anonymous(
             null_mut(),
             mapped_total,
             ProtFlags::READ | ProtFlags::WRITE,
             MapFlags::PRIVATE,
         ) {
-            Ok(ptr) => {
-                actual_ptr = ptr as *mut u8;
-            }
-            Err(_) => return UnsafePointer::NULL,
+            actual_ptr = pointer as *mut u8;
+        } else {
+            return UnsafePointer::NULL;
         }
     }
 
-    if !registered && mapped_total % (1024 * 1024 * 2) == 0 && !RS_DISABLE_THP {
+    if !registered && mapped_total.is_multiple_of(TWO_MB) && !RS_DISABLE_THP {
         let _ = madvise(
             actual_ptr as *mut c_void,
             mapped_total,
@@ -72,14 +74,20 @@ pub unsafe fn big_malloc(size: usize) -> UnsafePointer<Header> {
             class: 100,
             magic: BIG_MAGIC,
             life_time: 0,
-            _padding: 0,
+            canary: 0,
         },
     );
 
+    let header = actual_ptr as *mut Header;
+    (*header).compute_canary(header);
+
     let payload_ptr = actual_ptr.add(Header::SIZE);
 
-    if !registered {
+    if registered {
+    } else if !registered && !aligned {
         L3_RADIX.set_single_big(actual_ptr as usize, true)
+    } else {
+        L3_RADIX.set_range(actual_ptr as usize, mapped_total, true)
     };
 
     BIG_MAP.insert(
@@ -88,6 +96,7 @@ pub unsafe fn big_malloc(size: usize) -> UnsafePointer<Header> {
             next: null_mut(),
             size,
             order: mapped_total.next_power_of_two().trailing_zeros() as usize,
+            aligned,
         },
     );
 
@@ -113,6 +122,11 @@ pub unsafe fn big_free(ptr: usize) {
         }
     }
 
-    L3_RADIX.set_single_big(mapping_base as usize, false);
+    if header.aligned {
+        L3_RADIX.set_range(mapping_base as usize, payload_size, false);
+    } else {
+        L3_RADIX.set_single_big(mapping_base as usize, false);
+    }
+
     let _ = munmap(mapping_base as *mut c_void, payload_size);
 }

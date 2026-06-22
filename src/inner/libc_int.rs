@@ -10,7 +10,6 @@ unsafe extern "C" {
         parent: Option<unsafe extern "C" fn()>,
         child: Option<unsafe extern "C" fn()>,
     ) -> c_int;
-    pub fn get_nprocs_conf() -> i32;
 }
 
 pub const NOMEM: i32 = Errno::NOMEM.raw_os_error();

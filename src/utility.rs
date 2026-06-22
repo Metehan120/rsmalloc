@@ -1,6 +1,6 @@
-use std::hint::{likely, unlikely};
+use std::hint::unlikely;
 
-use crate::internals::oncelock::OnceLock;
+use crate::Header;
 
 pub const SIZE_CLASSES: [usize; 34] = [
     // Tiny (16-128) - 16 Byte steps
@@ -11,27 +11,49 @@ pub const SIZE_CLASSES: [usize; 34] = [
     32768, 65536, 131072, 262144, 524288, 1048576, 2097152,
 ];
 
-pub const ITERATIONS: [usize; 34] = [
-    // TINY (Targets ~32KB / 8 Pages)
-    // 16B  -> Block 80B  -> 32768 / 80  = 409 (48B Waste)
-    // 32B  -> Block 96B  -> 32768 / 96  = 341 (32B Waste)
-    409, 341, 292, 255, 227, 153, 170,
-    // --- SMALL (Targets ~8KB / 2 Pages)
-    // 160B -> Block 224B -> 8192 / 224 = 36 (128B Waste)
-    36, 31, 25, 21, 18, 14,
-    // MEDIUM (Targets ~8KB or ~4KB)
-    // 768B -> Block 832B -> 8192 / 832 = 9 (704B Waste)
-    // We drop to N=1 quickly for sizes > 2KB to prevent VIRT bloat
-    9, 7, 6, 2, 4, 3, 1, 2,
-    // LARGE (Targets 1 Block)
-    // For sizes > 3KB, we want Malloc/Free to be 1:1 with mmap/munmap logic
-    // via bulk_fill to allow immediate reclamation by gtrim and ptrim
-    1, 1, 1, 1, 1, 1,
-    // --- VERY LARGE ---
-    //
-    // Always 1. Let the OS handle the pages.
-    1, 1, 1, 1, 1, 1, 1,
-];
+pub const NUM_SIZE_CLASSES: usize = SIZE_CLASSES.len();
+
+const REFILL_TINY_BYTES: usize = 32 * 1024;
+const REFILL_SMALL_BYTES: usize = 16 * 1024;
+const REFILL_MEDIUM_BYTES: usize = 16 * 1024;
+const REFILL_LARGE_BYTES: usize = 16 * 1024;
+
+#[inline(always)]
+const fn refill_target_bytes(payload: usize) -> usize {
+    if payload <= 128 {
+        REFILL_TINY_BYTES
+    } else if payload <= 512 {
+        REFILL_SMALL_BYTES
+    } else if payload <= 1536 {
+        REFILL_MEDIUM_BYTES
+    } else {
+        let byte = REFILL_LARGE_BYTES;
+        if byte == 0 { 1 } else { byte }
+    }
+}
+
+const fn refill_iterations_for_payload(payload: usize) -> usize {
+    let target = refill_target_bytes(payload);
+    if target == 0 {
+        return 1;
+    }
+
+    let block_size = align_to(payload + Header::SIZE, 16);
+    let blocks = target / block_size;
+    if blocks == 0 { 1 } else { blocks }
+}
+
+pub const ITERATIONS: [usize; NUM_SIZE_CLASSES] = {
+    let mut arr = [1; NUM_SIZE_CLASSES];
+    let mut i = 0;
+
+    while i < NUM_SIZE_CLASSES {
+        arr[i] = refill_iterations_for_payload(SIZE_CLASSES[i]);
+        i += 1;
+    }
+
+    arr
+};
 
 pub const SIZE_LUT: [u8; 256] = {
     let mut lut = [0u8; 256];
@@ -39,7 +61,7 @@ pub const SIZE_LUT: [u8; 256] = {
     while i < 256 {
         let size = (i + 1) * 16;
         let mut class = 0;
-        while class < 34 && SIZE_CLASSES[class] < size {
+        while class < NUM_SIZE_CLASSES && SIZE_CLASSES[class] < size {
             class += 1;
         }
         lut[i] = class as u8;
@@ -47,13 +69,6 @@ pub const SIZE_LUT: [u8; 256] = {
     }
     lut
 };
-
-pub const NUM_SIZE_CLASSES: usize = SIZE_CLASSES.len();
-static CLASS_4096: OnceLock<usize> = OnceLock::new();
-
-pub fn get_size_4096_class() -> usize {
-    *CLASS_4096.get_or_init(|| SIZE_CLASSES.iter().position(|&s| s >= 4096).unwrap())
-}
 
 #[must_use]
 #[inline(always)]
@@ -71,7 +86,7 @@ pub const RSEQ_MAX_BLOCKS: [usize; NUM_SIZE_CLASSES] = {
 
     while i < NUM_SIZE_CLASSES {
         let payload = SIZE_CLASSES[i];
-        let block_size = align_to(payload + 16, 16);
+        let block_size = align_to(payload + Header::SIZE, 16);
         let mut blocks = if block_size > RSEQ_SMALL_CLASS_BYTES {
             1
         } else {
@@ -97,7 +112,7 @@ pub const RSEQ_MAX_BLOCKS: [usize; NUM_SIZE_CLASSES] = {
 
 #[inline(always)]
 pub fn match_size_class(size: usize) -> Option<usize> {
-    if likely(size <= 4096 && size > 0) {
+    if size <= 4096 && size > 0 {
         let index = (size - 1) >> 4;
         return Some(unsafe { *SIZE_LUT.get_unchecked(index) as usize });
     }

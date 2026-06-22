@@ -8,16 +8,16 @@ use std::{os::raw::c_void, ptr::copy_nonoverlapping};
 use rustix::mm::{MremapFlags, mremap};
 
 use crate::{
-    BIG_MAGIC, BigAllocMeta, Header,
+    BIG_MAGIC, BigAllocMeta, Header, MetaData,
     big_allocations::{
         big_allocation::{big_free, big_malloc, estimate_and_align_2mb},
         buddy::{BIG_BUDDY_ALLOCATOR, BIG_BUDDY_MAX_ORDER},
     },
     core_prim::wrappers::{SafePointer, UnsafePointer},
     inner::{
-        fallback::realloc_fallback,
+        align::memalign_inner,
+        alloc::{rs_alloc, usable_size},
         free::{find_original_ptr, rs_free},
-        malloc::{rs_alloc, usable_size},
     },
     internals::{hashmap::BIG_ALLOC_MAP, l3_main_radix::L3_RADIX},
     utility::{SIZE_CLASSES, align_to, match_size_class},
@@ -38,7 +38,7 @@ unsafe fn small_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePoin
     let new_class = match match_size_class(new_size) {
         Some(class) => class,
         None => {
-            let new = big_malloc(new_size);
+            let new = big_malloc(new_size, false);
             if new.is_null() {
                 return UnsafePointer::NULL;
             }
@@ -58,34 +58,38 @@ unsafe fn small_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePoin
         return payload_ptr.apply_unsafe();
     }
 
-    if old_payload_size > 1024 * 128
-        && SIZE_CLASSES[new_class] > 1024 * 128
-        && (header_ptr.cast_usize() & 4095) == 0
-    {
-        let old_total = align_to(old_payload_size + Header::SIZE, 4096);
-        let new_total = align_to(SIZE_CLASSES[new_class] + Header::SIZE, 4096);
+    if old_payload_size >= 1024 * 256 && SIZE_CLASSES[new_class] >= 1024 * 256 {
+        let metadata_size = size_of::<MetaData>();
+        let mapping_base = header_ptr.cast_usize() - metadata_size;
 
-        if let Ok(new_addr) = mremap(
-            header_ptr.cast_as_ptr() as *mut c_void,
-            old_total,
-            new_total,
-            MremapFlags::MAYMOVE,
-        ) {
-            let new_addr_usize = new_addr as usize;
+        if (mapping_base & 4095) == 0 {
+            let old_total = align_to(metadata_size + old_payload_size + Header::SIZE, 4096);
+            let new_total = align_to(metadata_size + SIZE_CLASSES[new_class] + Header::SIZE, 4096);
 
-            if new_addr_usize != header_ptr.cast_usize() {
-                L3_RADIX.set_range(header_ptr.cast_usize(), old_total, false);
+            let map = mremap(
+                mapping_base as *mut c_void,
+                old_total,
+                new_total,
+                MremapFlags::empty(),
+            );
+
+            if map.is_ok() {
+                L3_RADIX.set_range(mapping_base, new_total, true);
+
+                let mut new_header_ptr = header_ptr;
+                new_header_ptr.class = new_class as u8;
+
+                #[cfg(feature = "canary")]
+                {
+                    let new_header_addr = new_header_ptr.as_ptr();
+                    new_header_ptr.compute_canary(new_header_addr);
+                }
+
+                return new_header_ptr.walk_header().apply_unsafe();
             }
-
-            L3_RADIX.set_range(new_addr_usize, new_total, true);
-
-            let mut new_header_ptr = UnsafePointer::new(new_addr as *mut Header).apply_safe();
-            new_header_ptr.class = new_class as u8;
-            return new_header_ptr.walk_header().apply_unsafe();
         }
     }
-
-    let new_ptr = rs_alloc(new_size);
+    let new_ptr = rs_alloc(new_size, false);
     if new_ptr.is_null() {
         return UnsafePointer::NULL;
     }
@@ -108,13 +112,19 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
         None => return UnsafePointer::NULL,
     };
 
-    let old_mapped_size = 1usize << old_meta.order;
     if new_size <= old_meta.size {
         return ptr.apply_unsafe();
     }
+    let is_in_buddy = BIG_BUDDY_ALLOCATOR.is_in_pool(old_ptr);
+
+    let old_mapped_size = if is_in_buddy {
+        1usize << old_meta.order
+    } else {
+        estimate_and_align_2mb(old_meta.size + Header::SIZE)
+    };
 
     if match_size_class(new_size).is_some() {
-        let new_alloc = rs_alloc(new_size);
+        let new_alloc = rs_alloc(new_size, false);
         if new_alloc.is_null() {
             return UnsafePointer::NULL;
         }
@@ -130,32 +140,28 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
     }
 
     let old_total = old_mapped_size;
-    let aligned_new = estimate_and_align_2mb(new_size + Header::SIZE);
+    let Some(new_total) = new_size.checked_add(Header::SIZE) else {
+        return UnsafePointer::NULL;
+    };
+    let aligned_new = estimate_and_align_2mb(new_total);
 
-    if !BIG_BUDDY_ALLOCATOR.is_in_pool(old_ptr) {
-        if let Ok(new_addr) = mremap(old_mapping, old_total, aligned_new, MremapFlags::MAYMOVE) {
-            let new_mapping = new_addr as usize;
-            let new_key = new_mapping + Header::SIZE;
+    if !is_in_buddy {
+        if let Ok(new_addr) = mremap(old_mapping, old_total, aligned_new, MremapFlags::empty()) {
             let new_meta = BigAllocMeta {
                 next: std::ptr::null_mut(),
                 size: new_size,
                 order: aligned_new.next_power_of_two().trailing_zeros() as usize,
+                aligned: false,
             };
 
-            if new_key == old_ptr {
-                let _ = BIG_ALLOC_MAP.replace(old_ptr, new_meta);
-            } else {
-                let _ = BIG_ALLOC_MAP.remove(old_ptr);
-                BIG_ALLOC_MAP.insert(new_key, new_meta);
-                L3_RADIX.set_range(old_mapping as usize, old_total, false);
-            }
+            #[cfg(feature = "canary")]
+            (*(new_addr as *mut Header)).compute_canary(new_addr as *mut Header);
 
-            L3_RADIX.set_range(new_mapping, aligned_new, true);
-
+            let _ = BIG_ALLOC_MAP.replace(old_ptr, new_meta);
             return UnsafePointer::new(new_addr as *mut Header).walk_header();
         }
     } else {
-        let mut current_addr = old_ptr;
+        let mut current_addr = old_mapping as usize;
         let mut current_order = old_meta.order;
 
         let mut tries = 0;
@@ -170,21 +176,32 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
                 current_addr = new_addr;
                 current_order = new_order;
 
+                let _ = BIG_ALLOC_MAP.replace(
+                    old_ptr,
+                    BigAllocMeta {
+                        next: std::ptr::null_mut(),
+                        size: old_meta.size,
+                        order: current_order,
+                        aligned: old_meta.aligned,
+                    },
+                );
+
                 let new_mapped_size = 1usize << new_order;
                 if new_mapped_size >= aligned_new {
                     let new_meta = BigAllocMeta {
                         next: std::ptr::null_mut(),
                         size: new_size,
-                        order: new_order,
+                        order: current_order,
+                        aligned: old_meta.aligned,
                     };
                     let _ = BIG_ALLOC_MAP.replace(old_ptr, new_meta);
 
                     return UnsafePointer::new(current_addr as *mut Header).walk_header();
                 } else {
-                    tries += 1;
-                    if tries > 15 {
+                    if tries > 3 {
                         break;
                     }
+                    tries += 1;
                 }
             } else {
                 break;
@@ -192,7 +209,7 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
         }
     }
 
-    let new_alloc = big_malloc(new_size);
+    let new_alloc = big_malloc(new_size, false);
     if new_alloc.is_null() {
         return UnsafePointer::NULL;
     }
@@ -208,9 +225,14 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
 }
 
 #[inline(always)]
+fn observed_alignment(addr: usize) -> usize {
+    1usize << addr.trailing_zeros()
+}
+
+#[inline(always)]
 pub unsafe fn rs_realloc(ptr: UnsafePointer<Header>, new_size: usize) -> UnsafePointer<Header> {
     if ptr.is_null() {
-        return rs_alloc(new_size.max(1)).cast();
+        return rs_alloc(new_size.max(1), false).cast();
     }
 
     if new_size == 0 {
@@ -232,7 +254,7 @@ pub unsafe fn rs_realloc(ptr: UnsafePointer<Header>, new_size: usize) -> UnsafeP
                 return ptr;
             }
 
-            let new_ptr = rs_alloc(new_size);
+            let new_ptr = memalign_inner(observed_alignment(ptr_addr), new_size);
             if new_ptr.is_null() {
                 return UnsafePointer::NULL;
             }
@@ -251,6 +273,9 @@ pub unsafe fn rs_realloc(ptr: UnsafePointer<Header>, new_size: usize) -> UnsafeP
         let searched_safe = searched.apply_safe();
         let searched_header = searched_safe.get_actual_header();
 
+        #[cfg(feature = "canary")]
+        searched_header.canary_mismatch(searched_header.as_ptr());
+
         if searched_header.magic == BIG_MAGIC {
             return big_realloc(searched_safe, new_size);
         }
@@ -258,11 +283,33 @@ pub unsafe fn rs_realloc(ptr: UnsafePointer<Header>, new_size: usize) -> UnsafeP
         return small_realloc(searched_safe, new_size);
     }
 
-    UnsafePointer::new(realloc_fallback(ptr.cast_as_ptr() as *mut c_void, new_size) as *mut Header)
+    #[cfg(feature = "preload")]
+    {
+        UnsafePointer::new(crate::inner::fallback::realloc_fallback(
+            ptr.cast_as_ptr() as *mut c_void,
+            new_size,
+        ) as *mut Header)
+    }
+
+    #[cfg(not(feature = "preload"))]
+    {
+        use crate::FOREIGN_POINTER_ABORT;
+        use std::os::raw::c_void;
+
+        if FOREIGN_POINTER_ABORT {
+            crate::RSMallocError::ForeignPointer.log_and_abort(
+                ptr.as_ptr() as *mut c_void,
+                "Foreign pointer",
+                None,
+            );
+        }
+
+        UnsafePointer::NULL
+    }
 }
 
 // Tests generated by AI: CODEX
-
+#[cfg(feature = "preload")]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,7 +346,7 @@ mod tests {
     #[test]
     fn realloc_zero_frees_and_returns_null() {
         unsafe {
-            let p = rs_alloc(128);
+            let p = rs_alloc(128, false);
             assert!(!p.is_null());
 
             let out = rs_realloc(p, 0);
@@ -318,7 +365,7 @@ mod tests {
             let new_size = 2048usize;
             let seed = 0x5Au8;
 
-            let p = rs_alloc(old_size);
+            let p = rs_alloc(old_size, false);
             assert!(!p.is_null());
             fill_pattern(&p, old_size, seed);
 
@@ -337,7 +384,7 @@ mod tests {
             let new_size = 96usize;
             let seed = 0x33u8;
 
-            let p = rs_alloc(old_size);
+            let p = rs_alloc(old_size, false);
             assert!(!p.is_null());
             fill_pattern(&p, new_size, seed);
 
@@ -356,7 +403,7 @@ mod tests {
             let new_size = 79usize;
             let seed = 0xA7u8;
 
-            let p = rs_alloc(old_size);
+            let p = rs_alloc(old_size, false);
             assert!(!p.is_null());
             fill_pattern(&p, old_size, seed);
 
@@ -375,7 +422,7 @@ mod tests {
             let huge_size = usize::MAX / 2;
             let seed = 0x11u8;
 
-            let p = rs_alloc(old_size);
+            let p = rs_alloc(old_size, false);
             assert!(!p.is_null());
             fill_pattern(&p, old_size, seed);
 
@@ -403,6 +450,7 @@ mod tests {
 
             let p2 = rs_realloc(p, new_size);
             assert!(!p2.is_null());
+            assert_eq!(p2.cast_usize() % 64, 0);
             assert_pattern(&p2, old_size, seed);
 
             rs_free(p2);
@@ -423,6 +471,7 @@ mod tests {
 
             let p2 = rs_realloc(p, new_size);
             assert!(!p2.is_null());
+            assert_eq!(p2.cast_usize() % 128, 0);
             assert_pattern(&p2, new_size, seed);
 
             rs_free(p2);

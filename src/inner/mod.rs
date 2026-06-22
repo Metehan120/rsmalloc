@@ -1,7 +1,9 @@
 pub mod align;
+pub mod alloc;
 pub mod calloc;
+#[cfg(feature = "preload")]
 pub mod fallback;
 pub mod free;
+#[cfg(feature = "preload")]
 pub mod libc_int;
-pub mod malloc;
 pub mod realloc;

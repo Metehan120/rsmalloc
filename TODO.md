@@ -7,4 +7,5 @@
 6. Change L3 Radix with dynamic radix tree if possible - Done for alpha
 7. Add small-allocation/background trimming thread; requested-size buddy trim is done
 8. Add GlobalAlloc support - Done
-9. Audit entire allocator
+9. Add NUMA-aware allocation paths
+10. Audit entire allocator

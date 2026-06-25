@@ -1,7 +1,7 @@
 use std::{
     arch::x86_64::{_MM_HINT_T0, _mm_prefetch},
     cell::UnsafeCell,
-    hint::{likely, unlikely},
+    hint::{likely, spin_loop, unlikely},
     ptr::{addr_of, null_mut, read_volatile},
     sync::atomic::{
         AtomicUsize,
@@ -377,6 +377,8 @@ impl RseqCache {
             {
                 return;
             }
+
+            spin_loop();
         }
     }
 
@@ -402,6 +404,8 @@ impl RseqCache {
             {
                 return;
             }
+
+            spin_loop();
         }
     }
 
@@ -429,6 +433,8 @@ impl RseqCache {
             {
                 return UnsafePointer::new(head);
             }
+
+            spin_loop();
         }
     }
 
@@ -475,6 +481,8 @@ impl RseqCache {
                 (*tail).next = null_mut();
                 return Some((head, tail, count));
             }
+
+            spin_loop();
         }
     }
 

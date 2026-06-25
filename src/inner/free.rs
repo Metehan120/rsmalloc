@@ -11,6 +11,7 @@ use crate::{
     rseq_core::rseq_cache::RSEQ_CACHE,
 };
 
+#[inline(always)]
 pub unsafe fn find_original_ptr(ptr: UnsafePointer<Header>) -> UnsafePointer<Header> {
     let mut header_search_ptr = ptr;
     let tag_loc = (header_search_ptr.cast_usize()).wrapping_sub(TAG_SIZE) as *const usize;
@@ -30,7 +31,7 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
         return;
     }
 
-    if unlikely(!L3_RADIX.is_owned(ptr.cast_usize())) {
+    if !L3_RADIX.is_owned(ptr.cast_usize()) {
         #[cfg(feature = "preload")]
         crate::inner::fallback::free_fallback(ptr.cast_as_ptr() as *mut c_void);
 

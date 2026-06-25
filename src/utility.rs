@@ -1,5 +1,3 @@
-use std::hint::unlikely;
-
 use crate::Header;
 
 pub const SIZE_CLASSES: [usize; 34] = [
@@ -117,7 +115,7 @@ pub fn match_size_class(size: usize) -> Option<usize> {
         return Some(unsafe { *SIZE_LUT.get_unchecked(index) as usize });
     }
 
-    if unlikely(size == 0 || size > 2097152) {
+    if size == 0 || size > 2097152 {
         return None;
     }
 

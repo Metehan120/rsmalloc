@@ -47,13 +47,7 @@ impl Once {
     }
 
     #[cfg(feature = "preload")]
-    pub fn reset_at_fork(&self) {
-        let _ = self
-            .state
-            .compare_exchange(1, 0, Ordering::AcqRel, Ordering::Relaxed);
+    pub fn reset_at_fork_oncelock(&self) {
+        self.state.store(0, Ordering::Relaxed);
     }
-
-    /*pub fn get_state(&self) -> u8 {
-        self.state.load(Ordering::Relaxed)
-    } */
 }

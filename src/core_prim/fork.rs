@@ -9,6 +9,7 @@ use crate::rseq_core::rseq_main::__rseq_offset;
 use crate::{
     RSMallocError,
     inner::{fallback::fallback_reinit_on_fork, libc_int::pthread_atfork},
+    internals::l3_main_radix::L3_RADIX,
     rseq_core::rseq_main::__rseq_size,
 };
 
@@ -35,7 +36,9 @@ unsafe extern "C" fn fork_child() {
     if let Some(guard) = ATFORK_GUARD.take() {
         drop(guard);
     }
+
     fallback_reinit_on_fork();
+    L3_RADIX.lock.reset_at_fork();
 
     #[cfg(feature = "legacy-glibc-support")]
     if __rseq_offset.is_null() || __rseq_size.is_null() {

@@ -22,16 +22,6 @@ static ONCE: crate::internals::once::Once = crate::internals::once::Once::new();
 
 pub static mut MAX_REFILL_RETRIES: usize = 3;
 
-#[inline(always)]
-unsafe fn refill_batch(class: usize) -> usize {
-    PREDICTOR[class].batch(ITERATIONS[class])
-}
-
-#[inline(always)]
-unsafe fn bulk_fill_batch(class: usize) -> usize {
-    BULK_FILL_PREDICTOR[class].batch(ITERATIONS[class])
-}
-
 #[cfg(all(not(feature = "debug-predictor-exact"), feature = "debug"))]
 #[inline(always)]
 unsafe fn record_refill_prediction(
@@ -123,12 +113,24 @@ unsafe fn take_one_from_batch(
     UnsafePointer::new(first)
 }
 
+macro_rules! refill {
+    ($class:expr) => {
+        PREDICTOR[$class].batch(ITERATIONS[$class])
+    };
+}
+
+macro_rules! bulk_refill {
+    ($class:expr) => {
+        BULK_FILL_PREDICTOR[$class].batch(ITERATIONS[$class])
+    };
+}
+
 #[unsafe(link_section = ".text.hot")]
 #[cold]
 #[inline(never)]
 pub unsafe fn refill(class: usize, cpu_id: usize) -> UnsafePointer<Header> {
     for _ in 0..MAX_REFILL_RETRIES {
-        let bulk_batch = bulk_fill_batch(class);
+        let bulk_batch = bulk_refill!(class);
         match bulk_fill(class, cpu_id, bulk_batch) {
             Ok((start, tail, count)) => {
                 let observed = if count == bulk_batch && bulk_batch < ITERATIONS[class] {
@@ -163,7 +165,7 @@ pub unsafe fn refill(class: usize, cpu_id: usize) -> UnsafePointer<Header> {
 #[unsafe(link_section = ".text.hot")]
 #[inline(never)]
 pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
-    let cache_batch = refill_batch(class);
+    let cache_batch = refill!(class);
     let cpu_id = get_rseq().cpu_id as usize;
 
     #[cfg(feature = "debug")]

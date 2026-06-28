@@ -1,12 +1,15 @@
-// Readers use acquire loads while writers mutate under SerialLock and publish
-// new radix nodes/bitmap updates with release stores/RMWs. A reader racing with
-// a writer may observe either the old or new state; the allocator only requires
-// eventual visibility, not a perfectly up-to-date view of the radix.
+// Readers use acquire loads while writers publish new radix nodes with CAS and
+// update bitmap words with release RMWs. A reader racing with a writer may
+// observe either the old or new state; the allocator only requires eventual
+// visibility, not a perfectly up-to-date view of the radix.
 
-use crate::{RSMallocError, core_prim::wrappers::UnsafePointer, internals::lock::SerialLock};
-use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
+#[cfg(feature = "preload")]
+use crate::internals::lock::SerialLock;
+use crate::{RSMallocError, core_prim::wrappers::UnsafePointer};
+use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous, munmap};
 use std::{
     hint::unlikely,
+    os::raw::c_void,
     ptr::null_mut,
     sync::atomic::{
         AtomicU64, AtomicUsize,
@@ -53,6 +56,11 @@ impl Radix {
     }
 
     #[inline(always)]
+    unsafe fn unmap_memory(ptr: *mut u8, size: usize) {
+        let _ = munmap(ptr as *mut c_void, size);
+    }
+
+    #[inline(always)]
     unsafe fn alloc_l3_bitmap_leaf() -> *mut AtomicU64 {
         Self::map_memory(L3_BITMAP_WORDS * size_of::<AtomicU64>()) as *mut AtomicU64
     }
@@ -81,12 +89,18 @@ impl Radix {
     ) -> *mut AtomicUsize {
         let entry = ptr.add(idx);
         let val = (*entry).load(Acquire) as *mut AtomicUsize;
-        if val.is_null() {
-            let new = Self::map_memory(level_size * size_of::<AtomicUsize>()) as *mut AtomicUsize;
-            (*entry).store(new as usize, Release);
-            new
-        } else {
-            val
+        if !val.is_null() {
+            return val;
+        }
+
+        let size = level_size * size_of::<AtomicUsize>();
+        let new = Self::map_memory(size) as *mut AtomicUsize;
+        match (*entry).compare_exchange(0, new as usize, Release, Acquire) {
+            Ok(_) => new,
+            Err(existing) => {
+                Self::unmap_memory(new as *mut u8, size);
+                existing as *mut AtomicUsize
+            }
         }
     }
 
@@ -94,12 +108,18 @@ impl Radix {
     unsafe fn get_or_alloc_l3(l2: *mut AtomicUsize, idx: usize) -> *mut AtomicU64 {
         let entry = l2.add(idx);
         let val = (*entry).load(Acquire) as *mut AtomicU64;
-        if val.is_null() {
-            let new = Self::alloc_l3_bitmap_leaf();
-            (*entry).store(new as usize, Release);
-            new
-        } else {
-            val
+        if !val.is_null() {
+            return val;
+        }
+
+        let size = L3_BITMAP_WORDS * size_of::<AtomicU64>();
+        let new = Self::alloc_l3_bitmap_leaf();
+        match (*entry).compare_exchange(0, new as usize, Release, Acquire) {
+            Ok(_) => new,
+            Err(existing) => {
+                Self::unmap_memory(new as *mut u8, size);
+                existing as *mut AtomicU64
+            }
         }
     }
 
@@ -155,7 +175,8 @@ impl Radix {
 
 pub struct RadixTree {
     pub nodes: Radix,
-    lock: SerialLock,
+    #[cfg(feature = "preload")]
+    pub lock: SerialLock,
 }
 
 unsafe impl Sync for RadixTree {}
@@ -166,6 +187,7 @@ impl RadixTree {
             nodes: Radix {
                 l0: UnsafePointer::new(null_mut()),
             },
+            #[cfg(feature = "preload")]
             lock: SerialLock::new(),
         }
     }
@@ -173,6 +195,7 @@ impl RadixTree {
     pub unsafe fn new() -> Self {
         Self {
             nodes: Radix::new(),
+            #[cfg(feature = "preload")]
             lock: SerialLock::new(),
         }
     }
@@ -182,8 +205,6 @@ impl RadixTree {
         if unlikely(!Self::valid_user_addr(addr)) {
             return;
         }
-        let _guard = self.lock.lock();
-
         self.nodes.set(addr / CHUNK_SIZE, val);
     }
 
@@ -201,7 +222,6 @@ impl RadixTree {
             return;
         }
 
-        let _guard = self.lock.lock();
         let start_idx = addr / CHUNK_SIZE;
         let end_idx = end_addr / CHUNK_SIZE;
 

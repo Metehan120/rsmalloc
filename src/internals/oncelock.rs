@@ -1,4 +1,4 @@
-use std::{cell::UnsafeCell, hint::unlikely, mem::MaybeUninit};
+use std::{cell::UnsafeCell, mem::MaybeUninit};
 
 use crate::internals::once::Once;
 
@@ -35,11 +35,7 @@ impl<T> OnceLock<T> {
         unsafe { &*(*self.value.get()).as_ptr() }
     }
 
-    #[cfg(feature = "preload")]
-    pub fn get(&self) -> Option<&T> {
-        if unlikely(self.init.get_state() != 2) {
-            return None;
-        }
-        unsafe { Some(&*(*self.value.get()).as_ptr()) }
+    pub unsafe fn reset_at_fork(&self) {
+        self.init.reset_at_fork_oncelock();
     }
 }

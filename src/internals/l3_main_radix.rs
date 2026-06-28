@@ -3,8 +3,6 @@
 // observe either the old or new state; the allocator only requires eventual
 // visibility, not a perfectly up-to-date view of the radix.
 
-#[cfg(feature = "preload")]
-use crate::internals::lock::SerialLock;
 use crate::{RSMallocError, core_prim::wrappers::UnsafePointer};
 use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous, munmap};
 use std::{
@@ -175,8 +173,6 @@ impl Radix {
 
 pub struct RadixTree {
     pub nodes: Radix,
-    #[cfg(feature = "preload")]
-    pub lock: SerialLock,
 }
 
 unsafe impl Sync for RadixTree {}
@@ -187,16 +183,12 @@ impl RadixTree {
             nodes: Radix {
                 l0: UnsafePointer::new(null_mut()),
             },
-            #[cfg(feature = "preload")]
-            lock: SerialLock::new(),
         }
     }
 
     pub unsafe fn new() -> Self {
         Self {
             nodes: Radix::new(),
-            #[cfg(feature = "preload")]
-            lock: SerialLock::new(),
         }
     }
 

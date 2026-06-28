@@ -61,10 +61,4 @@ impl SerialLock {
     pub fn get_lock(&self) -> bool {
         self.state.load(Ordering::Relaxed)
     }
-
-    #[cfg(feature = "preload")]
-    #[inline(always)]
-    pub fn reset_at_fork(&self) {
-        self.state.store(false, Ordering::Relaxed);
-    }
 }

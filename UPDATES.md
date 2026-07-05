@@ -2,8 +2,8 @@
 
 ## v0.1.1-alpha
 
-- Fixed a security vulnerability in aligned pointer recovery that could trust unvalidated recovered pointers from aligned allocation metadata.
-- 
+- Hardened aligned pointer recovery: corrupted or forged aligned-allocation metadata that resolves to a non-rsmalloc-owned pointer now triggers a fatal corruption abort instead of being trusted.
+
 ## v0.1.0-alpha
 
 ### Release layout

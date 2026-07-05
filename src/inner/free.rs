@@ -11,6 +11,7 @@ use crate::{
     rseq_core::rseq_cache::RSEQ_CACHE,
 };
 
+#[inline(always)]
 pub unsafe fn find_original_ptr(ptr: UnsafePointer<Header>) -> UnsafePointer<Header> {
     let mut header_search_ptr = ptr;
     let tag_loc = (header_search_ptr.cast_usize()).wrapping_sub(TAG_SIZE) as *const usize;
@@ -18,6 +19,15 @@ pub unsafe fn find_original_ptr(ptr: UnsafePointer<Header>) -> UnsafePointer<Hea
     if read_unaligned(tag_loc) == ALIGN_TAG {
         let raw_loc = (header_search_ptr.cast_usize()).wrapping_sub(OFFSET_SIZE) as *const usize;
         let presumed_original_ptr = read_unaligned(raw_loc) as *mut c_void;
+
+        if !L3_RADIX.is_owned(presumed_original_ptr as usize) {
+            RSMallocError::AttackOrCorruption.log_and_abort(
+                header_search_ptr.as_ptr() as *mut c_void,
+                "CRITICAL: possible aligned-path metadata injection: recovered pointer is not owned by rsmalloc",
+                None,
+            );
+        }
+
         header_search_ptr = UnsafePointer::new(presumed_original_ptr as *mut Header);
     }
 

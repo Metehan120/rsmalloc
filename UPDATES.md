@@ -1,5 +1,9 @@
 # Updates
 
+## v0.1.1-alpha
+
+- Fixed a security vulnerability in aligned pointer recovery that could trust unvalidated recovered pointers from aligned allocation metadata.
+- 
 ## v0.1.0-alpha
 
 ### Release layout

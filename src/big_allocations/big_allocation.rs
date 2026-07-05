@@ -1,15 +1,18 @@
 use std::{
     os::raw::c_void,
     ptr::{null_mut, write},
+    sync::atomic::Ordering::Relaxed,
 };
 
 use rustix::mm::{Advice, MapFlags, ProtFlags, madvise, mmap_anonymous, munmap};
 
 use crate::{
-    BIG_MAGIC, BUDDY_INIT, BigAllocMeta, Header, RS_DISABLE_THP, RSMallocError,
-    big_allocations::buddy::BIG_BUDDY_ALLOCATOR,
+    ALLOCATED_FLAG, BIG_MAGIC, BUDDY_INIT, BigAllocMeta, Header, RS_DISABLE_THP, RSMallocError,
+    TRIMMED_FLAG, ZERO_FLAG,
+    big_allocations::buddy::{BIG_BUDDY_ALLOCATOR, BUDDY_TRIM_NOT_ALLOCATED, BUDDY_TRIM_TRIMMED},
     core_prim::wrappers::UnsafePointer,
     internals::{hashmap::BIG_MAP, l3_main_radix::L3_RADIX},
+    trim::DISABLE_BUDDY,
     utility::align_to,
 };
 
@@ -35,14 +38,21 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
     let mut registered = false;
     let mut mapped_total = aligned_total;
     let mut actual_ptr: *mut u8 = null_mut();
+    let mut flag = 100;
 
-    if size <= 1024 * 1024 * 64 && BUDDY_INIT {
+    if size <= 1024 * 1024 * 64 && BUDDY_INIT && !DISABLE_BUDDY.load(Relaxed) {
         let buddy = BIG_BUDDY_ALLOCATOR.alloc(aligned_total);
 
-        if let Some((addr, order)) = buddy {
+        if let Some((addr, order, trim_state)) = buddy {
             actual_ptr = addr as *mut u8;
             registered = true;
             mapped_total = 1 << order;
+
+            flag = match trim_state {
+                BUDDY_TRIM_NOT_ALLOCATED => ZERO_FLAG,
+                BUDDY_TRIM_TRIMMED => TRIMMED_FLAG,
+                _ => ALLOCATED_FLAG,
+            };
         }
     }
 
@@ -53,6 +63,7 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
             ProtFlags::READ | ProtFlags::WRITE,
             MapFlags::PRIVATE,
         ) {
+            flag = ZERO_FLAG;
             actual_ptr = pointer as *mut u8;
         } else {
             return UnsafePointer::NULL;
@@ -74,12 +85,9 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
             class: 100,
             magic: BIG_MAGIC,
             life_time: 0,
-            canary: 0,
+            flags: flag,
         },
     );
-
-    let header = actual_ptr as *mut Header;
-    (*header).compute_canary(header);
 
     let payload_ptr = actual_ptr.add(Header::SIZE);
 

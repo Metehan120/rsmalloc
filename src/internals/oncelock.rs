@@ -35,6 +35,7 @@ impl<T> OnceLock<T> {
         unsafe { &*(*self.value.get()).as_ptr() }
     }
 
+    #[cfg(feature = "preload")]
     pub unsafe fn reset_at_fork(&self) {
         self.init.reset_at_fork_oncelock();
     }

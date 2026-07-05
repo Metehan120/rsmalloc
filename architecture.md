@@ -88,7 +88,6 @@ Bootstrap initializes:
 5. `BIG_BUDDY_ALLOCATOR`, when configured.
 6. Fork handlers for preload/fallback state.
 7. Randomized magic values and aligned-allocation tag, unless randomization is explicitly disabled.
-8. Optional canary seed when `canary` is enabled.
 
 In non-preload Rust mode, this is driven through `RSMalloc::init()` from `global_alloc.rs`. In preload mode, C ABI entry points bootstrap on first use.
 
@@ -202,7 +201,7 @@ There are two independent thread-local, per-size-class predictors:
 - `PREDICTOR`: predicts how many blocks allocation code should try to pull from cache/mail/victim sources before returning one block to the caller and pushing the rest locally.
 - `BULK_FILL_PREDICTOR`: predicts how many blocks a fresh or pending bulk-fill slab should initialize at once.
 
-They are separate because the two costs are different. Pulling already-initialized blocks mostly changes cache pressure and local freelist depth; initializing from bulk metadata touches fresh memory, writes headers, computes canaries when enabled, and may expose more mapped pages to the working set.
+They are separate because the two costs are different. Pulling already-initialized blocks mostly changes cache pressure and local freelist depth; initializing from bulk metadata touches fresh memory, writes headers, and may expose more mapped pages to the working set.
 
 Current predictor state is intentionally small:
 
@@ -380,6 +379,55 @@ The radix implementation is a lazy multi-level bitmap tree covering the low cano
 
 The radix implementation uses acquire/release atomics for reader/writer synchronization. Writers mutate under `SerialLock` and publish new radix nodes or bitmap updates with release operations; readers use acquire loads and may observe either the old or new ownership state during a race. The allocator only requires eventual visibility here, not a perfectly up-to-date ownership snapshot.
 
+## Trim
+
+Trimming is best-effort and uses `madvise` to return physical page pressure to the kernel while keeping allocator virtual mappings and cache structure intact.
+
+There are two trim sources:
+
+- explicit trim through `malloc_trim(...)` in preload mode or `RSMalloc::rs_trim(...)` in Rust mode,
+- the optional background trim worker.
+
+Both paths share a global non-blocking trim lock. If another trim pass is already active, the new trim attempt returns without waiting. This avoids overlapping manual trim, background trim, small-cache trim, and buddy trim passes.
+
+### Small-allocation trim
+
+Small-allocation trim scans the RSEQ mail caches for size classes equal to or greater than `4096` bytes. Smaller classes are intentionally left to normal reuse because they do not have enough page-aligned interior payload to make page advice useful.
+
+For each CPU and eligible size class:
+
+1. The class mail list is detached under that mail list's trim lock.
+2. Detached blocks are inspected outside the mail lock.
+3. Blocks older than the current average lifetime and marked trim-eligible are passed to `release_memory(...)`.
+4. Blocks are pushed back into the target mail cache in small batches.
+
+`release_memory(...)` only advises the page-aligned interior of a block:
+
+```text
+[ header ][ unaligned payload prefix ][ page-aligned trim range ][ unaligned suffix ]
+```
+
+This means small trim avoids corrupting allocator metadata or partial user-cache-line fragments. Successful trim clears the block's trim eligibility until it is reused/freed again. The trim pass also updates an average lifetime estimate so background trim adapts to observed cache age.
+
+### Buddy trim
+
+Buddy trim scans free buddy blocks. Each free block tracks:
+
+- lifetime stamp,
+- trim state: never allocated, allocated/reused, or trimmed.
+
+Manual buddy trim can force trimming up to a requested byte target. Background buddy trim only trims blocks older than the buddy average lifetime. Buddy trim holds the region trim lock and region free-list lock while walking free lists so allocation, free, coalescing, and page advice do not race over the same region state.
+
+Buddy trim advises all but the first page of each free block. The first page remains resident because it stores the free-list node metadata. Trim accounting and trim-state updates are only applied when `madvise` succeeds.
+
+### Lazy vs eager page trim
+
+Without `lazy-page-trim`, trim uses `MADV_DONTNEED`-style advice (`Advice::LinuxDontNeed`), so advised pages fault back as zero-filled memory.
+
+With `lazy-page-trim`, trim uses lazy free advice (`Advice::LinuxFree`). Lazy-free pages may retain old contents until the kernel reclaims them, so calloc paths must still zero memory that came from lazy-trimmed blocks.
+
+Allocation headers carry zero/reuse/trim state flags so `calloc` can skip zeroing only when the allocator can prove the returned payload is already zeroed.
+
 ## Public Modes
 
 ### Preload Mode
@@ -419,13 +467,14 @@ Important architecture-affecting features:
 | `preload` | Builds C ABI / preload support. |
 | `rseq-thread-failure-fallback` | Enables the default overflow-slot recovery path for invalid/unregistered RSEQ CPU IDs. |
 | `legacy-glibc-support` | Enables raw RSEQ fallback when libc RSEQ symbols are unavailable. |
-| `canary` | Enables header canary checks. |
-| `extended-header` | Uses wider metadata and implies `canary`. |
+| `extended-header` | Uses wider metadata. |
 | `debug` | Enables low-overhead stats/debug counters. |
 | `debug-exact` | Adds exact global lock counters and debug printing. |
 | `debug-predictor-exact` | Uses higher-overhead exact refill prediction miss accounting. |
 | `cpu-refill-paths` | Uses per-CPU shared pending refill metadata. Experimental. |
 | `disable-thread-pending` | Disables default thread-exit drain of thread-local pending refill metadata. |
+| `compile-time-disable-background-trim` | Removes the background trim worker path at compile time. Manual trim remains available. |
+| `lazy-page-trim` | Uses lazy page-free advice for trim paths instead of eager `MADV_DONTNEED`-style advice. |
 
 ## Known Architectural Tradeoffs
 

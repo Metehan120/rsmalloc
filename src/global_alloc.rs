@@ -22,9 +22,11 @@ use crate::rseq_core::rseq_main::__rseq_offset;
 #[cfg(feature = "legacy-glibc-support")]
 use crate::rseq_core::rseq_main::__rseq_offset;
 use crate::rseq_core::rseq_main::__rseq_size;
+use crate::trim::{BUDDY_DISABLE_PERCENTAGE, BUDDY_ENABLE_PERCENTAGE, DISABLE_RELIEF, trim_small};
 use crate::{
-    ALIGN_TAG, BIG_MAGIC, BUDDY_ATTEMPT_HUGE, BUDDY_MAX_CACHE, FOREIGN_POINTER_ABORT, FREED_MAGIC,
-    Header, MAGIC, MAGIC_DISABLE, RS_DISABLE_THP, RSMallocError,
+    ALIGN_TAG, BIG_MAGIC, BUDDY_ATTEMPT_HUGE, BUDDY_MAX_CACHE, DISABLE_TRIM_THREAD,
+    FOREIGN_POINTER_ABORT, FREED_MAGIC, Header, MAGIC, MAGIC_DISABLE, RS_DISABLE_THP,
+    RSMallocError, TRIM_THRESHOLD,
 };
 
 #[inline(never)]
@@ -87,39 +89,6 @@ unsafe fn init_align() {
     };
 }
 
-#[cfg(feature = "canary")]
-unsafe fn init_canary() {
-    #[cfg(not(feature = "extended-header"))]
-    {
-        let mut main = 0u8.to_le_bytes();
-        match getrandom(&mut main, GetRandomFlags::empty()) {
-            Ok(_) => {
-                crate::RANDOMC_CANARY_CONSTANT = u8::from_le_bytes(main);
-            }
-            Err(err) => RSMallocError::SecurityViolation.log_and_abort(
-                null_mut(),
-                "calling getrandom failed, cannot initialize canary",
-                Some(err.raw_os_error()),
-            ),
-        };
-    }
-
-    #[cfg(feature = "extended-header")]
-    {
-        let mut main = 0u64.to_le_bytes();
-        match getrandom(&mut main, GetRandomFlags::empty()) {
-            Ok(_) => {
-                crate::RANDOMC_CANARY_CONSTANT = u64::from_le_bytes(main);
-            }
-            Err(err) => RSMallocError::SecurityViolation.log_and_abort(
-                null_mut(),
-                "calling getrandom failed, cannot initialize canary",
-                Some(err.raw_os_error()),
-            ),
-        };
-    }
-}
-
 // ------------------
 
 /// Result of querying the usable size of an allocation.
@@ -136,23 +105,11 @@ pub enum Size {
 }
 
 /// Experimental features for the allocator.
-///
-/// Buddy trim is an experimental feature that enables the allocator to trim
-/// buddy allocations when requested.
 #[derive(Clone, Copy, Debug)]
-pub struct ExperimentalFeatures {
-    // Warning: May cause memory fragmentation or leakage.
-    pub buddy_trim: bool,
-}
+pub struct ExperimentalFeatures {}
 
 impl ExperimentalFeatures {
-    pub const DEFAULT: Self = Self { buddy_trim: false };
-
-    // # WARNING: May cause memory fragmentation or leakage.
-    pub const fn with_buddy_trim(mut self) -> Self {
-        self.buddy_trim = true;
-        self
-    }
+    pub const DEFAULT: Self = Self {};
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -359,9 +316,17 @@ impl ForeignPointerSettings {
     };
 }
 
-/// Buddy allocator cache sizing policy.
+/// Buddy allocator region sizing policy.
 ///
-/// Each region getting sized to value given by the user.
+/// This controls the target size of each cached buddy region.
+///
+/// Smaller regions can reduce lock contention by spreading large allocations
+/// across more regions, but may increase memory overhead, stranded space, and
+/// worsen some `realloc` growth cases.
+///
+/// Larger regions can improve packing and make some `realloc` growth cases more
+/// likely to stay within the buddy backend, but may increase lock contention
+/// under concurrent large-allocation workloads.
 #[derive(Clone, Copy, Debug)]
 pub enum PerCacheLimit {
     /// Request an explicit cache size in bytes.
@@ -378,6 +343,103 @@ impl PerCacheLimit {
         match self {
             Self::Bytes(some) => *some,
             Self::Default => 1024 * 1024 * 256,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum TrimThread {
+    Enabled,
+    Disabled,
+}
+
+impl TrimThread {
+    const fn is_disabled(&self) -> bool {
+        matches!(self, Self::Disabled)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Bytes(pub usize);
+
+impl Bytes {
+    pub const DEFAULT: Bytes = Bytes(1024 * 1024 * 10);
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct TrimThreadSettings {
+    pub background_worker: TrimThread,
+    pub threshold: Bytes,
+}
+
+impl TrimThreadSettings {
+    pub const DEFAULT: TrimThreadSettings = TrimThreadSettings {
+        background_worker: TrimThread::Enabled,
+        threshold: Bytes::DEFAULT,
+    };
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ReliefState {
+    Enabled,
+    Disabled,
+}
+
+impl ReliefState {
+    const fn is_disabled(&self) -> bool {
+        matches!(self, Self::Disabled)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Percentage(pub usize);
+
+impl Percentage {
+    pub const fn new(value: usize) -> Self {
+        Self(value)
+    }
+
+    pub const fn get(self) -> usize {
+        self.0
+    }
+}
+
+/// Applies memory-pressure relief policy.
+///
+/// When system-wide memory pressure reaches `BUDDY_DISABLE_PERCENTAGE`, the
+/// buddy backend is disabled and its cached blocks are trimmed. While disabled,
+/// future eligible big allocations bypass the buddy cache and use direct
+/// mapping instead.
+///
+/// The buddy backend is re-enabled only after memory pressure stays at or below
+/// `BUDDY_ENABLE_PERCENTAGE` for `ENABLE_AFTER` consecutive samples.
+///
+/// This path favors avoiding retained-memory OOM behavior over allocation
+/// throughput.
+#[derive(Clone, Copy, Debug)]
+pub struct ReliefSettings {
+    pub state: ReliefState,
+    pub buddy_disable_percentage: Percentage,
+    pub buddy_enable_percentage: Percentage,
+}
+
+impl ReliefSettings {
+    pub const DEFAULT: ReliefSettings = ReliefSettings {
+        state: ReliefState::Disabled,
+        buddy_disable_percentage: Percentage::new(85),
+        buddy_enable_percentage: Percentage::new(80),
+    };
+
+    #[must_use]
+    pub const fn new(
+        state: ReliefState,
+        buddy_disable_percentage: Percentage,
+        buddy_enable_percentage: Percentage,
+    ) -> ReliefSettings {
+        ReliefSettings {
+            state,
+            buddy_disable_percentage,
+            buddy_enable_percentage,
         }
     }
 }
@@ -403,6 +465,8 @@ pub struct RSMallocConfig {
     pub max_refill_retries: u8,
     pub max_per_buddy_cache: PerCacheLimit,
     pub experimental_features: ExperimentalFeatures,
+    pub trim_thread: TrimThreadSettings,
+    pub relief: ReliefSettings,
 }
 
 impl RSMallocConfig {
@@ -416,6 +480,11 @@ impl RSMallocConfig {
         max_refill_retries: 3,
         ema_settings: EMASettings::DEFAULT,
         foreign_pointer: ForeignPointerSettings::DEFAULT,
+        trim_thread: TrimThreadSettings {
+            background_worker: TrimThread::Disabled,
+            threshold: Bytes::DEFAULT,
+        },
+        relief: ReliefSettings::DEFAULT,
         max_per_buddy_cache: PerCacheLimit::Default,
         magic_safety: MagicSafety::MagicRandomization,
         experimental_features: ExperimentalFeatures::DEFAULT,
@@ -427,6 +496,11 @@ impl RSMallocConfig {
             experimental_features: features,
             ..*self
         }
+    }
+
+    #[must_use]
+    pub const fn with_relief_settings(&self, relief: ReliefSettings) -> Self {
+        Self { relief, ..*self }
     }
 
     #[must_use]
@@ -476,9 +550,17 @@ impl RSMallocConfig {
             ..*self
         }
     }
+
+    #[must_use]
+    pub const fn with_trim_thread(&self, thread: TrimThreadSettings) -> Self {
+        Self {
+            trim_thread: thread,
+            ..*self
+        }
+    }
 }
 
-pub static ONCE: Once = Once::new();
+static ONCE: Once = Once::new();
 
 /// rsmalloc Rust global allocator.
 ///
@@ -539,6 +621,17 @@ unsafe fn init(rs: &RSMalloc) {
     RSEQ_CACHE.ensure_cache();
     BIG_BUDDY_ALLOCATOR.init(BUDDY_MAX_CACHE, BUDDY_ATTEMPT_HUGE && !RS_DISABLE_THP);
 
+    DISABLE_TRIM_THREAD = rs.config.trim_thread.background_worker.is_disabled();
+    TRIM_THRESHOLD = rs.config.trim_thread.threshold.0;
+    DISABLE_RELIEF = rs.config.relief.state.is_disabled();
+    BUDDY_DISABLE_PERCENTAGE = rs.config.relief.buddy_disable_percentage.0.min(100);
+    BUDDY_ENABLE_PERCENTAGE = rs
+        .config
+        .relief
+        .buddy_enable_percentage
+        .0
+        .min(BUDDY_DISABLE_PERCENTAGE);
+
     if !rs.config.magic_safety.is_fixed() && !rs.config.magic_safety.is_disabled() {
         init_magic();
         init_align();
@@ -557,9 +650,6 @@ unsafe fn init(rs: &RSMalloc) {
     if rs.config.foreign_pointer.global_alloc.is_abort() {
         FOREIGN_POINTER_ABORT = true;
     }
-
-    #[cfg(feature = "canary")]
-    init_canary();
 }
 
 impl RSMalloc {
@@ -794,25 +884,35 @@ impl RSMalloc {
         rs_free(UnsafePointer::new(ptr as *mut Header));
     }
 
-    /// Advises the kernel that free buddy-allocator pages can be reclaimed.
+    /// Advises the kernel that cold free pages may be reclaimed.
     ///
-    /// `RSMallocTrim::Request(bytes)` is the target number of bytes to trim.
-    /// `RSMallocTrim::All` trims every currently free buddy block. Returns the
-    /// number of bytes passed to `madvise(MADV_DONTNEED)`.
+    /// Trimming is performed in two stages:
+    /// - the buddy allocator trims eligible free large blocks,
+    /// - small-allocation caches are scanned for aged free blocks and their
+    ///   releasable pages are advised back to the kernel.
+    ///
+    /// `RSMallocTrim::Request(bytes)` attempts to reclaim approximately the
+    /// requested number of bytes. `RSMallocTrim::All` scans all eligible free
+    /// memory.
+    ///
+    /// Depending on enabled features, physical pages are released with either
+    /// `MADV_FREE` (default) or `MADV_DONTNEED` (`force-physical-trim`).
+    ///
+    /// Returns the number of bytes successfully advised to the kernel.
     #[inline]
-    pub unsafe fn rs_trim_buddy(&self, trim: RSMallocTrim) -> RSTrimStatus {
-        if !self.config.experimental_features.buddy_trim {
-            return RSTrimStatus::Disabled;
-        }
-
+    pub unsafe fn rs_trim(&self, trim: RSMallocTrim) -> RSTrimStatus {
         self.init();
 
-        let size = BIG_BUDDY_ALLOCATOR.trim(trim.get_request_size());
-        if size == 0 {
-            RSTrimStatus::NothingToTrim
-        } else {
-            RSTrimStatus::Trimmed(size)
+        let requested = trim.get_request_size();
+        let size = BIG_BUDDY_ALLOCATOR.trim(requested);
+        if size < requested && requested != 0 {
+            let small = trim_small(requested.saturating_sub(size));
+            if small > 0 {
+                return RSTrimStatus::Trimmed(size + small);
+            }
         }
+
+        RSTrimStatus::Trimmed(size)
     }
 
     /// Returns the usable payload size for an rsmalloc allocation.

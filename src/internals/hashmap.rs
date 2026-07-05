@@ -152,6 +152,11 @@ impl BigAllocMap {
         None
     }
 
+    #[cfg(feature = "preload")]
+    pub fn reset_lock_on_fork(&self) {
+        self.lock.reset_at_fork();
+    }
+
     pub unsafe fn remove(&self, key: usize) -> Option<BigAllocMeta> {
         let _guard = self.lock.lock();
         let table = self.ptr.load(Ordering::Relaxed);

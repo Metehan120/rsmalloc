@@ -79,12 +79,6 @@ unsafe fn small_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePoin
                 let mut new_header_ptr = header_ptr;
                 new_header_ptr.class = new_class as u8;
 
-                #[cfg(feature = "canary")]
-                {
-                    let new_header_addr = new_header_ptr.as_ptr();
-                    new_header_ptr.compute_canary(new_header_addr);
-                }
-
                 return new_header_ptr.walk_header().apply_unsafe();
             }
         }
@@ -153,9 +147,6 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
                 order: aligned_new.next_power_of_two().trailing_zeros() as usize,
                 aligned: false,
             };
-
-            #[cfg(feature = "canary")]
-            (*(new_addr as *mut Header)).compute_canary(new_addr as *mut Header);
 
             let _ = BIG_ALLOC_MAP.replace(old_ptr, new_meta);
             return UnsafePointer::new(new_addr as *mut Header).walk_header();
@@ -272,9 +263,6 @@ pub unsafe fn rs_realloc(ptr: UnsafePointer<Header>, new_size: usize) -> UnsafeP
 
         let searched_safe = searched.apply_safe();
         let searched_header = searched_safe.get_actual_header();
-
-        #[cfg(feature = "canary")]
-        searched_header.canary_mismatch(searched_header.as_ptr());
 
         if searched_header.magic == BIG_MAGIC {
             return big_realloc(searched_safe, new_size);

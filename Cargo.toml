@@ -2,36 +2,45 @@
 name = "rsmalloc"
 description = "An experimental RSEQ-based general-purpose memory allocator written in Rust"
 license = "MIT"
-version = "0.1.0-alpha-1"
+version = "0.2.0-alpha"
 readme = "README.md"
 repository = "https://github.com/Metehan120/rsmalloc"
 edition = "2024"
 
 [dependencies]
-rustix = { version = "1.1.4", features = ["linux_latest", "mm", "rand"] }
+rustix = { version = "1.1.4", features = [
+    "linux_latest",
+    "mm",
+    "rand",
+    "system",
+] }
 
 [features]
 default = ["rseq-thread-failure-fallback"]
 preload = []
-canary = []
 legacy-glibc-support = []
 debug-print = ["debug"]
 debug = []
 debug-exact = ["debug", "debug-print"]
 debug-predictor-exact = ["debug", "debug-print"]
 predictor-debug = []
-extended-header = ["canary"]
+extended-header = []
 cpu-refill-paths = []
 disable-thread-pending = []
 rseq-thread-failure-fallback = []
+lazy-page-trim = []
 
 [[bench]]
-name = "speed"
+name = "book_speed"
+harness = false
+
+[[bench]]
+name = "rstress"
 harness = false
 
 [dev-dependencies]
 criterion = "0.8.2"
-rand = "0.10.1"
+rand = "0.10.2"
 
 [lib]
 name = "rsmalloc"

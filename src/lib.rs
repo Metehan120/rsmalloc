@@ -42,15 +42,19 @@
 #![feature(linkage)]
 #![allow(binary_asm_labels, unsafe_op_in_unsafe_fn, static_mut_refs)]
 
-#[cfg(feature = "canary")]
-use std::os::raw::c_void;
 use std::{
     fmt::Debug,
     process::abort,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        OnceLock,
+        atomic::{AtomicU32, AtomicUsize, Ordering},
+    },
+    time::Instant,
 };
 
-use crate::{core_prim::wrappers::UnsafePointer, rseq_core::rseq_main::rseq};
+use crate::{
+    core_prim::wrappers::UnsafePointer, internals::lock::SerialLock, rseq_core::rseq_main::rseq,
+};
 
 #[cfg(not(target_arch = "x86_64"))]
 compile_error!(
@@ -81,12 +85,8 @@ pub(crate) static mut MAGIC_DISABLE: bool = false;
 #[cfg(not(feature = "preload"))]
 pub(crate) static mut FOREIGN_POINTER_ABORT: bool = false;
 pub(crate) static mut ALIGN_TAG: usize = usize::from_le_bytes(*b"RSMALIGN");
-#[cfg(not(feature = "extended-header"))]
-pub(crate) static mut RANDOMC_CANARY_CONSTANT: u8 = 0;
-#[cfg(feature = "extended-header")]
-pub(crate) static mut RANDOMC_CANARY_CONSTANT: u64 = 0;
-#[cfg(feature = "preload")]
-pub(crate) static mut ENABLE_TRIM: bool = false;
+pub(crate) static mut DISABLE_TRIM_THREAD: bool = false;
+pub(crate) static mut TRIM_THRESHOLD: usize = 1024 * 1024 * 10;
 
 pub(crate) static TOTAL_CACHED_VA: AtomicUsize = AtomicUsize::new(0);
 
@@ -108,8 +108,26 @@ pub(crate) static GLOBAL_LOCKS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "debug-exact")]
 pub(crate) static GLOBAL_LOCK_RETRIES: AtomicUsize = AtomicUsize::new(0);
 
+pub(crate) static TIME_STAMP: OnceLock<Instant> = OnceLock::new();
+pub(crate) static CURRENT_STAMP: AtomicU32 = AtomicU32::new(0);
+pub(crate) static AVERAGE_BLOCK_TIMES: AtomicU32 = AtomicU32::new(1000);
+pub(crate) static BUDDY_AVERAGE_BLOCK_TIMES: AtomicU32 = AtomicU32::new(1000);
+pub(crate) static GLOBAL_TRIM_LOCK: SerialLock = SerialLock::new();
+
+pub(crate) fn get_clock() -> &'static Instant {
+    TIME_STAMP.get_or_init(|| {
+        let current = Instant::now();
+        CURRENT_STAMP.store(current.elapsed().as_millis() as u32, Ordering::Relaxed);
+        current
+    })
+}
+
 pub(crate) const OFFSET_SIZE: usize = size_of::<usize>();
 pub(crate) const TAG_SIZE: usize = OFFSET_SIZE * 2;
+
+pub(crate) const ZERO_FLAG: u8 = 1;
+pub(crate) const ALLOCATED_FLAG: u8 = 2;
+pub(crate) const TRIMMED_FLAG: u8 = 3;
 
 #[cfg(feature = "preload")]
 pub(crate) mod abi;
@@ -120,20 +138,16 @@ pub(crate) mod global_alloc;
 pub(crate) mod inner;
 pub(crate) mod internals;
 pub(crate) mod rseq_core;
+pub(crate) mod trim;
 pub(crate) mod utility;
-
-#[cfg(not(feature = "preload"))]
-pub use global_alloc::{
-    BuddyTHP, DisableMagic, EMASettings, EmaAlpha, ExperimentalFeatures, ForeignPointerPolicy,
-    ForeignPointerSettings, MagicSafety, MagicSafetyDisable, PerCacheLimit, RSMALLOC_VERSION,
-    RSMalloc, RSMallocCapabilities, RSMallocConfig, RSMallocTrim, RSTrimStatus, Size, THP,
-    THPSettings,
-};
 
 #[cfg(any(all(feature = "debug-exact", not(feature = "preload")), doc))]
 pub use global_alloc::RSMallocExactStats;
 #[cfg(any(all(feature = "debug", not(feature = "preload")), doc))]
 pub use global_alloc::RSMallocStats;
+
+#[cfg(not(feature = "preload"))]
+pub use global_alloc::*;
 
 pub(crate) enum Err {
     OutOfMemory,
@@ -160,7 +174,7 @@ pub(crate) struct BigAllocMeta {
 #[repr(C, align(16))]
 pub(crate) struct Header {
     pub next: *mut Header,
-    pub canary: u8,
+    pub flags: u8,
     pub class: u8,
     pub magic: u16,
     pub life_time: u32,
@@ -172,9 +186,9 @@ pub(crate) struct Header {
 pub(crate) struct Header {
     pub next: *mut Header,
     pub magic: u64,
+    pub flags: u8,
     pub life_time: u32,
     pub class: u8,
-    pub canary: u64,
 }
 
 #[cfg(not(feature = "extended-header"))]
@@ -185,30 +199,6 @@ const _: () = assert!(size_of::<Header>() == 32);
 
 impl Header {
     pub const SIZE: usize = size_of::<Self>();
-
-    #[cfg(not(feature = "extended-header"))]
-    pub fn expected_canary(&self, addr: *mut Header) -> u8 {
-        ((addr as u8 >> 4) ^ self.class as u8 ^ unsafe { RANDOMC_CANARY_CONSTANT }).rotate_left(1)
-    }
-
-    #[cfg(feature = "extended-header")]
-    pub fn expected_canary(&self, addr: *mut Header) -> u64 {
-        ((addr as u64 >> 4) ^ self.class as u64 ^ unsafe { RANDOMC_CANARY_CONSTANT }).rotate_left(1)
-    }
-    pub fn compute_canary(&mut self, addr: *mut Header) {
-        self.canary = self.expected_canary(addr);
-    }
-
-    #[cfg(feature = "canary")]
-    pub fn canary_mismatch(&self, addr: *mut Header) {
-        if self.expected_canary(addr) != self.canary {
-            RSMallocError::CanaryMismatch.log_and_abort(
-                addr as *mut c_void,
-                "canary mismatch, security violation",
-                None,
-            )
-        }
-    }
 }
 
 #[repr(u32)]
@@ -222,8 +212,6 @@ pub(crate) enum RSMallocError {
     RSEQRegFailed = 0x100D,
     #[cfg(not(feature = "preload"))]
     ForeignPointer = 0x100E,
-    #[cfg(feature = "canary")]
-    CanaryMismatch,
 }
 
 impl Debug for RSMallocError {
@@ -238,8 +226,6 @@ impl Debug for RSMallocError {
             Self::RSEQRegFailed => write!(f, "RSEQRegFailed (0x100D)"),
             #[cfg(not(feature = "preload"))]
             Self::ForeignPointer => write!(f, "ForeignPointer (0x100E)"),
-            #[cfg(feature = "canary")]
-            Self::CanaryMismatch => write!(f, "CanaryMismatch"),
         }
     }
 }

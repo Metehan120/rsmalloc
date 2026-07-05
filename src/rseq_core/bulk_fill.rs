@@ -3,6 +3,8 @@
     not(feature = "disable-thread-pending")
 ))]
 use std::cell::UnsafeCell;
+#[cfg(not(feature = "cpu-refill-paths"))]
+use std::sync::atomic::Ordering::Relaxed;
 use std::{
     ptr::{null_mut, write},
     sync::atomic::Ordering,
@@ -25,12 +27,13 @@ use crate::GenericCache;
 use crate::rseq_core::rseq_cache::RSEQ_CACHE;
 
 #[cfg(not(feature = "cpu-refill-paths"))]
-use crate::utility::NUM_SIZE_CLASSES;
+use crate::CURRENT_STAMP;
 use crate::{
     Err, FREED_MAGIC, Header, MetaData, TOTAL_CACHED_VA,
     internals::l3_main_radix::L3_RADIX,
     utility::{ITERATIONS, SIZE_CLASSES, align_to},
 };
+use crate::{ZERO_FLAG, utility::NUM_SIZE_CLASSES};
 
 #[cfg(all(
     not(feature = "cpu-refill-paths"),
@@ -135,11 +138,9 @@ unsafe fn init_blocks(
                 class,
                 magic: FREED_MAGIC,
                 life_time: current_stamp,
-                canary: 0,
+                flags: ZERO_FLAG,
             },
         );
-
-        (*current_header).compute_canary(current_header);
 
         if head.is_null() {
             tail = current_header;
@@ -199,7 +200,7 @@ pub unsafe fn bulk_fill(
 ) -> Result<(*mut Header, *mut Header, usize), Err> {
     let payload_size = SIZE_CLASSES[class];
     let block_size = align_to(payload_size + Header::SIZE, 16);
-    let current_stamp = 0;
+    let current_stamp = CURRENT_STAMP.load(Relaxed);
 
     let global = RSEQ_CACHE.get_bulk_fill(class, cpu_id);
     let _guard = global.lock().lock();
@@ -246,7 +247,7 @@ pub unsafe fn bulk_fill(
     let _ = cpu_id;
     let payload_size = SIZE_CLASSES[class];
     let block_size = align_to(payload_size + Header::SIZE, 16);
-    let current_stamp = 0;
+    let current_stamp = CURRENT_STAMP.load(Relaxed);
 
     let pending = THREAD_BULK.free[class];
     if !pending.is_null() {
@@ -286,7 +287,7 @@ unsafe fn drain_pending(thread: &mut ThreadBulk, class: usize) {
 
     let payload_size = SIZE_CLASSES[class];
     let block_size = align_to(payload_size + Header::SIZE, 16);
-    let current_stamp = 0;
+    let current_stamp = CURRENT_STAMP.load(Relaxed);
     let remaining = remaining_blocks(pending, block_size);
 
     if remaining > 0 {

@@ -1,4 +1,4 @@
-use crate::Header;
+use crate::{Header, internals::oncelock::OnceLock};
 
 pub const SIZE_CLASSES: [usize; 34] = [
     // Tiny (16-128) - 16 Byte steps
@@ -107,6 +107,12 @@ pub const RSEQ_MAX_BLOCKS: [usize; NUM_SIZE_CLASSES] = {
 
     arr
 };
+
+pub static CLASS_4096_OFFSET: OnceLock<usize> = OnceLock::new();
+
+pub fn get_size_4096_class() -> usize {
+    *CLASS_4096_OFFSET.get_or_init(|| SIZE_CLASSES.iter().position(|&s| s >= 4096).unwrap_or(22))
+}
 
 #[inline(always)]
 pub fn match_size_class(size: usize) -> Option<usize> {

@@ -1,6 +1,9 @@
 use std::{
     hint::spin_loop,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{
+        AtomicBool,
+        Ordering::{self},
+    },
 };
 
 #[cfg(feature = "debug-exact")]
@@ -50,6 +53,13 @@ impl SerialLock {
         LockGuard(&self.state as *const AtomicBool)
     }
 
+    pub fn try_lock(&self) -> Option<LockGuard> {
+        self.state
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .ok()
+            .map(|_| LockGuard(&self.state as *const AtomicBool))
+    }
+
     #[inline(always)]
     pub fn spin_until_unlock(&self) {
         while self.get_lock() {
@@ -60,5 +70,11 @@ impl SerialLock {
     #[inline(always)]
     pub fn get_lock(&self) -> bool {
         self.state.load(Ordering::Relaxed)
+    }
+
+    #[cfg(feature = "preload")]
+    #[inline(always)]
+    pub fn reset_at_fork(&self) {
+        self.state.store(false, Ordering::Relaxed);
     }
 }

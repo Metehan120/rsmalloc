@@ -18,8 +18,8 @@ use crate::MetaData;
 use crate::{
     GenericCache, Header, RSMallocError, RseqCoreTrait,
     core_prim::wrappers::UnsafePointer,
-    internals::{lock::SerialLock, once::Once},
-    rseq_core::{rseq_core::RseqCore, rseq_main::get_rseq},
+    internals::once::Once,
+    rseq_core::{rseq_asm::RseqCore, rseq_main::get_rseq},
     utility::{NUM_SIZE_CLASSES, RSEQ_MAX_BLOCKS},
 };
 
@@ -29,8 +29,7 @@ pub struct ClassCache {
 }
 
 pub struct SelfMail {
-    list: AtomicUsize,
-    trim_lock: SerialLock,
+    pub list: AtomicUsize,
 }
 
 #[cfg(feature = "cpu-refill-paths")]
@@ -275,7 +274,7 @@ const TAG_MASK: usize = PTR_ALIGN - 1;
 const PTR_MASK: usize = !TAG_MASK;
 
 #[inline(always)]
-fn pack(ptr: *mut Header, old_word: usize) -> usize {
+pub fn pack(ptr: *mut Header, old_word: usize) -> usize {
     let old_tag = old_word & TAG_MASK;
     let new_tag = old_tag.wrapping_add(1) & TAG_MASK;
 
@@ -283,11 +282,21 @@ fn pack(ptr: *mut Header, old_word: usize) -> usize {
 }
 
 #[inline(always)]
-fn unpack_ptr(word: usize) -> *mut Header {
+pub fn unpack_ptr(word: usize) -> *mut Header {
     (word & PTR_MASK) as *mut Header
 }
 
 impl RseqCache {
+    pub fn get_ncpu(&self) -> usize {
+        unsafe { (*self.inner.get()).ncpu }
+    }
+
+    pub unsafe fn get_list(&self, cpu_id: usize, class: usize) -> &mut SelfMail {
+        let inner = &mut *self.inner.get();
+        let list = &mut (*inner.cache.add(cpu_id)).mail[class];
+        list
+    }
+
     // TODO: add numa-awareness, prefer local node first
     #[cfg(feature = "rseq-thread-failure-fallback")]
     #[inline(never)]
@@ -362,8 +371,6 @@ impl RseqCache {
         let list_ptr = &list.list;
 
         loop {
-            list.trim_lock.spin_until_unlock();
-
             let old = list_ptr.load(Ordering::Relaxed);
             let old_head = unpack_ptr(old);
 
@@ -389,8 +396,6 @@ impl RseqCache {
         let list_ptr = &list.list;
 
         loop {
-            list.trim_lock.spin_until_unlock();
-
             let old = list_ptr.load(Ordering::Relaxed);
             let old_head = unpack_ptr(old);
 
@@ -416,8 +421,6 @@ impl RseqCache {
         let list_ptr = &list.list;
 
         loop {
-            list.trim_lock.spin_until_unlock();
-
             let old = list_ptr.load(Ordering::Acquire);
             let head = unpack_ptr(old);
 
@@ -456,8 +459,6 @@ impl RseqCache {
             if head.is_null() {
                 return None;
             }
-
-            list.trim_lock.spin_until_unlock();
 
             let mut tail = head;
             let mut count = 1usize;
@@ -516,7 +517,7 @@ mod tests {
             class: 0,
             magic: 0,
             life_time: 0,
-            canary: 0,
+            flags: 0,
         }))
     }
 

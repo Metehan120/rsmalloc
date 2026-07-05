@@ -1,5 +1,34 @@
 # Updates
 
+## v0.2.0-alpha
+
+v0.2.0-alpha focuses on memory reclamation and preload robustness. It adds small-allocation trimming, buddy-cache old-block trimming, background trim
+worker support, opt-in memory-pressure relief, lazy page trim support, and several fork/errno/alignment fixes.
+
+- Removed the allocator canary feature and decoupled `extended-header` from canary-specific metadata/checking.
+- Added small-allocation trimming for size classes equal to or greater than 4096 bytes.
+- Added a background trim worker with `RS_DISABLE_TRIM_THREAD` runtime control and `compile-time-disable-background-trim` compile-time removal.
+- Added `RS_TRIMMER_THRESHOLD`, defaulting to 10 MiB of cached virtual address space, so the background trim worker is not started during fragile early preload/bootstrap paths.
+- Added `lazy-page-trim` to use lazy page-free advice for eligible small-allocation and buddy trim paths.
+- Updated `malloc_trim(...)` and Rust-facing trim support to combine buddy-cache trimming with eligible small-allocation cache trimming.
+- Added `should_trim` and lifetime tracking to allocation headers so trimmed blocks are not repeatedly advised without reuse.
+- Added buddy free-block lifetime/trim state tracking and background old-block trimming for buddy cached blocks, with successful trim accounting based on `madvise` success.
+- Added a global non-blocking trim lock so manual trim, background trim, small trim, and buddy trim do not overlap.
+- Added per-mail trim locks and ABA-tagged mail-cache support for safely detaching and restoring trim-scanned mail lists.
+- Added fork-child reset handling for trim locks, buddy locks, big-allocation map locks, and background trim state.
+- Added `SerialLock::try_lock()` and fork-reset helpers for allocator-internal locks.
+- Updated fallback symbol initialization to use resettable once-lock state after fork.
+- Added preload errno helpers and improved C ABI errno behavior for calloc overflow/failure and alignment API failures.
+- Reworked RSEQ assembly into `src/rseq_core/rseq_asm.rs` and removed the old `rseq_core.rs` module.
+- Updated RSEQ cache APIs for trim access, overflow mail handling, and fork-time trim-lock reset.
+- Added `get_size_4096_class()` and cached lookup support for selecting trim-eligible size classes.
+- Updated Rust global-allocator configuration with `TrimThreadSettings`, `TrimThread`, `Bytes`, `ReliefSettings`, `ReliefState`, and `Percentage` for background trim worker and opt-in system-memory-pressure relief control.
+- Updated C alignment APIs toward standard behavior, including `posix_memalign`-style validation, `aligned_alloc` size-multiple checks, checked `pvalloc` page rounding, and `memalign` errno reporting.
+- Updated calloc zeroing to use allocation zero-state flags correctly while always zeroing under `lazy-page-trim`.
+- Updated preload runtime configuration documentation for `RS_DISABLE_TRIM_THREAD`, `RS_TRIMMER_THRESHOLD`, default-disabled `RS_DISABLE_RELIEF`, buddy relief pressure thresholds, current EMA clamping, and buddy-cache sizing behavior.
+- Replaced the old `speed` benchmark with `book_speed` and `rstress`, and added checked-in `rstress` benchmark results with thread-churn, allocator edge-case, SIMD, teardown, and trim-pressure coverage.
+- Updated README, TODO, and architecture documentation for current trim capabilities and feature flags.
+
 ## v0.1.0-alpha
 
 ### Release layout
@@ -45,7 +74,7 @@
   - `MagicSafetyDisable::acknowledge_safety_risk()` keeps fixed built-in magic values.
   - `DisableMagic::acknowledge_safety_risk()` disables magic checks and randomization for security research, allocator experiments, and tightly controlled debugging.
 - Added randomized aligned-allocation tags during normal allocator bootstrap, reducing reliance on a fixed `ALIGN_TAG` value for detecting over-aligned allocation metadata.
-- Added optional `canary` and `extended-header` Cargo features for lightweight higher-security allocator metadata checks during experiments and stress testing. These are defense-in-depth diagnostics, not high-security isolation guarantees.
+- Added optional `extended-header` Cargo feature for wider allocator metadata during experiments and stress testing.
 - Changed global-allocator foreign-pointer handling to default to aborting on foreign pointers in non-preload mode, with `ForeignPointerSettings::IGNORE` available for explicit ignore behavior.
 - Added non-preload foreign-pointer abort handling in `free`, `realloc`, and usable-size queries.
 - Fixed big-allocation usable-size lookup to query metadata by the original payload pointer.
@@ -73,7 +102,7 @@
 - Updated aligned big allocation ownership tracking so direct aligned big mappings mark and clear full radix ranges instead of only one radix page.
 - Updated big allocation metadata to track whether an allocation came from an aligned request, so free can clear the correct ownership shape.
 - Optimized direct big-allocation realloc bookkeeping by avoiding map remove/insert and radix updates when `mremap` keeps the mapping in place.
-- Restricted direct big-allocation `mremap` growth to in-place remaps and recomputed canary metadata after successful remap when canary checks are enabled.
+- Restricted direct big-allocation `mremap` growth to in-place remaps.
 - Fixed buddy-backed big realloc growth to use the buddy block base instead of the payload pointer, and to preserve the enlarged buddy order when fallback allocation is needed after partial in-place growth.
 - Added retry loops for buddy allocator metadata and region mapping attempts.
 - Added requested-size buddy trimming through `malloc_trim(...)` gated by `RS_ENABLE_TRIM` in preload mode and opt-in `RSMalloc::rs_trim_buddy(...)` in Rust mode; the Rust API uses `RSMallocTrim::Request(bytes)` or `RSMallocTrim::All` and returns `RSTrimStatus`, while C ABI `malloc_trim(0)` requests trimming all currently free buddy blocks when preload trimming is enabled.

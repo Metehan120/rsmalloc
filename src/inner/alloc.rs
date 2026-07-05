@@ -1,7 +1,11 @@
+use std::sync::atomic::AtomicBool;
 use std::{hint::likely, ptr::null_mut};
 
+use crate::ALLOCATED_FLAG;
 #[cfg(feature = "debug")]
 use crate::TOTAL_REFILL_CALLS;
+#[cfg(feature = "preload")]
+use crate::inner::libc_int::set_nomem;
 use crate::{
     BIG_MAGIC, GenericCache, Header, MAGIC, RSMallocError,
     big_allocations::big_allocation::big_malloc,
@@ -14,6 +18,7 @@ use crate::{
     rseq_core::{bulk_fill::bulk_fill, rseq_cache::RSEQ_CACHE, rseq_main::get_rseq},
     utility::{ITERATIONS, SIZE_CLASSES, match_size_class},
 };
+use crate::{TOTAL_CACHED_VA, TRIM_THRESHOLD, trim::trimmer_main};
 #[cfg(feature = "debug")]
 use std::sync::atomic::Ordering;
 
@@ -125,6 +130,37 @@ macro_rules! bulk_refill {
     };
 }
 
+pub static TRIM_GUARD: AtomicBool = AtomicBool::new(false);
+
+pub unsafe fn spawn(entry: unsafe fn() -> !) -> bool {
+    std::thread::Builder::new()
+        .name("rsmalloc-trimmer".into())
+        .stack_size(64 * 1024)
+        .spawn(move || unsafe {
+            entry();
+        })
+        .is_ok()
+}
+
+pub unsafe fn maybe_start_trimmer() {
+    use std::sync::atomic::Ordering;
+
+    if TOTAL_CACHED_VA.load(Ordering::Relaxed) < TRIM_THRESHOLD
+        || TRIM_GUARD.load(Ordering::Relaxed) == true
+    {
+        return;
+    }
+
+    if TRIM_GUARD
+        .compare_exchange(false, true, Ordering::Release, Ordering::Acquire)
+        .is_ok()
+    {
+        if !spawn(trimmer_main) {
+            TRIM_GUARD.store(false, Ordering::Relaxed);
+        }
+    };
+}
+
 #[unsafe(link_section = ".text.hot")]
 #[cold]
 #[inline(never)]
@@ -142,7 +178,7 @@ pub unsafe fn refill(class: usize, cpu_id: usize) -> UnsafePointer<Header> {
                 };
 
                 BULK_FILL_PREDICTOR[class].update_refill(observed, 1, ITERATIONS[class]);
-                return take_one_from_batch(
+                let result = take_one_from_batch(
                     class,
                     start,
                     tail,
@@ -154,6 +190,10 @@ pub unsafe fn refill(class: usize, cpu_id: usize) -> UnsafePointer<Header> {
                     #[cfg(feature = "debug")]
                     false,
                 );
+
+                maybe_start_trimmer();
+
+                return result;
             }
             Err(_) => continue,
         }
@@ -214,10 +254,7 @@ pub unsafe fn rs_alloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
 
             if class.is_null() {
                 #[cfg(feature = "preload")]
-                {
-                    *crate::inner::libc_int::__errno_location() =
-                        rustix::io::Errno::NOMEM.raw_os_error();
-                }
+                set_nomem();
                 return UnsafePointer::NULL;
             }
 
@@ -228,10 +265,7 @@ pub unsafe fn rs_alloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
 
         let mut safe = cache.apply_safe();
         safe.magic = MAGIC;
-        #[cfg(feature = "extended-header")]
-        {
-            safe.next = null_mut();
-        }
+        safe.flags = ALLOCATED_FLAG;
 
         return cache.walk_header();
     }
@@ -249,9 +283,6 @@ pub unsafe fn usable_size(ptr: UnsafePointer<Header>) -> usize {
         let original_payload_addr = original_payload.cast_usize();
         let offset = ptr_addr - original_payload_addr;
         let header = original_payload.get_actual_header().apply_safe();
-
-        #[cfg(feature = "canary")]
-        header.canary_mismatch(header.as_ptr());
 
         if header.magic == BIG_MAGIC {
             let meta = BIG_ALLOC_MAP.get(original_payload_addr).unwrap_or_else(|| {

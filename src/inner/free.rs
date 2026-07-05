@@ -2,11 +2,12 @@ use std::{
     hint::{likely, unlikely},
     os::raw::c_void,
     ptr::read_unaligned,
+    sync::atomic::Ordering,
 };
 
 use crate::{
-    ALIGN_TAG, BIG_MAGIC, FREED_MAGIC, GenericCache, Header, MAGIC, MAGIC_DISABLE, OFFSET_SIZE,
-    RSMallocError, TAG_SIZE, big_allocations::big_allocation::big_free,
+    ALIGN_TAG, BIG_MAGIC, CURRENT_STAMP, FREED_MAGIC, GenericCache, Header, MAGIC, MAGIC_DISABLE,
+    OFFSET_SIZE, RSMallocError, TAG_SIZE, big_allocations::big_allocation::big_free,
     core_prim::wrappers::UnsafePointer, internals::l3_main_radix::L3_RADIX,
     rseq_core::rseq_cache::RSEQ_CACHE,
 };
@@ -19,6 +20,15 @@ pub unsafe fn find_original_ptr(ptr: UnsafePointer<Header>) -> UnsafePointer<Hea
     if read_unaligned(tag_loc) == ALIGN_TAG {
         let raw_loc = (header_search_ptr.cast_usize()).wrapping_sub(OFFSET_SIZE) as *const usize;
         let presumed_original_ptr = read_unaligned(raw_loc) as *mut c_void;
+
+        if !L3_RADIX.is_owned(presumed_original_ptr as usize) {
+            RSMallocError::AttackOrCorruption.log_and_abort(
+                header_search_ptr.as_ptr() as *mut c_void,
+                "CRITICAL: possible aligned-path metadata injection: recovered pointer is not owned by rsmalloc",
+                None,
+            );
+        }
+
         header_search_ptr = UnsafePointer::new(presumed_original_ptr as *mut Header);
     }
 
@@ -40,7 +50,7 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
             use crate::FOREIGN_POINTER_ABORT;
 
             if FOREIGN_POINTER_ABORT {
-                crate::RSMallocError::ForeignPointer.log_and_abort(
+                RSMallocError::ForeignPointer.log_and_abort(
                     ptr.as_ptr() as *mut c_void,
                     "Foreign pointer",
                     None,
@@ -54,10 +64,8 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
     let searched = find_original_ptr(ptr);
     let mut header = searched.cast::<Header>().get_actual_header().apply_safe();
 
-    #[cfg(feature = "canary")]
-    header.canary_mismatch(header.cast_as_ptr());
-
     if likely(header.magic == MAGIC) {
+        header.life_time = CURRENT_STAMP.load(Ordering::Relaxed);
         header.magic = FREED_MAGIC;
 
         RSEQ_CACHE.push(header.class as usize, header.as_ptr());
@@ -71,12 +79,12 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
 
     if !MAGIC_DISABLE {
         if header.magic == FREED_MAGIC {
-            RSMallocError::DoubleFree.log_and_abort(header.cast_as_ptr(), "Magic mismatch", None)
+            RSMallocError::DoubleFree.log_and_abort(header.cast_as_ptr(), "magic mismatch", None)
         }
 
         RSMallocError::AttackOrCorruption.log_and_abort(
             header.cast_as_ptr(),
-            "Magic mismatch",
+            "magic mismatch",
             None,
         )
     }

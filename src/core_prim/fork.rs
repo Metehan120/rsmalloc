@@ -7,8 +7,10 @@ use std::{
 #[cfg(not(feature = "legacy-glibc-support"))]
 use crate::rseq_core::rseq_main::__rseq_offset;
 use crate::{
-    RSMallocError,
+    GLOBAL_TRIM_LOCK, RSMallocError,
+    big_allocations::buddy::BIG_BUDDY_ALLOCATOR,
     inner::{fallback::fallback_reinit_on_fork, libc_int::pthread_atfork},
+    internals::{hashmap::BIG_MAP, lock::LockGuard},
     rseq_core::rseq_main::__rseq_size,
 };
 
@@ -17,26 +19,44 @@ use crate::rseq_core::rseq_main::__rseq_offset;
 
 pub static BOOTSTRAP_LOCK: Mutex<()> = Mutex::new(());
 static mut ATFORK_GUARD: Option<MutexGuard<'static, ()>> = None;
+static mut TRIM_ATFORK_GUARD: Option<LockGuard> = None;
 
 unsafe extern "C" fn fork_prepare() {
     let guard = BOOTSTRAP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     ATFORK_GUARD = Some(transmute::<MutexGuard<'_, ()>, MutexGuard<'static, ()>>(
         guard,
     ));
+    TRIM_ATFORK_GUARD = Some(GLOBAL_TRIM_LOCK.lock());
 }
 
 unsafe extern "C" fn fork_parent() {
+    if let Some(guard) = TRIM_ATFORK_GUARD.take() {
+        drop(guard);
+    }
     if let Some(guard) = ATFORK_GUARD.take() {
         drop(guard);
     }
 }
 
 unsafe extern "C" fn fork_child() {
+    if let Some(guard) = TRIM_ATFORK_GUARD.take() {
+        drop(guard);
+    }
+
     if let Some(guard) = ATFORK_GUARD.take() {
         drop(guard);
     }
 
     fallback_reinit_on_fork();
+    BIG_BUDDY_ALLOCATOR.reset_locks_on_fork();
+    BIG_MAP.reset_lock_on_fork();
+    GLOBAL_TRIM_LOCK.reset_at_fork();
+
+    {
+        use std::sync::atomic::Ordering;
+
+        crate::inner::alloc::TRIM_GUARD.store(false, Ordering::Relaxed);
+    }
 
     #[cfg(feature = "legacy-glibc-support")]
     if __rseq_offset.is_null() || __rseq_size.is_null() {

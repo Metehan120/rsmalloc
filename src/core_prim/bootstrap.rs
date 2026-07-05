@@ -5,8 +5,8 @@ use rustix::rand::{GetRandomFlags, getrandom};
 #[cfg(not(feature = "legacy-glibc-support"))]
 use crate::rseq_core::rseq_main::__rseq_offset;
 use crate::{
-    ALIGN_TAG, BIG_MAGIC, BUDDY_ATTEMPT_HUGE, BUDDY_MAX_CACHE, ENABLE_TRIM, FREED_MAGIC, MAGIC,
-    RS_DISABLE_THP, RSMallocError,
+    ALIGN_TAG, BIG_MAGIC, BUDDY_ATTEMPT_HUGE, BUDDY_MAX_CACHE, DISABLE_TRIM_THREAD, FREED_MAGIC,
+    MAGIC, RS_DISABLE_THP, RSMallocError, TRIM_THRESHOLD,
     big_allocations::buddy::BIG_BUDDY_ALLOCATOR,
     core_prim::predictor::{DEFAULT_BATCH, EMA_ALPHA, PREDICTOR_INIT_BATCH},
     inner::alloc::MAX_REFILL_RETRIES,
@@ -15,6 +15,7 @@ use crate::{
         l3_main_radix::{L3_RADIX, RadixTree},
     },
     rseq_core::{rseq_cache::RSEQ_CACHE, rseq_main::__rseq_size},
+    trim::{BUDDY_DISABLE_PERCENTAGE, BUDDY_ENABLE_PERCENTAGE, DISABLE_RELIEF},
 };
 
 #[cfg(feature = "legacy-glibc-support")]
@@ -80,39 +81,6 @@ unsafe fn init_align() {
     };
 }
 
-#[cfg(feature = "canary")]
-unsafe fn init_canary() {
-    #[cfg(not(feature = "extended-header"))]
-    {
-        let mut main = 0u8.to_le_bytes();
-        match getrandom(&mut main, GetRandomFlags::empty()) {
-            Ok(_) => {
-                crate::RANDOMC_CANARY_CONSTANT = u8::from_le_bytes(main);
-            }
-            Err(err) => RSMallocError::SecurityViolation.log_and_abort(
-                null_mut(),
-                "calling getrandom failed, cannot initialize canary",
-                Some(err.raw_os_error()),
-            ),
-        };
-    }
-
-    #[cfg(feature = "extended-header")]
-    {
-        let mut main = 0u64.to_le_bytes();
-        match getrandom(&mut main, GetRandomFlags::empty()) {
-            Ok(_) => {
-                crate::RANDOMC_CANARY_CONSTANT = u64::from_le_bytes(main);
-            }
-            Err(err) => RSMallocError::SecurityViolation.log_and_abort(
-                null_mut(),
-                "calling getrandom failed, cannot initialize canary",
-                Some(err.raw_os_error()),
-            ),
-        };
-    }
-}
-
 #[inline(never)]
 pub unsafe fn bootstrap() {
     #[cfg(feature = "legacy-glibc-support")]
@@ -156,7 +124,16 @@ pub unsafe fn bootstrap() {
         .next_power_of_two();
 
     BUDDY_ATTEMPT_HUGE = get_env_usize("RS_BUDDY_ATTEMPT_HUGEPAGE".as_bytes()).unwrap_or(0) != 0;
-    ENABLE_TRIM = get_env_usize("RS_ENABLE_TRIM".as_bytes()).unwrap_or(0) != 0;
+    DISABLE_TRIM_THREAD = get_env_usize("RS_DISABLE_TRIM_THREAD".as_bytes()).unwrap_or(0) != 0;
+    TRIM_THRESHOLD = get_env_usize("RS_TRIMMER_THRESHOLD".as_bytes()).unwrap_or(1024 * 1024 * 10);
+
+    DISABLE_RELIEF = get_env_usize("RS_ENABLE_RELIEF".as_bytes()).unwrap_or(1) != 0;
+    BUDDY_DISABLE_PERCENTAGE = get_env_usize("RS_BUDDY_RELIEF_DISABLE_PERCENTAGE".as_bytes())
+        .unwrap_or(85)
+        .min(100);
+    BUDDY_ENABLE_PERCENTAGE = get_env_usize("RS_BUDDY_RELIEF_ENABLE_PERCENTAGE".as_bytes())
+        .unwrap_or(80)
+        .min(BUDDY_DISABLE_PERCENTAGE);
 
     let disable_thp = get_env_usize("RS_DISABLE_THP".as_bytes()).unwrap_or(0);
     RS_DISABLE_THP = disable_thp == 1;
@@ -176,7 +153,4 @@ pub unsafe fn bootstrap() {
             }
         }
     };
-
-    #[cfg(feature = "canary")]
-    init_canary();
 }

@@ -1,6 +1,7 @@
 use std::sync::atomic::AtomicBool;
 use std::{hint::likely, ptr::null_mut};
 
+use crate::ALLOCATED_FLAG;
 #[cfg(feature = "debug")]
 use crate::TOTAL_REFILL_CALLS;
 #[cfg(feature = "preload")]
@@ -264,6 +265,7 @@ pub unsafe fn rs_alloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
 
         let mut safe = cache.apply_safe();
         safe.magic = MAGIC;
+        safe.flags = ALLOCATED_FLAG;
 
         return cache.walk_header();
     }

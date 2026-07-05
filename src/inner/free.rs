@@ -6,8 +6,8 @@ use std::{
 };
 
 use crate::{
-    ALIGN_TAG, ALLOCATED_FLAG, BIG_MAGIC, CURRENT_STAMP, FREED_MAGIC, GenericCache, Header, MAGIC,
-    MAGIC_DISABLE, OFFSET_SIZE, RSMallocError, TAG_SIZE, big_allocations::big_allocation::big_free,
+    ALIGN_TAG, BIG_MAGIC, CURRENT_STAMP, FREED_MAGIC, GenericCache, Header, MAGIC, MAGIC_DISABLE,
+    OFFSET_SIZE, RSMallocError, TAG_SIZE, big_allocations::big_allocation::big_free,
     core_prim::wrappers::UnsafePointer, internals::l3_main_radix::L3_RADIX,
     rseq_core::rseq_cache::RSEQ_CACHE,
 };
@@ -67,7 +67,6 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
     if likely(header.magic == MAGIC) {
         header.life_time = CURRENT_STAMP.load(Ordering::Relaxed);
         header.magic = FREED_MAGIC;
-        header.flags = ALLOCATED_FLAG;
 
         RSEQ_CACHE.push(header.class as usize, header.as_ptr());
         return;

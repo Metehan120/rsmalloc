@@ -13,15 +13,18 @@ use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 
 #[cfg(feature = "debug")]
 use crate::ABORTS;
-#[cfg(feature = "cpu-refill-paths")]
-use crate::MetaData;
 use crate::{
     GenericCache, Header, RSMallocError, RseqCoreTrait,
     core_prim::wrappers::UnsafePointer,
-    internals::once::Once,
+    internals::{
+        numa_parser::{NumaTopology, parse_numa_topology},
+        once::Once,
+    },
     rseq_core::{rseq_asm::RseqCore, rseq_main::get_rseq},
     utility::{NUM_SIZE_CLASSES, RSEQ_MAX_BLOCKS},
 };
+#[cfg(feature = "cpu-refill-paths")]
+use crate::{MetaData, internals::lock::SerialLock};
 
 pub struct ClassCache {
     list: UnsafePointer<Header>,
@@ -56,7 +59,7 @@ impl CPUBulkClass {
     }
 }
 
-// NOTE: Use 4096-byte alignment to avoid false sharing between cache lines and NUMA node balancing in future updates.
+// NOTE: Use 4096-byte alignment to avoid false sharing between cache lines and NUMA node balancing.
 #[repr(C, align(4096))]
 pub struct MainCache {
     cache: [ClassCache; NUM_SIZE_CLASSES],
@@ -65,9 +68,11 @@ pub struct MainCache {
     bulk_fill: [CPUBulkClass; NUM_SIZE_CLASSES],
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct RseqInner {
     cache: *mut MainCache,
-    ncpu: usize,
+    numa: NumaTopology,
+    pub is_numa: bool,
 }
 
 pub struct RseqCache {
@@ -93,7 +98,15 @@ impl RseqCache {
         Self {
             inner: UnsafeCell::new(RseqInner {
                 cache: null_mut(),
-                ncpu: 0,
+                numa: NumaTopology {
+                    cpu_to_node: null_mut(),
+                    ncpu: 0,
+                    node_ids: null_mut(),
+                    nnodes: 0,
+                    cpu_ranges: null_mut(),
+                    nranges: 0,
+                },
+                is_numa: false,
             }),
             once: Once::new(),
         }
@@ -120,7 +133,13 @@ impl RseqCache {
             });
 
             inner.cache = list as *mut MainCache;
-            inner.ncpu = ncpu;
+            if let Some(numa) = parse_numa_topology(ncpu) {
+                inner.numa = numa;
+
+                if numa.nnodes > 1 {
+                    inner.is_numa = true;
+                }
+            }
         });
     }
 }
@@ -142,8 +161,8 @@ impl GenericCache for RseqCache {
             let current_cpu = read_volatile(&rseq.cpu_id) as usize;
 
             #[cfg(feature = "rseq-thread-failure-fallback")]
-            if unlikely(current_cpu >= inner.ncpu) {
-                self.mail_push_batch(class, header, tail, inner.ncpu);
+            if unlikely(current_cpu >= inner.numa.ncpu) {
+                self.mail_push_batch(class, header, tail, inner.numa.ncpu);
                 return;
             }
 
@@ -162,7 +181,7 @@ impl GenericCache for RseqCache {
                 break;
             }
 
-            if unlikely(loop_count > 3) {
+            if loop_count > 3 {
                 self.mail_push_batch(class, header, tail, current_cpu);
                 return;
             }
@@ -184,8 +203,8 @@ impl GenericCache for RseqCache {
             let current_cpu = read_volatile(&rseq.cpu_id) as usize;
 
             #[cfg(feature = "rseq-thread-failure-fallback")]
-            if unlikely(current_cpu >= inner.ncpu) {
-                self.mail_push_single(class, header, inner.ncpu);
+            if unlikely(current_cpu >= inner.numa.ncpu) {
+                self.mail_push_single(class, header, inner.numa.ncpu);
                 return;
             }
 
@@ -204,7 +223,7 @@ impl GenericCache for RseqCache {
                 break;
             }
 
-            if unlikely(loop_count > 3) {
+            if loop_count > 3 {
                 self.mail_push_single(class, header, current_cpu);
                 return;
             }
@@ -226,13 +245,12 @@ impl GenericCache for RseqCache {
         loop {
             let current_cpu = read_volatile(&rseq.cpu_id) as usize;
             #[cfg(feature = "rseq-thread-failure-fallback")]
-            if unlikely(current_cpu >= inner.ncpu) {
-                return self.try_pop_single(class, inner.ncpu);
+            if unlikely(current_cpu >= inner.numa.ncpu) {
+                return self.try_pop_single(class, inner.numa.ncpu);
             }
             let list = &mut (*inner.cache.add(current_cpu)).cache[class];
             let list_ptr = addr_of!(list.list) as *mut *mut Header;
             let usage_ptr = &mut list.usage;
-
             let header = RseqCore.pop(list_ptr, rseq, current_cpu);
 
             if unlikely(header as isize == -1) {
@@ -288,7 +306,21 @@ pub fn unpack_ptr(word: usize) -> *mut Header {
 
 impl RseqCache {
     pub fn get_ncpu(&self) -> usize {
-        unsafe { (*self.inner.get()).ncpu }
+        unsafe { (*self.inner.get()).numa.ncpu }
+    }
+
+    #[inline(always)]
+    pub unsafe fn node_for_cpu(&self, cpu_id: usize, inner: &RseqInner) -> u16 {
+        if !inner.is_numa || cpu_id >= inner.numa.ncpu || inner.numa.cpu_to_node.is_null() {
+            return 0;
+        }
+        *inner.numa.cpu_to_node.add(cpu_id)
+    }
+
+    #[inline(always)]
+    pub unsafe fn get_numa_and_inner(&self) -> (&NumaTopology, &RseqInner) {
+        let inner = &*self.inner.get();
+        (&inner.numa, inner)
     }
 
     pub unsafe fn get_list(&self, cpu_id: usize, class: usize) -> &mut SelfMail {
@@ -297,7 +329,7 @@ impl RseqCache {
         list
     }
 
-    // TODO: add numa-awareness, prefer local node first
+    // Numa-aware steal is impossible
     #[cfg(feature = "rseq-thread-failure-fallback")]
     #[inline(never)]
     pub unsafe fn try_pop_single(&self, class: usize, ncpu: usize) -> UnsafePointer<Header> {
@@ -318,7 +350,6 @@ impl RseqCache {
         UnsafePointer::NULL
     }
 
-    // TODO: Add NUMA-aware stealing
     #[inline(always)]
     pub unsafe fn try_pop(
         &self,
@@ -326,15 +357,6 @@ impl RseqCache {
         batch_size: usize,
         cpu_id: usize,
     ) -> (UnsafePointer<Header>, UnsafePointer<Header>, usize) {
-        let ncpu = (*self.inner.get()).ncpu;
-
-        #[cfg(feature = "rseq-thread-failure-fallback")]
-        let cpu_id = if unlikely(cpu_id >= ncpu) {
-            ncpu
-        } else {
-            cpu_id
-        };
-
         if let Some(popped) = self.mail_pop(class, cpu_id, batch_size) {
             return (
                 UnsafePointer::new(popped.0),
@@ -343,8 +365,21 @@ impl RseqCache {
             );
         }
 
-        for i in 1..ncpu {
-            let victim = (cpu_id + i) % ncpu;
+        let inner = *self.inner.get();
+        let (start, end, node_id) = if inner.is_numa {
+            let numa_id = *inner.numa.cpu_to_node.add(cpu_id);
+            let range = *inner.numa.cpu_ranges.add(numa_id as usize);
+
+            (range.start_cpu, range.end_cpu, numa_id)
+        } else {
+            (0, inner.numa.ncpu - 1, 0)
+        };
+
+        let len = end - start + 1;
+        let local = cpu_id.saturating_sub(start);
+
+        for step in 1..len {
+            let victim = start + ((local + step) % len);
 
             if let Some(block) = self.mail_pop(class, victim, batch_size) {
                 return (
@@ -352,6 +387,32 @@ impl RseqCache {
                     UnsafePointer::new(block.1),
                     block.2,
                 );
+            }
+        }
+
+        if inner.is_numa {
+            for i in 0..inner.numa.nranges {
+                let node_id = (i + node_id as usize) % inner.numa.nranges;
+
+                let (start, end) = {
+                    let cpu = *inner.numa.cpu_ranges.add(node_id);
+                    (cpu.start_cpu, cpu.end_cpu)
+                };
+
+                let len = end - start + 1;
+                let local = cpu_id.saturating_sub(start);
+
+                for step in 1..len {
+                    let victim = start + ((local + step) % len);
+
+                    if let Some(block) = self.mail_pop(class, victim, batch_size) {
+                        return (
+                            UnsafePointer::new(block.0),
+                            UnsafePointer::new(block.1),
+                            block.2,
+                        );
+                    }
+                }
             }
         }
 
@@ -492,8 +553,8 @@ impl RseqCache {
         let inner = &*self.inner.get();
 
         #[cfg(feature = "rseq-thread-failure-fallback")]
-        let cpu_id = if unlikely(cpu_id >= inner.ncpu) {
-            inner.ncpu
+        let cpu_id = if unlikely(cpu_id >= inner.numa.ncpu) {
+            inner.numa.ncpu
         } else {
             cpu_id
         };

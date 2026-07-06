@@ -6,7 +6,7 @@
 use crate::{RSMallocError, core_prim::wrappers::UnsafePointer};
 use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous, munmap};
 use std::{
-    hint::unlikely,
+    hint::{cold_path, unlikely},
     os::raw::c_void,
     ptr::null_mut,
     sync::atomic::{
@@ -207,6 +207,7 @@ impl RadixTree {
         }
 
         let Some(end_addr) = addr.checked_add(size - 1) else {
+            cold_path();
             return;
         };
 

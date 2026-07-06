@@ -11,7 +11,8 @@ use crate::{
     TRIMMED_FLAG, ZERO_FLAG,
     big_allocations::buddy::{BIG_BUDDY_ALLOCATOR, BUDDY_TRIM_NOT_ALLOCATED, BUDDY_TRIM_TRIMMED},
     core_prim::wrappers::UnsafePointer,
-    internals::{hashmap::BIG_MAP, l3_main_radix::L3_RADIX},
+    internals::{binder::prefer_node, hashmap::BIG_MAP, l3_main_radix::L3_RADIX},
+    rseq_core::{rseq_cache::RSEQ_CACHE, rseq_main::get_rseq},
     trim::DISABLE_BUDDY,
     utility::align_to,
 };
@@ -39,9 +40,12 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
     let mut mapped_total = aligned_total;
     let mut actual_ptr: *mut u8 = null_mut();
     let mut flag = 100;
+    let cpu_id = get_rseq().cpu_id as usize;
+    let (numa, inner) = RSEQ_CACHE.get_numa_and_inner();
+    let node_id = RSEQ_CACHE.node_for_cpu(cpu_id, inner);
 
     if size <= 1024 * 1024 * 64 && BUDDY_INIT && !DISABLE_BUDDY.load(Relaxed) {
-        let buddy = BIG_BUDDY_ALLOCATOR.alloc(aligned_total);
+        let buddy = BIG_BUDDY_ALLOCATOR.alloc(aligned_total, node_id, (numa, inner));
 
         if let Some((addr, order, trim_state)) = buddy {
             actual_ptr = addr as *mut u8;
@@ -63,6 +67,10 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
             ProtFlags::READ | ProtFlags::WRITE,
             MapFlags::PRIVATE,
         ) {
+            if inner.is_numa {
+                prefer_node(pointer, mapped_total, node_id);
+            }
+
             flag = ZERO_FLAG;
             actual_ptr = pointer as *mut u8;
         } else {

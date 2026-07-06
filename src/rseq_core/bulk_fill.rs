@@ -10,30 +10,22 @@ use std::{
     sync::atomic::Ordering,
 };
 
-use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
-
+use crate::rseq_core::rseq_cache::RSEQ_CACHE;
 #[cfg(all(
     not(feature = "cpu-refill-paths"),
     not(feature = "disable-thread-pending")
 ))]
-use crate::GenericCache;
-#[cfg(any(
-    feature = "cpu-refill-paths",
-    all(
-        not(feature = "cpu-refill-paths"),
-        not(feature = "disable-thread-pending")
-    )
-))]
-use crate::rseq_core::rseq_cache::RSEQ_CACHE;
+use crate::{GenericCache, utility::NUM_SIZE_CLASSES};
+use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 
 #[cfg(not(feature = "cpu-refill-paths"))]
 use crate::CURRENT_STAMP;
+use crate::ZERO_FLAG;
 use crate::{
     Err, FREED_MAGIC, Header, MetaData, TOTAL_CACHED_VA,
-    internals::l3_main_radix::L3_RADIX,
+    internals::{binder::prefer_node, l3_main_radix::L3_RADIX},
     utility::{ITERATIONS, SIZE_CLASSES, align_to},
 };
-use crate::{ZERO_FLAG, utility::NUM_SIZE_CLASSES};
 
 #[cfg(all(
     not(feature = "cpu-refill-paths"),
@@ -153,7 +145,11 @@ unsafe fn init_blocks(
     (head, tail, count)
 }
 
-unsafe fn alloc_metadata(class: usize, block_size: usize) -> Result<*mut MetaData, Err> {
+unsafe fn alloc_metadata(
+    class: usize,
+    block_size: usize,
+    cpu_id: usize,
+) -> Result<*mut MetaData, Err> {
     let mut num_blocks = ITERATIONS[class];
     let mut total = size_of::<MetaData>() + (block_size * num_blocks);
 
@@ -173,6 +169,12 @@ unsafe fn alloc_metadata(class: usize, block_size: usize) -> Result<*mut MetaDat
         MapFlags::PRIVATE,
     )
     .map_err(|_| Err::OutOfMemory)?;
+
+    let (_, inner) = RSEQ_CACHE.get_numa_and_inner();
+    if inner.is_numa {
+        let node_id = RSEQ_CACHE.node_for_cpu(cpu_id as usize, inner);
+        prefer_node(mem, total, node_id);
+    }
 
     TOTAL_CACHED_VA.fetch_add(total, Ordering::Relaxed);
 
@@ -198,6 +200,9 @@ pub unsafe fn bulk_fill(
     cpu_id: usize,
     max_init: usize,
 ) -> Result<(*mut Header, *mut Header, usize), Err> {
+    use crate::CURRENT_STAMP;
+    use std::sync::atomic::Ordering::Relaxed;
+
     let payload_size = SIZE_CLASSES[class];
     let block_size = align_to(payload_size + Header::SIZE, 16);
     let current_stamp = CURRENT_STAMP.load(Relaxed);
@@ -218,7 +223,7 @@ pub unsafe fn bulk_fill(
         global.set_metadata(null_mut());
     }
 
-    let metadata = alloc_metadata(class, block_size)?;
+    let metadata = alloc_metadata(class, block_size, cpu_id)?;
     let (head, tail, count) =
         init_blocks(class as u8, metadata, block_size, max_init, current_stamp);
     if count == 0 {
@@ -244,7 +249,6 @@ pub unsafe fn bulk_fill(
     ))]
     touch_tls();
 
-    let _ = cpu_id;
     let payload_size = SIZE_CLASSES[class];
     let block_size = align_to(payload_size + Header::SIZE, 16);
     let current_stamp = CURRENT_STAMP.load(Relaxed);
@@ -262,7 +266,7 @@ pub unsafe fn bulk_fill(
         THREAD_BULK.free[class] = null_mut();
     }
 
-    let metadata = alloc_metadata(class, block_size)?;
+    let metadata = alloc_metadata(class, block_size, cpu_id)?;
     let (head, tail, count) =
         init_blocks(class as u8, metadata, block_size, max_init, current_stamp);
     if count == 0 {

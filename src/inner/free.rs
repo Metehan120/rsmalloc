@@ -47,9 +47,7 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
 
         #[cfg(not(feature = "preload"))]
         {
-            use crate::FOREIGN_POINTER_ABORT;
-
-            if FOREIGN_POINTER_ABORT {
+            if crate::FOREIGN_POINTER_ABORT {
                 RSMallocError::ForeignPointer.log_and_abort(
                     ptr.as_ptr() as *mut c_void,
                     "Foreign pointer",
@@ -64,7 +62,7 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
     let searched = find_original_ptr(ptr);
     let mut header = searched.cast::<Header>().get_actual_header().apply_safe();
 
-    if likely(header.magic == MAGIC) {
+    if header.magic == MAGIC {
         header.life_time = CURRENT_STAMP.load(Ordering::Relaxed);
         header.magic = FREED_MAGIC;
 

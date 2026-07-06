@@ -53,6 +53,7 @@ impl SerialLock {
         LockGuard(&self.state as *const AtomicBool)
     }
 
+    #[inline(always)]
     pub fn try_lock(&self) -> Option<LockGuard> {
         self.state
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)

@@ -1,4 +1,4 @@
-use std::{alloc::Layout, os::raw::c_void};
+use std::{alloc::Layout, hint::unlikely, os::raw::c_void};
 
 #[cfg(not(feature = "lazy-page-trim"))]
 use crate::ALLOCATED_FLAG;
@@ -56,7 +56,7 @@ unsafe fn calc_and_get(size: Layout, nmem: usize) -> Option<(UnsafePointer<Heade
     let effective_size = total_size.max(1);
 
     let ptr = rs_alloc(effective_size, false);
-    if ptr.is_null() {
+    if unlikely(ptr.is_null()) {
         return None;
     }
     Some((ptr, effective_size))

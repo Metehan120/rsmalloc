@@ -2,7 +2,6 @@ use std::ptr::null_mut;
 
 use rustix::rand::{GetRandomFlags, getrandom};
 
-#[cfg(not(feature = "legacy-glibc-support"))]
 use crate::rseq_core::rseq_main::__rseq_offset;
 use crate::{
     ALIGN_TAG, BIG_MAGIC, BUDDY_ATTEMPT_HUGE, BUDDY_MAX_CACHE, DISABLE_TRIM_THREAD, FREED_MAGIC,
@@ -17,9 +16,6 @@ use crate::{
     rseq_core::{rseq_cache::RSEQ_CACHE, rseq_main::__rseq_size},
     trim::{BUDDY_DISABLE_PERCENTAGE, BUDDY_ENABLE_PERCENTAGE, DISABLE_RELIEF},
 };
-
-#[cfg(feature = "legacy-glibc-support")]
-use crate::rseq_core::rseq_main::__rseq_offset;
 
 #[inline(never)]
 unsafe fn init_magic() {
@@ -83,23 +79,7 @@ unsafe fn init_align() {
 
 #[inline(never)]
 pub unsafe fn bootstrap() {
-    #[cfg(feature = "legacy-glibc-support")]
-    if __rseq_offset.is_null() || __rseq_size.is_null() {
-        use crate::core_prim::rseq_register::register_rseq_raw;
-
-        if register_rseq_raw() == 0 {
-            crate::IS_RSEQ_INTERNAL = true;
-        } else {
-            RSMallocError::RSEQRegFailed.log_and_abort(
-                null_mut(),
-                "RSEQ register failed, cannot initialize rseq cache. No kernel RSEQ support",
-                None,
-            );
-        }
-    }
-
-    #[cfg(not(feature = "legacy-glibc-support"))]
-    if __rseq_size.is_null() || __rseq_offset.is_null() {
+    if __rseq_size == 0 || __rseq_offset == 0 {
         RSMallocError::RSEQRegFailed.log_and_abort(
             null_mut(),
             "RSEQ register failed, cannot initialize rseq cache.",

@@ -9,7 +9,8 @@ use rustix::mm::{Advice, MapFlags, ProtFlags, madvise, mmap_anonymous, munmap};
 use crate::{
     BUDDY_AVERAGE_BLOCK_TIMES, BUDDY_INIT, CURRENT_STAMP, GLOBAL_TRIM_LOCK,
     inner::alloc::MAX_REFILL_RETRIES,
-    internals::{l3_main_radix::L3_RADIX, lock::SerialLock, once::Once},
+    internals::{l3_main_radix::L3_RADIX, lock::SerialLock, numa_parser::NumaTopology, once::Once},
+    rseq_core::rseq_cache::RseqInner,
     utility::align_to,
 };
 
@@ -51,6 +52,7 @@ struct BuddyRegion {
     base: usize,
     total_size: usize,
     order: usize,
+    node_id: u16,
     free: [*mut FreeBlock; NUM_ORDERS],
     locks: SerialLock,
     trim_lock: SerialLock,
@@ -63,6 +65,7 @@ impl BuddyRegion {
             base: 0,
             total_size: 0,
             order: BIG_BUDDY_MIN_ORDER,
+            node_id: 0,
             free: [null_mut(); NUM_ORDERS],
             locks: SerialLock::new(),
             trim_lock: SerialLock::new(),
@@ -116,7 +119,8 @@ impl BuddyAllocator {
         None
     }
 
-    unsafe fn add_region(&mut self, size: usize, init: bool) -> bool {
+    #[inline(never)]
+    unsafe fn add_region(&mut self, size: usize, node_id: u16, init: bool) -> bool {
         let normalized_size = size
             .next_power_of_two()
             .clamp(1 << BIG_BUDDY_MIN_ORDER, 1 << BIG_BUDDY_MAX_ORDER);
@@ -161,6 +165,7 @@ impl BuddyAllocator {
         (*region_ptr).base = base;
         (*region_ptr).total_size = normalized_size;
         (*region_ptr).order = top_order;
+        (*region_ptr).node_id = node_id;
 
         let block = FreeBlock::new(base, 0, BUDDY_TRIM_NOT_ALLOCATED);
         (*region_ptr).free[top_order - BIG_BUDDY_MIN_ORDER] = block;
@@ -258,7 +263,7 @@ impl BuddyAllocator {
                 .clamp(1 << BIG_BUDDY_MIN_ORDER, 1 << BIG_BUDDY_MAX_ORDER);
 
             page.grow_order = Self::order_for_size(normalized_size);
-            page.add_region(normalized_size, true);
+            page.add_region(normalized_size, 0, true);
         });
     }
 
@@ -267,15 +272,14 @@ impl BuddyAllocator {
         unsafe { !self.find_region(addr).is_null() }
     }
 
-    pub unsafe fn alloc(&mut self, size: usize) -> Option<(usize, usize, u8)> {
-        let requested_order = Self::order_for_size(size).max(BIG_BUDDY_MIN_ORDER);
-        if requested_order > BIG_BUDDY_MAX_ORDER {
-            return None;
-        }
-
+    unsafe fn alloc_from_node(
+        &self,
+        requested_order: usize,
+        node_id: u16,
+    ) -> Option<(usize, usize, u8)> {
         let mut region = self.regions_head();
         while !region.is_null() {
-            {
+            if (*region).node_id == node_id {
                 (*region).trim_lock.spin_until_unlock();
                 let _guard = (*region).locks.lock();
 
@@ -283,7 +287,26 @@ impl BuddyAllocator {
                     return Some((addr, requested_order, flag));
                 }
             }
+
             region = (*region).next;
+        }
+
+        None
+    }
+
+    pub unsafe fn alloc(
+        &mut self,
+        size: usize,
+        node_id: u16,
+        numa_inner: (&NumaTopology, &RseqInner),
+    ) -> Option<(usize, usize, u8)> {
+        let requested_order = Self::order_for_size(size).max(BIG_BUDDY_MIN_ORDER);
+        if requested_order > BIG_BUDDY_MAX_ORDER {
+            return None;
+        }
+
+        if let Some(block) = self.alloc_from_node(requested_order, node_id) {
+            return Some(block);
         }
 
         let expand_order = self
@@ -291,18 +314,26 @@ impl BuddyAllocator {
             .max(requested_order)
             .min(BIG_BUDDY_MAX_ORDER);
 
-        if !self.add_region(1 << expand_order, false) {
+        if self.add_region(1 << expand_order, node_id, false) {
+            if let Some(block) = self.alloc_from_node(requested_order, node_id) {
+                return Some(block);
+            }
+        }
+
+        let (numa, inner) = numa_inner;
+        if inner.is_numa {
+            for i in 0..numa.nranges {
+                let node_id = (i + node_id as usize) % numa.nranges;
+
+                if let Some(block) = self.alloc_from_node(requested_order, node_id as u16) {
+                    return Some(block);
+                }
+            }
+
             return None;
         }
 
-        let region = self.regions_head();
-        if region.is_null() {
-            return None;
-        }
-
-        let _guard = (*region).locks.lock();
-        Self::alloc_from_region(region, requested_order)
-            .map(|(addr, flag)| (addr, requested_order, flag))
+        None
     }
 
     pub unsafe fn free(&mut self, addr: usize, order: usize) {

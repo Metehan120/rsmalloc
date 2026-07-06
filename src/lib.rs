@@ -39,7 +39,6 @@
 
 #![feature(likely_unlikely)]
 #![feature(thread_local)]
-#![feature(linkage)]
 #![allow(binary_asm_labels, unsafe_op_in_unsafe_fn, static_mut_refs)]
 
 use std::{
@@ -76,8 +75,6 @@ pub(crate) static mut FREED_MAGIC: u64 = u64::from_le_bytes(*b"RMMAGICF");
 pub(crate) static mut BIG_MAGIC: u64 = u64::from_le_bytes(*b"RBMAGICB");
 
 pub(crate) static mut RS_DISABLE_THP: bool = false;
-#[cfg(feature = "legacy-glibc-support")]
-pub(crate) static mut IS_RSEQ_INTERNAL: bool = false;
 pub(crate) static mut BUDDY_INIT: bool = false;
 pub(crate) static mut BUDDY_MAX_CACHE: usize = 0;
 pub(crate) static mut BUDDY_ATTEMPT_HUGE: bool = false;

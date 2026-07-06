@@ -4,7 +4,6 @@ use std::{
     sync::{Mutex, MutexGuard},
 };
 
-#[cfg(not(feature = "legacy-glibc-support"))]
 use crate::rseq_core::rseq_main::__rseq_offset;
 use crate::{
     GLOBAL_TRIM_LOCK, RSMallocError,
@@ -13,9 +12,6 @@ use crate::{
     internals::{hashmap::BIG_MAP, lock::LockGuard},
     rseq_core::rseq_main::__rseq_size,
 };
-
-#[cfg(feature = "legacy-glibc-support")]
-use crate::rseq_core::rseq_main::__rseq_offset;
 
 pub static BOOTSTRAP_LOCK: Mutex<()> = Mutex::new(());
 static mut ATFORK_GUARD: Option<MutexGuard<'static, ()>> = None;
@@ -58,23 +54,7 @@ unsafe extern "C" fn fork_child() {
         crate::inner::alloc::TRIM_GUARD.store(false, Ordering::Relaxed);
     }
 
-    #[cfg(feature = "legacy-glibc-support")]
-    if __rseq_offset.is_null() || __rseq_size.is_null() {
-        use crate::core_prim::rseq_register::register_rseq_raw;
-
-        if register_rseq_raw() == 0 {
-            crate::IS_RSEQ_INTERNAL = true;
-        } else {
-            RSMallocError::RSEQRegFailed.log_and_abort(
-                null_mut(),
-                "RSEQ register failed, cannot initialize rseq cache. No kernel RSEQ support",
-                None,
-            );
-        }
-    }
-
-    #[cfg(not(feature = "legacy-glibc-support"))]
-    if __rseq_size.is_null() || __rseq_offset.is_null() {
+    if __rseq_size == 0 || __rseq_offset == 0 {
         RSMallocError::RSEQRegFailed.log_and_abort(
             null_mut(),
             "RSEQ register failed, cannot initialize rseq cache.",

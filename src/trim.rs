@@ -230,12 +230,9 @@ fn release_memory(header_ptr: *mut Header, size: usize) -> bool {
         }
         let length = page_end - page_start;
 
-        #[cfg(feature = "lazy-page-trim")]
-        {
+        if cfg!(feature = "lazy-page-trim") {
             madvise(page_start as *mut c_void, length, Advice::LinuxFree).is_ok()
-        }
-        #[cfg(not(feature = "lazy-page-trim"))]
-        {
+        } else {
             madvise(page_start as *mut c_void, length, Advice::LinuxDontNeed).is_ok()
         }
     }

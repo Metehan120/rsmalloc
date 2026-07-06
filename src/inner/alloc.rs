@@ -1,3 +1,4 @@
+use std::hint::unlikely;
 use std::sync::atomic::AtomicBool;
 use std::{hint::likely, ptr::null_mut};
 
@@ -252,7 +253,7 @@ pub unsafe fn rs_alloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
         let cache = if cache.is_null() {
             let class = fill(class);
 
-            if class.is_null() {
+            if unlikely(class.is_null()) {
                 #[cfg(feature = "preload")]
                 set_nomem();
                 return UnsafePointer::NULL;

@@ -6,8 +6,6 @@ use rustix::rand::{GetRandomFlags, getrandom};
 
 use crate::big_allocations::buddy::BIG_BUDDY_ALLOCATOR;
 use crate::core_prim::predictor::{DEFAULT_BATCH, EMA_ALPHA, PREDICTOR_INIT_BATCH};
-#[cfg(feature = "legacy-glibc-support")]
-use crate::core_prim::rseq_register::register_rseq_raw;
 use crate::core_prim::wrappers::UnsafePointer;
 use crate::inner::align::memalign_inner;
 use crate::inner::alloc::{MAX_REFILL_RETRIES, rs_alloc, usable_size};
@@ -17,9 +15,6 @@ use crate::inner::realloc::rs_realloc;
 use crate::internals::l3_main_radix::{L3_RADIX, RadixTree};
 use crate::internals::once::Once;
 use crate::rseq_core::rseq_cache::RSEQ_CACHE;
-#[cfg(not(feature = "legacy-glibc-support"))]
-use crate::rseq_core::rseq_main::__rseq_offset;
-#[cfg(feature = "legacy-glibc-support")]
 use crate::rseq_core::rseq_main::__rseq_offset;
 use crate::rseq_core::rseq_main::__rseq_size;
 use crate::trim::{BUDDY_DISABLE_PERCENTAGE, BUDDY_ENABLE_PERCENTAGE, DISABLE_RELIEF, trim_small};
@@ -581,21 +576,7 @@ pub struct RSMalloc {
 
 #[inline(never)]
 unsafe fn init(rs: &RSMalloc) {
-    #[cfg(feature = "legacy-glibc-support")]
-    if __rseq_offset.is_null() || __rseq_size.is_null() {
-        if register_rseq_raw() == 0 {
-            crate::IS_RSEQ_INTERNAL = true;
-        } else {
-            RSMallocError::RSEQRegFailed.log_and_abort(
-                null_mut(),
-                "RSEQ register failed, cannot initialize rseq cache. No kernel RSEQ support",
-                None,
-            );
-        }
-    }
-
-    #[cfg(not(feature = "legacy-glibc-support"))]
-    if __rseq_size.is_null() || __rseq_offset.is_null() {
+    if __rseq_size == 0 || __rseq_offset == 0 {
         RSMallocError::RSEQRegFailed.log_and_abort(
             null_mut(),
             "RSEQ register failed, cannot initialize rseq cache.",

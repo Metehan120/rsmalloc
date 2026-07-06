@@ -13,8 +13,4 @@
 12. Lock-free buddy if possible / For stable release
 13. Add special benchmark to stress test every subsystem at once - Done
 
-## Beta Target: Add page/span-backed small-class allocator for <4096B reclaim
-- Keep rseq cache API as object-list based if possible.
-- Move refill/trim backing from linear MetaData spans to page/span metadata.
-- Goal: allow page/span-level reclaim for small classes without touching rseq asm.
-- Note: main architecture was designed around this assumption in case we need to switch to spans later.
+## Plan changes: I am gonna use current caching style without changing architecture to span/page and built a new allocator while working on rsmalloc, my main focus will be rsmalloc.

@@ -115,13 +115,15 @@ pub fn get_size_4096_class() -> usize {
 }
 
 #[inline(always)]
-pub fn match_size_class(size: usize) -> Option<usize> {
-    if size <= 4096 && size > 0 {
+pub unsafe fn match_size_class(size: usize) -> Option<usize> {
+    if size == 0 {
+        return Some(0);
+    } else if size <= 4096 {
         let index = (size - 1) >> 4;
-        return Some(unsafe { *SIZE_LUT.get_unchecked(index) as usize });
+        return Some(*SIZE_LUT.get_unchecked(index) as usize);
     }
 
-    if size == 0 || size > 2097152 {
+    if size > 2097152 {
         return None;
     }
 

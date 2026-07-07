@@ -52,7 +52,7 @@ use std::{
 };
 
 use crate::{
-    core_prim::wrappers::UnsafePointer, internals::lock::SerialLock, rseq_core::rseq_main::rseq,
+    core_prim::wrappers::UnsafePointer, internals::lock::SpinLock, rseq_core::rseq_main::rseq,
 };
 
 #[cfg(not(target_arch = "x86_64"))]
@@ -109,7 +109,7 @@ pub(crate) static TIME_STAMP: OnceLock<Instant> = OnceLock::new();
 pub(crate) static CURRENT_STAMP: AtomicU32 = AtomicU32::new(0);
 pub(crate) static AVERAGE_BLOCK_TIMES: AtomicU32 = AtomicU32::new(1000);
 pub(crate) static BUDDY_AVERAGE_BLOCK_TIMES: AtomicU32 = AtomicU32::new(1000);
-pub(crate) static GLOBAL_TRIM_LOCK: SerialLock = SerialLock::new();
+pub(crate) static GLOBAL_TRIM_LOCK: SpinLock = SpinLock::new();
 
 pub(crate) fn get_clock() -> &'static Instant {
     TIME_STAMP.get_or_init(|| {
@@ -152,6 +152,7 @@ pub(crate) enum Err {
 
 #[repr(C, align(16))]
 pub(crate) struct MetaData {
+    pub next_page: *mut MetaData,
     pub start: usize,
     pub end: usize,
     pub next: usize,

@@ -34,7 +34,7 @@ The current codebase supports two intended modes:
 - Non-preload builds expose `RSMalloc`, `RSMallocConfig`, and `GlobalAlloc` integration.
 - Runtime tuning is available for refill behavior, predictor behavior, THP behavior, buddy cache sizing, opt-in experimental buddy trimming, magic-value behavior, and foreign-pointer handling in global-allocator mode.
 - Small-allocation refill sizing uses an EMA predictor, with a separate bulk-fill predictor so cache-pop/steal behavior does not force page/list initialization into tiny batches.
-- In the default thread-local refill path, pending refill metadata is drained on thread exit into the current CPU mail cache to reduce stranded per-thread pending slabs; this can be disabled with `disable-thread-pending`.
+- In the default thread-local refill path, pending refill metadata is drained on thread exit into the global pending queue to reduce stranded per-thread pending slabs.
 - Optional `extended-header` Cargo feature provides wider allocator metadata for experiments and stress testing.
 - Non-preload builds expose a small capability snapshot with allocator version, configured THP state, and current NUMA support status.
 
@@ -164,8 +164,6 @@ Other optional Cargo features:
 - `legacy-glibc-support` enables the raw RSEQ fallback path for environments where libc RSEQ TLS symbols are unavailable.
 - `predictor-debug` enables refill-predictor debug logging.
 - `debug-predictor-exact` enables exact refill-mispredict accounting instrumentation (higher overhead than normal debug mode).
-- `cpu-refill-paths` enables the per-CPU pending-refill metadata path (experimental).
-- `disable-thread-pending` disables default thread-exit draining of thread-local pending refill metadata.
 - `compile-time-disable-background-trim` removes the background trim worker path at compile time.
 - `lazy-page-trim` uses lazy page-free advice for small-allocation trim where supported instead of immediate `MADV_DONTNEED`-style advice.
 

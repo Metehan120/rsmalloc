@@ -23,8 +23,6 @@ use crate::{
     rseq_core::{rseq_asm::RseqCore, rseq_main::get_rseq},
     utility::{NUM_SIZE_CLASSES, RSEQ_MAX_BLOCKS},
 };
-#[cfg(feature = "cpu-refill-paths")]
-use crate::{MetaData, internals::lock::SerialLock};
 
 pub struct ClassCache {
     list: UnsafePointer<Header>,
@@ -35,37 +33,11 @@ pub struct SelfMail {
     pub list: AtomicUsize,
 }
 
-#[cfg(feature = "cpu-refill-paths")]
-pub struct CPUBulkClass {
-    meta: UnsafeCell<*mut MetaData>,
-    lock: SerialLock,
-}
-
-#[cfg(feature = "cpu-refill-paths")]
-impl CPUBulkClass {
-    #[inline(always)]
-    pub fn lock(&self) -> &SerialLock {
-        &self.lock
-    }
-
-    #[inline(always)]
-    pub unsafe fn get_metadata(&self) -> *mut MetaData {
-        *self.meta.get()
-    }
-
-    #[inline(always)]
-    pub unsafe fn set_metadata(&self, meta: *mut MetaData) {
-        *self.meta.get() = meta;
-    }
-}
-
 // NOTE: Use 4096-byte alignment to avoid false sharing between cache lines and NUMA node balancing.
 #[repr(C, align(4096))]
 pub struct MainCache {
     cache: [ClassCache; NUM_SIZE_CLASSES],
     mail: [SelfMail; NUM_SIZE_CLASSES],
-    #[cfg(feature = "cpu-refill-paths")]
-    bulk_fill: [CPUBulkClass; NUM_SIZE_CLASSES],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -546,20 +518,6 @@ impl RseqCache {
 
             spin_loop();
         }
-    }
-
-    #[cfg(feature = "cpu-refill-paths")]
-    pub unsafe fn get_bulk_fill(&self, size_class: usize, cpu_id: usize) -> &CPUBulkClass {
-        let inner = &*self.inner.get();
-
-        #[cfg(feature = "rseq-thread-failure-fallback")]
-        let cpu_id = if unlikely(cpu_id >= inner.numa.ncpu) {
-            inner.numa.ncpu
-        } else {
-            cpu_id
-        };
-
-        &(*inner.cache.add(cpu_id)).bulk_fill[size_class]
     }
 }
 

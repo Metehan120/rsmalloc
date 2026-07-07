@@ -127,8 +127,6 @@ Important details:
 pub struct MainCache {
     cache: [ClassCache; NUM_SIZE_CLASSES],
     mail: [SelfMail; NUM_SIZE_CLASSES],
-    #[cfg(feature = "cpu-refill-paths")]
-    bulk_fill: [CPUBulkClass; NUM_SIZE_CLASSES],
 }
 ```
 
@@ -179,15 +177,9 @@ Default refill behavior uses thread-local pending metadata:
 
 - if a mapped slab has uninitialized blocks left after a refill batch, the leftover `MetaData` is stored in `THREAD_BULK.free[class]`,
 - the next refill for the same thread/class continues initializing from that pending metadata,
-- unless `disable-thread-pending` is enabled, a TLS destructor drains pending metadata at thread exit by initializing the remaining blocks and pushing them back through the normal guarded RSEQ cache push path.
+- a TLS destructor drains pending metadata at thread exit into the global pending queue so another thread can continue initializing it later.
 
-This model avoids a shared refill lock on the default path while reducing stranded pending refill state when threads exit.
-
-### Optional Per-CPU Refill Metadata
-
-With `cpu-refill-paths`, pending refill metadata is stored per CPU/class in `MainCache.bulk_fill` behind a `SerialLock`.
-
-This can improve some locality/retention patterns but can also create lock convoy behavior when many threads refill the same class on the same CPU at the same time. It is experimental and should be benchmarked per workload.
+This model avoids a shared refill lock on the hot path while reducing stranded pending refill state when threads exit.
 
 ## EMA Refill Prediction
 
@@ -272,7 +264,7 @@ The counters should be interpreted as tuning signals, not correctness requiremen
 - Predictors are thread-local, not global. This avoids atomics on the hot path but means new threads start from initial settings.
 - The predictor sees allocator-side refill results, not future application demand.
 - The `+25%` uplift helps sustained full-batch pressure, but it is still intentionally slower than an aggressive doubling strategy.
-- Very synchronized refill storms can still bottleneck elsewhere, especially with experimental `cpu-refill-paths` where shared per-CPU refill metadata is lock-protected.
+- Very synchronized refill storms can still bottleneck in the refill path, but pending refill metadata stays thread-local by default to avoid shared refill locks.
 
 ## Free Path
 
@@ -471,8 +463,6 @@ Important architecture-affecting features:
 | `debug` | Enables low-overhead stats/debug counters. |
 | `debug-exact` | Adds exact global lock counters and debug printing. |
 | `debug-predictor-exact` | Uses higher-overhead exact refill prediction miss accounting. |
-| `cpu-refill-paths` | Uses per-CPU shared pending refill metadata. Experimental. |
-| `disable-thread-pending` | Disables default thread-exit drain of thread-local pending refill metadata. |
 | `compile-time-disable-background-trim` | Removes the background trim worker path at compile time. Manual trim remains available. |
 | `lazy-page-trim` | Uses lazy page-free advice for trim paths instead of eager `MADV_DONTNEED`-style advice. |
 
@@ -482,7 +472,7 @@ Important architecture-affecting features:
 - Victim stealing currently scans CPU mailboxes and is intentionally simple.
 - The extra RSEQ cache slot is reserved for fallback/overflow handling, not normal CPU-local traffic.
 - `SelfMail` is a relief valve and fallback path; too much traffic there usually means refill/capacity pressure should be inspected.
-- Per-CPU refill metadata can help some real workloads but can convoy on synchronized refill storms.
+- Thread-local pending refill metadata avoids shared refill locks but can temporarily strand pending slabs until reuse or thread-exit drain.
 - The big allocation map is an internal hashmap and is planned for future replacement.
 - Buddy trimming uses `madvise`, not `munmap`, so it returns physical pressure to the kernel while keeping the virtual region structure.
 
@@ -528,6 +518,5 @@ sequenceDiagram
 This draft intentionally leaves a few review points explicit:
 
 - whether the thread-local destructor model for pending refill drain is final,
-- whether `cpu-refill-paths` should remain experimental-only for alpha,
 - whether the current size class set and refill byte targets are final enough to document as stable,
 - whether buddy trim should be documented as API-stable or explicitly experimental.

@@ -123,8 +123,8 @@ worker support, opt-in memory-pressure relief, lazy page trim support, and sever
 - Fixed low-level x86-64 RSEQ registration syscall clobber handling and documented the weak libc RSEQ symbol pointer pattern used for fallback detection.
 - Added failure handling for per-thread internal RSEQ registration before returning thread-local RSEQ state.
 - Added default `rseq-thread-failure-fallback` handling for invalid/unregistered RSEQ CPU IDs, using the extra overflow cache slot instead of indexing per-CPU state directly.
-- Added optional per-CPU pending-refill metadata paths behind `cpu-refill-paths` for experiments with shared refill metadata locality tradeoffs.
-- Added default thread-exit draining of thread-local pending refill metadata into mail caches to reduce stranded pending slabs, with an opt-out `disable-thread-pending` feature flag.
+- Removed the experimental per-CPU pending-refill metadata path in favor of the thread-local pending refill path.
+- Added default thread-exit draining of thread-local pending refill metadata into the global pending queue to reduce stranded pending slabs.
 - Added `debug-predictor-exact` instrumentation mode for exact refill prediction miss accounting when high-overhead diagnostics are needed.
 - Simplified RSEQ cache/core retry paths and removed unused cache trait/API surface.
 

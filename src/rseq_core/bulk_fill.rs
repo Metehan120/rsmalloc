@@ -1,92 +1,48 @@
-#[cfg(all(
-    not(feature = "cpu-refill-paths"),
-    not(feature = "disable-thread-pending")
-))]
-use std::cell::UnsafeCell;
-#[cfg(not(feature = "cpu-refill-paths"))]
-use std::sync::atomic::Ordering::Relaxed;
 use std::{
+    cell::UnsafeCell,
     ptr::{null_mut, write},
     sync::atomic::Ordering,
 };
 
-use crate::rseq_core::rseq_cache::RSEQ_CACHE;
-#[cfg(all(
-    not(feature = "cpu-refill-paths"),
-    not(feature = "disable-thread-pending")
-))]
-use crate::{GenericCache, utility::NUM_SIZE_CLASSES};
 use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 
-#[cfg(not(feature = "cpu-refill-paths"))]
-use crate::CURRENT_STAMP;
-use crate::ZERO_FLAG;
+use crate::rseq_core::{pending_queue::PENDING_QUEUE, rseq_cache::RSEQ_CACHE};
+use crate::{CURRENT_STAMP, ZERO_FLAG};
 use crate::{
     Err, FREED_MAGIC, Header, MetaData, TOTAL_CACHED_VA,
     internals::{binder::prefer_node, l3_main_radix::L3_RADIX},
-    utility::{ITERATIONS, SIZE_CLASSES, align_to},
+    utility::{ITERATIONS, NUM_SIZE_CLASSES, SIZE_CLASSES, align_to},
 };
 
-#[cfg(all(
-    not(feature = "cpu-refill-paths"),
-    not(feature = "disable-thread-pending")
-))]
 pub struct Destructor;
 
-#[cfg(all(
-    not(feature = "cpu-refill-paths"),
-    not(feature = "disable-thread-pending")
-))]
 impl Drop for Destructor {
     fn drop(&mut self) {
-        for i in 0..NUM_SIZE_CLASSES {
-            unsafe { drain_pending(&mut THREAD_BULK, i) };
+        for class in 0..NUM_SIZE_CLASSES {
+            unsafe { drain_pending(&mut THREAD_BULK, class) };
         }
     }
 }
 
-#[cfg(not(feature = "cpu-refill-paths"))]
 struct ThreadBulk {
     free: [*mut MetaData; NUM_SIZE_CLASSES],
-    #[cfg(all(
-        not(feature = "cpu-refill-paths"),
-        not(feature = "disable-thread-pending")
-    ))]
     destructor: UnsafeCell<Option<Destructor>>,
-    #[cfg(all(
-        not(feature = "cpu-refill-paths"),
-        not(feature = "disable-thread-pending")
-    ))]
     init: bool,
 }
 
-#[cfg(not(feature = "cpu-refill-paths"))]
 impl ThreadBulk {
     const fn new() -> Self {
         Self {
             free: [const { null_mut() }; NUM_SIZE_CLASSES],
-            #[cfg(all(
-                not(feature = "cpu-refill-paths"),
-                not(feature = "disable-thread-pending")
-            ))]
             destructor: UnsafeCell::new(None),
-            #[cfg(all(
-                not(feature = "cpu-refill-paths"),
-                not(feature = "disable-thread-pending")
-            ))]
             init: false,
         }
     }
 }
 
-#[cfg(not(feature = "cpu-refill-paths"))]
 #[thread_local]
 static mut THREAD_BULK: ThreadBulk = ThreadBulk::new();
 
-#[cfg(all(
-    not(feature = "cpu-refill-paths"),
-    not(feature = "disable-thread-pending")
-))]
 #[inline(always)]
 unsafe fn touch_tls() {
     if !THREAD_BULK.init {
@@ -150,6 +106,11 @@ unsafe fn alloc_metadata(
     block_size: usize,
     cpu_id: usize,
 ) -> Result<*mut MetaData, Err> {
+    let pending = PENDING_QUEUE.pop(class);
+    if !pending.is_null() {
+        return Ok(pending);
+    }
+
     let mut num_blocks = ITERATIONS[class];
     let mut total = size_of::<MetaData>() + (block_size * num_blocks);
 
@@ -172,7 +133,7 @@ unsafe fn alloc_metadata(
 
     let (_, inner) = RSEQ_CACHE.get_numa_and_inner();
     if inner.is_numa {
-        let node_id = RSEQ_CACHE.node_for_cpu(cpu_id as usize, inner);
+        let node_id = RSEQ_CACHE.node_for_cpu(cpu_id, inner);
         prefer_node(mem, total, node_id);
     }
 
@@ -184,6 +145,7 @@ unsafe fn alloc_metadata(
     write(
         metadata,
         MetaData {
+            next_page: null_mut(),
             start: mem as usize,
             end: (mem as usize) + total,
             next: (mem as usize) + size_of::<MetaData>(),
@@ -194,76 +156,28 @@ unsafe fn alloc_metadata(
 }
 
 // TODO: Wire up time stamping
-#[cfg(feature = "cpu-refill-paths")]
 pub unsafe fn bulk_fill(
     class: usize,
     cpu_id: usize,
     max_init: usize,
 ) -> Result<(*mut Header, *mut Header, usize), Err> {
-    use crate::CURRENT_STAMP;
-    use std::sync::atomic::Ordering::Relaxed;
-
-    let payload_size = SIZE_CLASSES[class];
-    let block_size = align_to(payload_size + Header::SIZE, 16);
-    let current_stamp = CURRENT_STAMP.load(Relaxed);
-
-    let global = RSEQ_CACHE.get_bulk_fill(class, cpu_id);
-    let _guard = global.lock().lock();
-
-    let pending = global.get_metadata();
-    if !pending.is_null() {
-        let (head, tail, count) =
-            init_blocks(class as u8, pending, block_size, max_init, current_stamp);
-        if count > 0 {
-            if remaining_blocks(pending, block_size) == 0 {
-                global.set_metadata(null_mut());
-            }
-            return Ok((head, tail, count));
-        }
-        global.set_metadata(null_mut());
-    }
-
-    let metadata = alloc_metadata(class, block_size, cpu_id)?;
-    let (head, tail, count) =
-        init_blocks(class as u8, metadata, block_size, max_init, current_stamp);
-    if count == 0 {
-        return Err(Err::OutOfMemory);
-    }
-    if remaining_blocks(metadata, block_size) > 0 {
-        global.set_metadata(metadata);
-    }
-
-    Ok((head, tail, count))
-}
-
-// TODO: Wire up time stamping
-#[cfg(not(feature = "cpu-refill-paths"))]
-pub unsafe fn bulk_fill(
-    class: usize,
-    cpu_id: usize,
-    max_init: usize,
-) -> Result<(*mut Header, *mut Header, usize), Err> {
-    #[cfg(all(
-        not(feature = "cpu-refill-paths"),
-        not(feature = "disable-thread-pending")
-    ))]
     touch_tls();
 
     let payload_size = SIZE_CLASSES[class];
     let block_size = align_to(payload_size + Header::SIZE, 16);
-    let current_stamp = CURRENT_STAMP.load(Relaxed);
+    let current_stamp = CURRENT_STAMP.load(Ordering::Relaxed);
 
     let pending = THREAD_BULK.free[class];
     if !pending.is_null() {
+        THREAD_BULK.free[class] = null_mut();
         let (head, tail, count) =
             init_blocks(class as u8, pending, block_size, max_init, current_stamp);
         if count > 0 {
-            if remaining_blocks(pending, block_size) == 0 {
-                THREAD_BULK.free[class] = null_mut();
+            if remaining_blocks(pending, block_size) > 0 {
+                THREAD_BULK.free[class] = pending;
             }
             return Ok((head, tail, count));
         }
-        THREAD_BULK.free[class] = null_mut();
     }
 
     let metadata = alloc_metadata(class, block_size, cpu_id)?;
@@ -279,28 +193,12 @@ pub unsafe fn bulk_fill(
     Ok((head, tail, count))
 }
 
-#[cfg(all(
-    not(feature = "cpu-refill-paths"),
-    not(feature = "disable-thread-pending")
-))]
 unsafe fn drain_pending(thread: &mut ThreadBulk, class: usize) {
     let pending = thread.free[class];
     if pending.is_null() {
         return;
     }
 
-    let payload_size = SIZE_CLASSES[class];
-    let block_size = align_to(payload_size + Header::SIZE, 16);
-    let current_stamp = CURRENT_STAMP.load(Relaxed);
-    let remaining = remaining_blocks(pending, block_size);
-
-    if remaining > 0 {
-        let (head, tail, count) =
-            init_blocks(class as u8, pending, block_size, remaining, current_stamp);
-        if count > 0 {
-            RSEQ_CACHE.push_tailed(class, head, tail, count);
-        }
-    }
-
     thread.free[class] = null_mut();
+    PENDING_QUEUE.insert(class, pending);
 }

@@ -11,7 +11,7 @@ use crate::{
     BUDDY_AVERAGE_BLOCK_TIMES, BUDDY_INIT, CURRENT_STAMP, GLOBAL_TRIM_LOCK,
     inner::alloc::MAX_REFILL_RETRIES,
     internals::{
-        binder::prefer_node, l3_main_radix::L3_RADIX, lock::SerialLock, numa_parser::NumaTopology,
+        binder::prefer_node, l3_main_radix::L3_RADIX, lock::SpinLock, numa_parser::NumaTopology,
         once::Once,
     },
     rseq_core::rseq_cache::{RSEQ_CACHE, RseqInner},
@@ -26,11 +26,6 @@ const PAGE_SIZE: usize = 4096;
 pub const BUDDY_TRIM_NOT_ALLOCATED: u8 = 0;
 const BUDDY_TRIM_ALLOCATED: u8 = 1;
 pub const BUDDY_TRIM_TRIMMED: u8 = 2;
-
-pub enum AllocResults<T> {
-    Some(T),
-    None,
-}
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -64,7 +59,7 @@ struct BuddyRegion {
     node_id: u16,
     nonempty_mask: u8,
     free: [*mut FreeBlock; NUM_ORDERS],
-    locks: SerialLock,
+    locks: SpinLock,
 }
 
 impl BuddyRegion {
@@ -77,7 +72,7 @@ impl BuddyRegion {
             node_id: 0,
             nonempty_mask: 0,
             free: [null_mut(); NUM_ORDERS],
-            locks: SerialLock::new(),
+            locks: SpinLock::new(),
         }
     }
 }
@@ -86,7 +81,7 @@ pub struct BuddyAllocator {
     regions: *mut BuddyRegion,
     grow_order: usize,
     thp: bool,
-    spin: SerialLock,
+    spin: SpinLock,
     once: Once,
 }
 
@@ -96,7 +91,7 @@ impl BuddyAllocator {
             regions: null_mut(),
             grow_order: BIG_BUDDY_MIN_ORDER,
             thp: false,
-            spin: SerialLock::new(),
+            spin: SpinLock::new(),
             once: Once::new(),
         }
     }
@@ -317,7 +312,7 @@ impl BuddyAllocator {
         &self,
         requested_order: usize,
         node_id: u16,
-    ) -> AllocResults<(usize, usize, u8)> {
+    ) -> Option<(usize, usize, u8)> {
         loop {
             let mut saw_locked = 0usize;
             let mut empty = 0usize;
@@ -334,7 +329,7 @@ impl BuddyAllocator {
                     };
 
                     if let Some((addr, flag)) = Self::alloc_from_region(region, requested_order) {
-                        return AllocResults::Some((addr, requested_order, flag));
+                        return Some((addr, requested_order, flag));
                     }
 
                     empty += 1;
@@ -348,7 +343,7 @@ impl BuddyAllocator {
                 continue;
             }
 
-            return AllocResults::None;
+            return None;
         }
     }
 
@@ -363,7 +358,7 @@ impl BuddyAllocator {
             return None;
         }
 
-        if let AllocResults::Some(block) = self.alloc_from_node(requested_order, node_id) {
+        if let Some(block) = self.alloc_from_node(requested_order, node_id) {
             return Some(block);
         }
 
@@ -373,7 +368,7 @@ impl BuddyAllocator {
             .min(BIG_BUDDY_MAX_ORDER);
 
         if self.add_region(1 << expand_order, node_id, false, numa_inner.1.is_numa) {
-            if let AllocResults::Some(block) = self.alloc_from_node(requested_order, node_id) {
+            if let Some(block) = self.alloc_from_node(requested_order, node_id) {
                 return Some(block);
             }
         }
@@ -383,9 +378,7 @@ impl BuddyAllocator {
             for i in 0..numa.nranges {
                 let node_id = (i + node_id as usize) % numa.nranges;
 
-                if let AllocResults::Some(block) =
-                    self.alloc_from_node(requested_order, node_id as u16)
-                {
+                if let Some(block) = self.alloc_from_node(requested_order, node_id as u16) {
                     return Some(block);
                 }
             }

@@ -5,7 +5,7 @@
 
 use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous, munmap};
 
-use crate::{BigAllocMeta, RSMallocError, internals::lock::SerialLock};
+use crate::{BigAllocMeta, RSMallocError, internals::lock::SpinLock};
 use std::{
     mem::size_of,
     os::raw::c_void,
@@ -34,7 +34,7 @@ pub struct BigAllocMap {
     cap: AtomicUsize,
     len: AtomicUsize,
     tombstones: AtomicUsize,
-    lock: SerialLock,
+    lock: SpinLock,
 }
 
 pub static BIG_ALLOC_MAP: BigAllocMap = BigAllocMap::new();
@@ -47,7 +47,7 @@ impl BigAllocMap {
             cap: AtomicUsize::new(0),
             len: AtomicUsize::new(0),
             tombstones: AtomicUsize::new(0),
-            lock: SerialLock::new(),
+            lock: SpinLock::new(),
         }
     }
 

@@ -22,14 +22,14 @@ impl Drop for LockGuard {
 }
 
 #[repr(align(64))]
-pub struct SerialLock {
+pub struct SpinLock {
     state: AtomicBool,
 }
 
-impl SerialLock {
+impl SpinLock {
     #[inline(always)]
     pub const fn new() -> Self {
-        SerialLock {
+        SpinLock {
             state: AtomicBool::new(false),
         }
     }

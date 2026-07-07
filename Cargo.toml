@@ -27,8 +27,6 @@ debug-exact = ["debug", "debug-print"]
 debug-predictor-exact = ["debug", "debug-print"]
 predictor-debug = []
 extended-header = []
-cpu-refill-paths = []
-disable-thread-pending = []
 rseq-thread-failure-fallback = []
 lazy-page-trim = []
 

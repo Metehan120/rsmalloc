@@ -12,5 +12,3 @@
 11. Lock-free L3 Radix Tree - Done
 12. Lock-free buddy if possible / For stable release
 13. Add special benchmark to stress test every subsystem at once - Done
-
-## Plan changes: I am gonna use current caching style without changing architecture to span/page and built a new allocator while working on rsmalloc, my main focus will be rsmalloc.

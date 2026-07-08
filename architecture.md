@@ -1,6 +1,6 @@
 # RSMalloc Architecture
 
-This document is a working architecture draft for `rsmalloc` `0.1.0-alpha`. It describes the allocator as it exists today, not as a final stable design. Some pieces are intentionally experimental and may change before a production-ready release.
+This document is a working architecture draft for `rsmalloc` `0.2.0-alpha`. It describes the allocator as it exists today, not as a final stable design. Some pieces are intentionally experimental and may change before a production-ready release.
 
 ## Design Goal
 
@@ -65,7 +65,7 @@ Current size classes live in `src/utility.rs` and are grouped approximately as:
 - medium: `768`, `1024`, `1280`, `1536`, `1792`, `2048`, `2560`, `3072`
 - larger small/slab classes: `3840`, `4096`, `8192`, `12288`, `16384`, `24576`, `32768`, ... up to `2097152`
 
-`match_size_class(size)` uses a fast LUT for sizes `<= 4096` and a simple slow scan above that. A request of size `0` or above the largest small class falls through to the big allocation path.
+`match_size_class(size)` uses a fast LUT for sizes `<= 4096` and a simple slow scan above that. A request of size `0` maps to the smallest class. Requests above the largest small class fall through to the big allocation path.
 
 Each allocated block has a `Header` placed before the returned payload. Header layout is deliberately constrained because the RSEQ assembly and list operations depend on `Header::next` being where the list code expects it.
 
@@ -75,17 +75,16 @@ Initialization differs slightly between preload and Rust global allocator modes,
 
 Bootstrap initializes:
 
-1. RSEQ availability:
-   - normally via libc-provided RSEQ TLS symbols,
-   - optionally via raw registration when `legacy-glibc-support` is enabled.
+1. RSEQ availability through libc-provided RSEQ TLS state.
 2. Runtime knobs:
    - `RS_MAX_REFILL_RETRIES`,
    - `RS_EMA_ALPHA`,
    - `RS_PREDICTOR_INIT_BATCH`,
    - buddy cache size / THP / trim options in preload mode.
 3. `L3_RADIX`, the ownership map.
-4. `RSEQ_CACHE`, the per-CPU cache array.
-5. `BIG_BUDDY_ALLOCATOR`, when configured.
+4. `RSEQ_CACHE`, the per-CPU cache array and NUMA topology snapshot.
+5. `PENDING_QUEUE`, the per-node/per-class global pending metadata queue.
+6. `BIG_BUDDY_ALLOCATOR`, when configured.
 6. Fork handlers for preload/fallback state.
 7. Randomized magic values and aligned-allocation tag, unless randomization is explicitly disabled.
 
@@ -146,10 +145,9 @@ The 4096-byte alignment is intentional. It keeps each CPU's cache structure page
 - used when a per-CPU cache is over pressure limits,
 - used when RSEQ retry count is exceeded,
 - used by victim stealing when the local CPU has no cached block,
-- used by thread-exit pending refill drain in the default thread-local refill path,
 - used by the default RSEQ thread-failure fallback when the kernel/libc reports an invalid CPU ID.
 
-The mail list uses an ABA-tagged pointer word. It is still a fallback/pressure path, not the ideal hot allocation path.
+The mail list uses an ABA-tagged pointer word. It is still a fallback/pressure path, not the ideal hot allocation path. Victim scans are NUMA-aware: local CPU mail is tried first, then CPUs in the same node range, then remote node ranges when NUMA is active.
 
 `SelfMail` is expected to remain fast enough for overflow, fallback, and occasional cross-CPU recovery. Normal traffic should mostly hit the RSEQ cache, but occasional mail usage should not meaningfully slow the allocator down. If a workload spends a large fraction of time in `SelfMail`, that usually points to refill pressure, cache sizing, migration, or workload shape rather than `SelfMail` being intrinsically too slow.
 
@@ -165,9 +163,11 @@ When RSEQ cache and mailbox/victim stealing cannot satisfy an allocation, `fill(
 
 `MetaData` tracks:
 
+- pending queue link,
 - mapping start,
 - mapping end,
-- next uninitialized block position.
+- next uninitialized block position,
+- NUMA node id for the mapping.
 
 Blocks are initialized lazily in batches. The initialized batch is returned to allocation code, one block is used immediately, and the remainder is pushed into the per-CPU RSEQ cache.
 
@@ -177,9 +177,24 @@ Default refill behavior uses thread-local pending metadata:
 
 - if a mapped slab has uninitialized blocks left after a refill batch, the leftover `MetaData` is stored in `THREAD_BULK.free[class]`,
 - the next refill for the same thread/class continues initializing from that pending metadata,
-- a TLS destructor drains pending metadata at thread exit into the global pending queue so another thread can continue initializing it later.
+- `ThreadBulk::get_or_init(class)` lazily registers the thread cleanup hook on first refill use,
+- a thread-exit destructor drains pending metadata into the global pending queue so another thread on the same NUMA node can continue initializing it later.
+
+The cleanup hook is intentionally off the allocation hot path after first touch. It registers a low-level thread-exit callback for the TLS destructor slot because raw `#[thread_local]` storage is used for allocator state.
 
 This model avoids a shared refill lock on the hot path while reducing stranded pending refill state when threads exit.
+
+### Global Pending Metadata Queue
+
+`PENDING_QUEUE` is a global lock-free Treiber stack of pending `MetaData` pages, indexed by NUMA node and size class:
+
+```text
+[node_id][class] -> MetaData stack
+```
+
+The queue is initialized during `RSEQ_CACHE` setup from the parsed NUMA topology. On non-NUMA systems, all traffic uses node slot `0`. On NUMA systems, each `MetaData` carries its original `node_id`, thread-exit drain pushes to that node's stack, and `alloc_metadata()` only pops from the current CPU's local node before mapping fresh memory.
+
+Queue heads are ABA-tagged in the low 12 bits. This relies on `MetaData` being placed at the base of an mmap-backed page-aligned mapping. The queue is a cold/slow refill structure, not part of the normal RSEQ block pop/push path.
 
 ## EMA Refill Prediction
 
@@ -347,13 +362,34 @@ Each region has:
 
 - region metadata,
 - base address and total size,
+- NUMA node id,
 - free lists for each order,
-- a region lock,
-- a trim lock.
+- a per-region nonempty bitmap for quick order selection,
+- a region lock.
 
-Allocation finds a large enough block, splitting higher-order blocks as needed. Freeing coalesces with free buddies where possible.
+Allocation first tries regions on the caller's local NUMA node, grows a new local-node region if needed, and only then scans remote node ranges when NUMA is active. Within a region, `nonempty_mask` skips empty order lists and selects the first usable order with bit operations instead of linearly probing every order. Freeing coalesces with free buddies where possible and keeps the bitmap in sync.
 
-`trim(requested_size)` uses `madvise(MADV_DONTNEED)` on free buddy blocks. `requested_size == 0` means trim all currently free buddy blocks; nonzero requests trim until at least the requested byte target is reached or no more eligible free blocks remain. The trim path holds `trim_lock` and region lock so allocation/free do not race with page advice over the same free lists.
+`trim(requested_size)` uses `madvise(MADV_DONTNEED)`-style advice on free buddy blocks. `requested_size == 0` means trim all currently free buddy blocks; nonzero requests trim until at least the requested byte target is reached or no more eligible free blocks remain. The trim path takes the global trim lock and each region's free-list lock while advising blocks so allocation/free do not race with page advice over the same free lists.
+
+## NUMA Awareness
+
+NUMA topology is parsed from Linux sysfs into `NumaTopology`:
+
+- `cpu_to_node[cpu] -> node_id`,
+- compact `node_ids`,
+- `cpu_ranges[node_id] -> NumaCpuRange` for fast range lookup by node id.
+
+Invalid or missing CPU entries fall back to node `0`. Sparse node ids are supported by sizing the CPU range table so direct `cpu_ranges[node_id]` indexing remains valid.
+
+NUMA policy is applied at mapping time using `prefer_node(ptr, len, node_id)`, currently implemented through the `syscalls` crate's `mbind` syscall wrapper with `MPOL_PREFERRED | MPOL_F_STATIC_NODES`. This sets preferred placement; it does not pre-touch pages or force migration of already-faulted pages.
+
+Current NUMA-aware paths:
+
+- RSEQ victim stealing prefers same-node CPUs before remote node ranges.
+- Small refill `mmap` calls prefer the current CPU's node.
+- Pending metadata queues are per-node/per-class and only pop local-node metadata.
+- Buddy regions are tagged with node id, prefer-node bound when mapped, and allocated local-node first.
+- Direct big allocation fallback prefers the current CPU's node.
 
 ## Ownership Tracking: `L3_RADIX`
 
@@ -408,7 +444,7 @@ Buddy trim scans free buddy blocks. Each free block tracks:
 - lifetime stamp,
 - trim state: never allocated, allocated/reused, or trimmed.
 
-Manual buddy trim can force trimming up to a requested byte target. Background buddy trim only trims blocks older than the buddy average lifetime. Buddy trim holds the region trim lock and region free-list lock while walking free lists so allocation, free, coalescing, and page advice do not race over the same region state.
+Manual buddy trim can force trimming up to a requested byte target. Background buddy trim only trims blocks older than the buddy average lifetime. Buddy trim holds the global trim lock and the region free-list lock while walking free lists so allocation, free, coalescing, and page advice do not race over the same region state.
 
 Buddy trim advises all but the first page of each free block. The first page remains resident because it stores the free-list node metadata. Trim accounting and trim-state updates are only applied when `madvise` succeeds.
 
@@ -458,23 +494,22 @@ Important architecture-affecting features:
 | --- | --- |
 | `preload` | Builds C ABI / preload support. |
 | `rseq-thread-failure-fallback` | Enables the default overflow-slot recovery path for invalid/unregistered RSEQ CPU IDs. |
-| `legacy-glibc-support` | Enables raw RSEQ fallback when libc RSEQ symbols are unavailable. |
 | `extended-header` | Uses wider metadata. |
 | `debug` | Enables low-overhead stats/debug counters. |
 | `debug-exact` | Adds exact global lock counters and debug printing. |
 | `debug-predictor-exact` | Uses higher-overhead exact refill prediction miss accounting. |
-| `compile-time-disable-background-trim` | Removes the background trim worker path at compile time. Manual trim remains available. |
 | `lazy-page-trim` | Uses lazy page-free advice for trim paths instead of eager `MADV_DONTNEED`-style advice. |
 
 ## Known Architectural Tradeoffs
 
 - The small allocation fast path is optimized around CPU-locality and RSEQ, not thread ownership.
-- Victim stealing currently scans CPU mailboxes and is intentionally simple.
+- Victim stealing currently scans CPU mailboxes and is intentionally simple, with NUMA-local ranges preferred before remote ranges.
 - The extra RSEQ cache slot is reserved for fallback/overflow handling, not normal CPU-local traffic.
 - `SelfMail` is a relief valve and fallback path; too much traffic there usually means refill/capacity pressure should be inspected.
-- Thread-local pending refill metadata avoids shared refill locks but can temporarily strand pending slabs until reuse or thread-exit drain.
+- Thread-local pending refill metadata avoids shared refill locks but can temporarily strand pending slabs until reuse or thread-exit drain. Drained metadata enters the per-node global pending queue, not RSEQ mailboxes.
 - The big allocation map is an internal hashmap and is planned for future replacement.
 - Buddy trimming uses `madvise`, not `munmap`, so it returns physical pressure to the kernel while keeping the virtual region structure.
+- NUMA policy is preferred placement rather than guaranteed physical placement; first-touch behavior still matters.
 
 ## Allocation Lifecycle Summary
 
@@ -517,6 +552,7 @@ sequenceDiagram
 
 This draft intentionally leaves a few review points explicit:
 
-- whether the thread-local destructor model for pending refill drain is final,
+- whether the current low-level TLS destructor registration for pending refill drain is final,
 - whether the current size class set and refill byte targets are final enough to document as stable,
-- whether buddy trim should be documented as API-stable or explicitly experimental.
+- whether buddy trim should be documented as API-stable or explicitly experimental,
+- whether future small-class page/span metadata is needed for reclaim below 4096 bytes.

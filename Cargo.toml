@@ -50,6 +50,7 @@ doctest = false
 [profile.release]
 opt-level = 3
 panic = "abort"
+strip = true
 overflow-checks = false
 lto = "fat"
 codegen-units = 1

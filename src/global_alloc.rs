@@ -777,17 +777,38 @@ pub struct RSMallocCapabilities {
     pub thp_enabled: bool,
     /// Whether NUMA-aware allocator behavior is currently available.
     ///
-    /// This is currently always `false`.
-    pub numa_support: bool,
+    /// This is currently always `Partial`.
+    pub numa_support: NumaSupport,
     /// rsmalloc crate version.
     pub version: &'static str,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum NumaSupport {
+    Unsupported,
+    Partial,
+    Supported,
+}
+
+impl NumaSupport {
+    pub fn is_unsupported(&self) -> bool {
+        matches!(self, NumaSupport::Unsupported)
+    }
+
+    pub fn is_partial(&self) -> bool {
+        matches!(self, NumaSupport::Partial)
+    }
+
+    pub fn is_supported(&self) -> bool {
+        matches!(self, NumaSupport::Supported)
+    }
 }
 
 impl RSMalloc {
     pub fn get_capabilities(&self) -> RSMallocCapabilities {
         RSMallocCapabilities {
             thp_enabled: self.config.thp_settings.thp.enabled(),
-            numa_support: false,
+            numa_support: NumaSupport::Partial,
             version: RSMALLOC_VERSION,
         }
     }

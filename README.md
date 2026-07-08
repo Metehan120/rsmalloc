@@ -27,16 +27,17 @@ The current codebase supports two intended modes:
 - Small allocations are served from size classes backed by per-CPU RSEQ caches.
 - RSEQ fast paths use inline assembly critical sections for push/pop operations.
 - Overflow and zero-size handling exists for calloc/realloc paths.
-- Big allocations are tracked separately and can use a 4 MiB to 64 MiB buddy allocator cache.
+- Big allocations are tracked separately and can use a NUMA-aware 4 MiB to 64 MiB buddy allocator cache.
 - Transparent huge page attempts are configurable for big allocation regions.
 - Preload builds provide C ABI allocation entry points including `malloc`, `calloc`, `realloc`, `reallocarray`, `recallocarray`, `free`, sized-free compatibility shims, usable-size queries, alignment APIs, and opt-in `malloc_trim(...)` support.
 - Trimming supports buddy-cache blocks and small-allocation/background trim scanning for size classes equal to or greater than 4096 bytes.
 - Non-preload builds expose `RSMalloc`, `RSMallocConfig`, and `GlobalAlloc` integration.
 - Runtime tuning is available for refill behavior, predictor behavior, THP behavior, buddy cache sizing, opt-in experimental buddy trimming, magic-value behavior, and foreign-pointer handling in global-allocator mode.
 - Small-allocation refill sizing uses an EMA predictor, with a separate bulk-fill predictor so cache-pop/steal behavior does not force page/list initialization into tiny batches.
-- In the default thread-local refill path, pending refill metadata is drained on thread exit into the global pending queue to reduce stranded per-thread pending slabs.
+- In the default thread-local refill path, pending refill metadata is drained on thread exit into a lock-free per-node global pending queue to reduce stranded per-thread pending slabs.
 - Optional `extended-header` Cargo feature provides wider allocator metadata for experiments and stress testing.
-- Non-preload builds expose a small capability snapshot with allocator version, configured THP state, and current NUMA support status.
+- Non-preload builds expose a small capability snapshot with allocator version, configured THP state, and current public NUMA support status.
+- Internal allocation paths are NUMA-aware where topology is available: RSEQ victim stealing, small refill mappings, pending metadata reuse, buddy regions, and direct big mappings prefer the current CPU's node.
 
 ## EMA Refill Prediction
 
@@ -134,7 +135,7 @@ Capability information is available without allocation:
 let caps = GLOBAL.get_capabilities();
 ```
 
-The capability snapshot reports the allocator version, whether THP is enabled by the current config, and whether NUMA support is currently available. NUMA support is currently reported as `false`.
+The capability snapshot reports the allocator version, whether THP is enabled by the current config, and whether NUMA support is exposed through the public capability surface. The capability field currently remains `false` even though internal allocation paths use NUMA-aware placement when topology is available.
 
 ## Building For Preload
 
@@ -161,10 +162,8 @@ cargo build --release --features extended-header
 Other optional Cargo features:
 
 - `rseq-thread-failure-fallback` enables the default recovery path for invalid/unregistered RSEQ CPU IDs.
-- `legacy-glibc-support` enables the raw RSEQ fallback path for environments where libc RSEQ TLS symbols are unavailable.
 - `predictor-debug` enables refill-predictor debug logging.
 - `debug-predictor-exact` enables exact refill-mispredict accounting instrumentation (higher overhead than normal debug mode).
-- `compile-time-disable-background-trim` removes the background trim worker path at compile time.
 - `lazy-page-trim` uses lazy page-free advice for small-allocation trim where supported instead of immediate `MADV_DONTNEED`-style advice.
 
 ## Runtime Configuration For Preload
@@ -190,18 +189,18 @@ The allocator is organized into a few main areas:
 
 - `abi`: C ABI entry points for preload builds.
 - `global_alloc`: Rust `GlobalAlloc` integration and direct Rust-facing allocation helpers.
-- `core_prim`: bootstrap, RSEQ registration, predictor state, fork handling, and pointer wrappers.
+- `core_prim`: bootstrap, predictor state, fork handling, and pointer wrappers.
 - `inner`: allocator operation implementations such as allocation, free, calloc, realloc, and alignment.
 - `big_allocations`: big allocation path and buddy allocator.
-- `internals`: internal data structures including the big allocation map, radix ownership tracking, locks, and once primitives.
-- `rseq_core`: RSEQ cache structures and inline assembly critical sections.
+- `internals`: internal data structures including the big allocation map, radix ownership tracking, NUMA parsing/binding helpers, locks, and once primitives.
+- `rseq_core`: RSEQ cache structures, inline assembly critical sections, bulk-fill metadata, and pending refill queues.
 - `utility`: size classes and shared allocation helpers.
 
 ## Design Notes
 
 rsmalloc treats the small allocation fast path as a per-CPU cache problem. RSEQ lets the allocator update CPU-local linked lists without normal lock overhead when the current CPU remains stable through the critical section. If the kernel preempts or migrates the thread during that critical section, the operation is aborted and retried or moved to a fallback path.
 
-Big allocations do not use the same slab path. They are tracked separately, can be mapped directly, and can be served from a buddy allocator cache for eligible sizes.
+Big allocations do not use the same slab path. They are tracked separately, can be mapped directly, and can be served from a NUMA-aware buddy allocator cache for eligible sizes.
 
 ## Contributing
 

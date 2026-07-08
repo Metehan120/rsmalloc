@@ -2,12 +2,11 @@
 
 ## v0.2.0-alpha
 
-v0.2.0-alpha focuses on memory reclamation and preload robustness. It adds small-allocation trimming, buddy-cache old-block trimming, background trim
-worker support, opt-in memory-pressure relief, lazy page trim support, and several fork/errno/alignment fixes.
+v0.2.0-alpha focuses on memory reclamation, NUMA-aware placement, buddy allocator overhaul, and preload robustness. It adds small-allocation trimming, buddy-cache old-block trimming, NUMA-aware RSEQ/buddy/big refill behavior, a lock-free pending metadata queue, background trim worker support, opt-in memory-pressure relief, lazy page trim support, and several fork/errno/alignment fixes.
 
 - Removed the allocator canary feature and decoupled `extended-header` from canary-specific metadata/checking.
 - Added small-allocation trimming for size classes equal to or greater than 4096 bytes.
-- Added a background trim worker with `RS_DISABLE_TRIM_THREAD` runtime control and `compile-time-disable-background-trim` compile-time removal.
+- Added a background trim worker with `RS_DISABLE_TRIM_THREAD` runtime control.
 - Added `RS_TRIMMER_THRESHOLD`, defaulting to 10 MiB of cached virtual address space, so the background trim worker is not started during fragile early preload/bootstrap paths.
 - Added `lazy-page-trim` to use lazy page-free advice for eligible small-allocation and buddy trim paths.
 - Updated `malloc_trim(...)` and Rust-facing trim support to combine buddy-cache trimming with eligible small-allocation cache trimming.
@@ -19,15 +18,42 @@ worker support, opt-in memory-pressure relief, lazy page trim support, and sever
 - Added `SerialLock::try_lock()` and fork-reset helpers for allocator-internal locks.
 - Updated fallback symbol initialization to use resettable once-lock state after fork.
 - Added preload errno helpers and improved C ABI errno behavior for calloc overflow/failure and alignment API failures.
+- Added NUMA topology parsing from sysfs with CPU-to-node mapping, direct `cpu_ranges[node_id]` lookup, malformed-list handling, overflow checks, CPU clipping, and fallback to node `0` for missing/invalid CPU entries.
+- Added NUMA preferred-placement support through `prefer_node(...)`, currently using the `syscalls` crate's `mbind` wrapper with `MPOL_PREFERRED | MPOL_F_STATIC_NODES`.
 - Reworked RSEQ assembly into `src/rseq_core/rseq_asm.rs` and removed the old `rseq_core.rs` module.
-- Updated RSEQ cache APIs for trim access, overflow mail handling, and fork-time trim-lock reset.
+- Updated RSEQ cache APIs for trim access, overflow mail handling, NUMA topology access, local-node lookup, and fork-time trim-lock reset.
 - Added `get_size_4096_class()` and cached lookup support for selecting trim-eligible size classes.
 - Updated Rust global-allocator configuration with `TrimThreadSettings`, `TrimThread`, `Bytes`, `ReliefSettings`, `ReliefState`, and `Percentage` for background trim worker and opt-in system-memory-pressure relief control.
 - Updated C alignment APIs toward standard behavior, including `posix_memalign`-style validation, `aligned_alloc` size-multiple checks, checked `pvalloc` page rounding, and `memalign` errno reporting.
 - Updated calloc zeroing to use allocation zero-state flags correctly while always zeroing under `lazy-page-trim`.
 - Updated preload runtime configuration documentation for `RS_DISABLE_TRIM_THREAD`, `RS_TRIMMER_THRESHOLD`, default-disabled `RS_DISABLE_RELIEF`, buddy relief pressure thresholds, current EMA clamping, and buddy-cache sizing behavior.
 - Replaced the old `speed` benchmark with `book_speed` and `rstress`, and added checked-in `rstress` benchmark results with thread-churn, allocator edge-case, SIMD, teardown, and trim-pressure coverage.
-- Updated README, TODO, and architecture documentation for current trim capabilities and feature flags.
+- Updated README, TODO, and architecture documentation for current trim capabilities, NUMA-aware subsystems, pending metadata queue behavior, and feature flags.
+
+### NUMA-aware allocation
+
+- Added NUMA-aware RSEQ victim stealing: allocation first tries local CPU mail, then CPUs in the same node range, then remote node ranges when NUMA is active.
+- Added NUMA node selection for small refill mappings, direct big mappings, and buddy regions based on current CPU id.
+- Added `node_id` to small refill `MetaData` so abandoned pending metadata returns to the correct NUMA queue.
+- Added per-node/per-class global pending metadata queues so thread-exit drained refill metadata is reused by local-node threads instead of being globally mixed.
+- Added bootstrap allocation for the pending queue's node/class head table using the parsed NUMA range count, with non-NUMA systems using node slot `0`.
+
+### Buddy allocator overhaul
+
+- Added NUMA-aware buddy region tagging, local-node-first allocation, local-node growth, and remote-node fallback scanning.
+- Added preferred NUMA placement for buddy regions and direct big mapping fallback.
+- Added per-region buddy `nonempty_mask` tracking so allocation can skip empty order lists with bit operations instead of linearly scanning every order.
+
+### RSEQ refill and pending metadata
+
+- Added a lock-free global pending metadata queue for abandoned thread-local refill metadata, indexed by NUMA node and size class.
+- Added thread-exit draining of thread-local pending refill metadata into the per-node global pending queue to reduce stranded pending slabs.
+- Added low-level TLS destructor registration for `ThreadBulk` cleanup and a regression test proving pending metadata is drained on thread exit.
+
+### Testing
+
+- Added NUMA parser tests for range parsing, whitespace, malformed lists, overflow rejection, CPU clipping, sparse `cpu_ranges[node_id]` behavior, and missing/invalid CPU fallback.
+- Added a thread-exit pending metadata drain regression test for the refill `ThreadBulk` cleanup path.
 
 ## v0.1.0-alpha
 
@@ -124,7 +150,6 @@ worker support, opt-in memory-pressure relief, lazy page trim support, and sever
 - Added failure handling for per-thread internal RSEQ registration before returning thread-local RSEQ state.
 - Added default `rseq-thread-failure-fallback` handling for invalid/unregistered RSEQ CPU IDs, using the extra overflow cache slot instead of indexing per-CPU state directly.
 - Removed the experimental per-CPU pending-refill metadata path in favor of the thread-local pending refill path.
-- Added default thread-exit draining of thread-local pending refill metadata into the global pending queue to reduce stranded pending slabs.
 - Added `debug-predictor-exact` instrumentation mode for exact refill prediction miss accounting when high-overhead diagnostics are needed.
 - Simplified RSEQ cache/core retry paths and removed unused cache trait/API surface.
 

@@ -20,7 +20,7 @@ use crate::{
         numa_parser::{NumaTopology, parse_numa_topology},
         once::Once,
     },
-    rseq_core::{rseq_asm::RseqCore, rseq_main::get_rseq},
+    rseq_core::{pending_queue::PENDING_QUEUE, rseq_asm::RseqCore, rseq_main::get_rseq},
     utility::{NUM_SIZE_CLASSES, RSEQ_MAX_BLOCKS},
 };
 
@@ -112,6 +112,8 @@ impl RseqCache {
                     inner.is_numa = true;
                 }
             }
+
+            PENDING_QUEUE.init(inner.numa.nranges, inner.is_numa);
         });
     }
 }

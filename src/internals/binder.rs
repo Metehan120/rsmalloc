@@ -1,13 +1,13 @@
-use std::os::raw::{c_int, c_ulong, c_void};
+use std::os::raw::c_void;
 
-use libc::{SYS_mbind, syscall};
+use syscalls::{Sysno, syscall6};
 
-const MPOL_PREFERRED: c_int = 1;
-const MPOL_F_STATIC_NODES: c_ulong = 1 << 15;
+const MPOL_PREFERRED: i32 = 1;
+const MPOL_F_STATIC_NODES: usize = 1 << 15;
 
 #[inline(always)]
-unsafe fn node_mask_word(node_id: u16) -> c_ulong {
-    1usize.wrapping_shl(node_id as u32) as c_ulong
+unsafe fn node_mask_word(node_id: u16) -> usize {
+    1usize.wrapping_shl(node_id as u32)
 }
 
 pub unsafe fn prefer_node(ptr: *mut c_void, len: usize, node_id: u16) -> bool {
@@ -16,15 +16,16 @@ pub unsafe fn prefer_node(ptr: *mut c_void, len: usize, node_id: u16) -> bool {
     }
 
     let mask = node_mask_word(node_id);
-    let maxnode = node_id as c_ulong + 1;
+    let maxnode = node_id as usize + 1;
 
-    syscall(
-        SYS_mbind,
-        ptr,
+    syscall6(
+        Sysno::mbind,
+        ptr as usize,
         len,
-        MPOL_PREFERRED,
-        &mask as *const c_ulong,
+        MPOL_PREFERRED as usize,
+        &mask as *const usize as usize,
         maxnode,
         MPOL_F_STATIC_NODES,
-    ) == 0
+    )
+    .is_ok()
 }

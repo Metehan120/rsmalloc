@@ -156,6 +156,7 @@ pub(crate) struct MetaData {
     pub start: usize,
     pub end: usize,
     pub next: usize,
+    pub node_id: u16,
 }
 
 #[repr(C, align(16))]

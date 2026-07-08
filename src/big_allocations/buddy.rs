@@ -4,8 +4,10 @@
 
 use std::{hint::spin_loop, mem::size_of, os::raw::c_void, ptr::null_mut};
 
-use libc::sched_getcpu;
-use rustix::mm::{Advice, MapFlags, ProtFlags, madvise, mmap_anonymous, munmap};
+use rustix::{
+    mm::{Advice, MapFlags, ProtFlags, madvise, mmap_anonymous, munmap},
+    thread::sched_getcpu,
+};
 
 use crate::{
     BUDDY_AVERAGE_BLOCK_TIMES, BUDDY_INIT, CURRENT_STAMP, GLOBAL_TRIM_LOCK,

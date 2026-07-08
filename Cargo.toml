@@ -8,15 +8,15 @@ repository = "https://github.com/Metehan120/rsmalloc"
 edition = "2024"
 
 [dependencies]
+syscalls = { version = "0.8.1", default-features = false }
 rustix = { version = "1.1.4", features = [
     "linux_latest",
     "mm",
     "rand",
     "system",
     "fs",
+    "thread",
 ] }
-# libc used for NUMA policy and will be changed in future
-libc = "0.2.186"
 
 [features]
 default = ["rseq-thread-failure-fallback"]

@@ -1,5 +1,10 @@
+// After wrestling with TLS destructor for hours I gave up and use libc.
+//
+// Leave it, good enough doesnt effect main paths just destructor
+
 use std::{
     cell::UnsafeCell,
+    os::raw::c_void,
     ptr::{null_mut, write},
     sync::atomic::Ordering,
 };
@@ -14,19 +19,16 @@ use crate::{
     utility::{ITERATIONS, NUM_SIZE_CLASSES, SIZE_CLASSES, align_to},
 };
 
-pub struct Destructor;
+pub struct Destructor(*mut ThreadBulk);
 
 impl Drop for Destructor {
     fn drop(&mut self) {
-        for class in 0..NUM_SIZE_CLASSES {
-            unsafe { drain_pending(&mut THREAD_BULK, class) };
-        }
+        unsafe { cleanup_thread_bulk(self.0) };
     }
 }
 
 struct ThreadBulk {
     free: [*mut MetaData; NUM_SIZE_CLASSES],
-    destructor: UnsafeCell<Option<Destructor>>,
     init: bool,
 }
 
@@ -34,21 +36,48 @@ impl ThreadBulk {
     const fn new() -> Self {
         Self {
             free: [const { null_mut() }; NUM_SIZE_CLASSES],
-            destructor: UnsafeCell::new(None),
             init: false,
         }
+    }
+
+    pub unsafe fn get_or_init(&mut self, class: usize) -> *mut MetaData {
+        if !self.init {
+            self.init = true;
+            touch_tls();
+        }
+
+        self.free[class]
     }
 }
 
 #[thread_local]
 static mut THREAD_BULK: ThreadBulk = ThreadBulk::new();
+#[thread_local]
+static TLS_DESTRUCTOR: UnsafeCell<Option<Destructor>> = UnsafeCell::new(None);
+
+unsafe extern "C" {
+    static __dso_handle: u8;
+
+    fn __cxa_thread_atexit_impl(
+        destructor: unsafe extern "C" fn(*mut c_void),
+        object: *mut c_void,
+        dso_symbol: *mut c_void,
+    ) -> i32;
+}
+
+unsafe extern "C" fn run_tls_destructor(slot: *mut c_void) {
+    core::ptr::drop_in_place(slot as *mut Option<Destructor>);
+}
 
 #[inline(always)]
 unsafe fn touch_tls() {
-    if !THREAD_BULK.init {
-        let slot = THREAD_BULK.destructor.get();
-        core::ptr::write_volatile(slot, Some(Destructor));
-        THREAD_BULK.init = true;
+    let slot = TLS_DESTRUCTOR.get();
+    core::ptr::write_volatile(slot, Some(Destructor(&raw mut THREAD_BULK)));
+    core::ptr::read_volatile(slot);
+
+    let dso = &raw const __dso_handle as *mut c_void;
+    if __cxa_thread_atexit_impl(run_tls_destructor, slot as *mut c_void, dso) != 0 {
+        THREAD_BULK.init = false;
     }
 }
 
@@ -106,7 +135,10 @@ unsafe fn alloc_metadata(
     block_size: usize,
     cpu_id: usize,
 ) -> Result<*mut MetaData, Err> {
-    let pending = PENDING_QUEUE.pop(class);
+    let (_, inner) = RSEQ_CACHE.get_numa_and_inner();
+    let node_id = RSEQ_CACHE.node_for_cpu(cpu_id, inner);
+
+    let pending = PENDING_QUEUE.pop(node_id, class);
     if !pending.is_null() {
         return Ok(pending);
     }
@@ -130,10 +162,7 @@ unsafe fn alloc_metadata(
         MapFlags::PRIVATE,
     )
     .map_err(|_| Err::OutOfMemory)?;
-
-    let (_, inner) = RSEQ_CACHE.get_numa_and_inner();
     if inner.is_numa {
-        let node_id = RSEQ_CACHE.node_for_cpu(cpu_id, inner);
         prefer_node(mem, total, node_id);
     }
 
@@ -149,6 +178,7 @@ unsafe fn alloc_metadata(
             start: mem as usize,
             end: (mem as usize) + total,
             next: (mem as usize) + size_of::<MetaData>(),
+            node_id,
         },
     );
 
@@ -161,13 +191,11 @@ pub unsafe fn bulk_fill(
     cpu_id: usize,
     max_init: usize,
 ) -> Result<(*mut Header, *mut Header, usize), Err> {
-    touch_tls();
-
     let payload_size = SIZE_CLASSES[class];
     let block_size = align_to(payload_size + Header::SIZE, 16);
     let current_stamp = CURRENT_STAMP.load(Ordering::Relaxed);
 
-    let pending = THREAD_BULK.free[class];
+    let pending = THREAD_BULK.get_or_init(class);
     if !pending.is_null() {
         THREAD_BULK.free[class] = null_mut();
         let (head, tail, count) =
@@ -193,6 +221,16 @@ pub unsafe fn bulk_fill(
     Ok((head, tail, count))
 }
 
+unsafe fn cleanup_thread_bulk(thread: *mut ThreadBulk) {
+    if thread.is_null() {
+        return;
+    }
+
+    for class in 0..NUM_SIZE_CLASSES {
+        drain_pending(&mut *thread, class);
+    }
+}
+
 unsafe fn drain_pending(thread: &mut ThreadBulk, class: usize) {
     let pending = thread.free[class];
     if pending.is_null() {
@@ -201,4 +239,43 @@ unsafe fn drain_pending(thread: &mut ThreadBulk, class: usize) {
 
     thread.free[class] = null_mut();
     PENDING_QUEUE.insert(class, pending);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[repr(C, align(4096))]
+    struct TestMeta(MetaData);
+
+    static mut TEST_META: TestMeta = TestMeta(MetaData {
+        next_page: null_mut(),
+        start: 0,
+        end: 4096,
+        next: 0,
+        node_id: 0,
+    });
+
+    #[test]
+    fn drains_thread_pending_metadata_on_thread_exit() {
+        const CLASS: usize = 0;
+
+        unsafe { PENDING_QUEUE.init(1, false) };
+        while !unsafe { PENDING_QUEUE.pop(0, CLASS) }.is_null() {}
+
+        std::thread::spawn(|| unsafe {
+            TEST_META.0.next_page = null_mut();
+            TEST_META.0.node_id = 0;
+
+            let pending = THREAD_BULK.get_or_init(CLASS);
+            assert!(pending.is_null());
+            THREAD_BULK.free[CLASS] = &raw mut TEST_META.0;
+        })
+        .join()
+        .unwrap();
+
+        let drained = unsafe { PENDING_QUEUE.pop(0, CLASS) };
+        let expected = unsafe { &raw mut TEST_META.0 };
+        assert_eq!(drained, expected);
+    }
 }

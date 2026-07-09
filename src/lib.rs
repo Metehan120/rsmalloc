@@ -17,13 +17,13 @@
 //!
 //! ```rust
 //! use rsmalloc::{
-//!     BuddyTHP, CacheLimit, EMASettings, EmaAlpha, ForeignPointerSettings,
+//!     BuddyTHP, CacheLimit, ForeignPointerSettings, RefillPredictorSettings,
 //!     RSMalloc, RSMallocConfig, THP, THPSettings,
 //! };
 //!
 //! const CONFIG: RSMallocConfig = RSMallocConfig::DEFAULT
 //!     .with_thp_settings(THPSettings::new(THP::Enable, BuddyTHP::Force))
-//!     .with_ema_settings(EMASettings::new(EmaAlpha::Fast, 16))
+//!     .with_refill_predictor_settings(RefillPredictorSettings::new(16))
 //!     .with_max_refill_retries(4)
 //!     .with_max_per_buddy_cache(CacheLimit::Bytes(512 * 1024 * 1024))
 //!     .with_foreign_pointer(ForeignPointerSettings::DEFAULT);

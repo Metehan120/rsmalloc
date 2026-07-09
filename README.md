@@ -33,17 +33,17 @@ The current codebase supports two intended modes:
 - Trimming supports buddy-cache blocks and small-allocation/background trim scanning for size classes equal to or greater than 4096 bytes.
 - Non-preload builds expose `RSMalloc`, `RSMallocConfig`, and `GlobalAlloc` integration.
 - Runtime tuning is available for refill behavior, predictor behavior, THP behavior, buddy cache sizing, opt-in experimental buddy trimming, magic-value behavior, and foreign-pointer handling in global-allocator mode.
-- Small-allocation refill sizing uses an EMA predictor, with a separate bulk-fill predictor so cache-pop/steal behavior does not force page/list initialization into tiny batches.
+- Small-allocation refill sizing uses a fast integer adaptive predictor, with a separate bulk-fill predictor so cache-pop/steal behavior does not force page/list initialization into tiny batches.
 - In the default thread-local refill path, pending refill metadata is drained on thread exit into a lock-free per-node global pending queue to reduce stranded per-thread pending slabs.
 - Optional `extended-header` Cargo feature provides wider allocator metadata for experiments and stress testing.
 - Non-preload builds expose a small capability snapshot with allocator version, configured THP state, and current public NUMA support status.
 - Internal allocation paths are NUMA-aware where topology is available: RSEQ victim stealing, small refill mappings, pending metadata reuse, buddy regions, and direct big mappings prefer the current CPU's node.
 
-## EMA Refill Prediction
+## Adaptive Refill Prediction
 
-Small-allocation cache refills use an exponential moving average (EMA) predictor to smooth recent allocation activity and estimate current per-size-class demand. This lets refill batch sizes adapt to workload pressure without reacting too sharply to one-off bursts. When a refill returns exactly the requested batch and the class still has headroom, observed demand is slightly uplifted (+25%, clamped) before EMA update to improve burst recovery.
+Small-allocation cache refills use a fast integer adaptive predictor to estimate current per-size-class refill demand. When a refill returns exactly the requested batch and the class still has headroom, observed demand is slightly uplifted (+25%, clamped) so the next refill can grow quickly under pressure. Sustained low-demand samples shrink the predicted batch gradually to avoid oscillating on one-off dips.
 
-The predictor is configurable through `EMASettings`, `EmaAlpha`, `RS_EMA_ALPHA`, and `RS_PREDICTOR_INIT_BATCH`. A separate bulk-fill predictor is used so page/list initialization can still happen in practical batches even when cache-pop or steal behavior observes smaller short-term demand.
+The initial predictor batch is configurable through `RefillPredictorSettings`/`with_refill_predictor_settings` in the Rust API and `RS_PREDICTOR_INIT_BATCH` in preload builds. A separate bulk-fill predictor is used so page/list initialization can still happen in practical batches even when cache-pop or steal behavior observes smaller short-term demand.
 
 ## Current Limitations
 
@@ -72,14 +72,14 @@ For explicit runtime configuration:
 
 ```rust
 use rsmalloc::{
-    BuddyTHP, EMASettings, EmaAlpha, ExperimentalFeatures, ForeignPointerSettings,
-    PerCacheLimit, Percentage, ReliefSettings, ReliefState, RSMalloc, RSMallocConfig, THP,
+    BuddyTHP, ExperimentalFeatures, ForeignPointerSettings, PerCacheLimit, Percentage,
+    RefillPredictorSettings, ReliefSettings, ReliefState, RSMalloc, RSMallocConfig, THP,
     THPSettings,
 };
 
 const CONFIG: RSMallocConfig = RSMallocConfig::DEFAULT
     .with_thp_settings(THPSettings::new(THP::Enabled, BuddyTHP::Force))
-    .with_ema_settings(EMASettings::new(EmaAlpha::Fast, 16))
+    .with_refill_predictor_settings(RefillPredictorSettings::new(16))
     .with_max_refill_retries(4)
     .with_max_per_buddy_cache(PerCacheLimit::Bytes(512 * 1024 * 1024))
     .with_relief_settings(ReliefSettings::new(
@@ -94,7 +94,7 @@ const CONFIG: RSMallocConfig = RSMallocConfig::DEFAULT
 static GLOBAL: RSMalloc = RSMalloc::new_with_config(CONFIG);
 ```
 
-`RSMallocConfig` groups allocator tuning into THP settings, EMA refill-predictor settings, magic-value safety behavior, foreign-pointer behavior, buddy-cache sizing, memory-pressure relief behavior, refill retry limits, and experimental feature flags. The default configuration keeps randomized magic values enabled, aborts on foreign pointers in Rust global-allocator mode, enables general THP support, leaves buddy THP forcing disabled, uses the default buddy cache limit, leaves memory-pressure relief disabled by default, and starts the refill predictor with allocator defaults.
+`RSMallocConfig` groups allocator tuning into THP settings, adaptive refill-predictor settings, magic-value safety behavior, foreign-pointer behavior, buddy-cache sizing, memory-pressure relief behavior, refill retry limits, and experimental feature flags. The default configuration keeps randomized magic values enabled, aborts on foreign pointers in Rust global-allocator mode, enables general THP support, leaves buddy THP forcing disabled, uses the default buddy cache limit, leaves memory-pressure relief disabled by default, and starts the refill predictor with allocator defaults.
 
 `THPSettings` uses explicit enums instead of raw booleans: `THP::Enabled` or `THP::Disabled` for general THP behavior, and `BuddyTHP::Disabled` or `BuddyTHP::Force` for buddy-region huge-page requests.
 
@@ -169,7 +169,7 @@ Other optional Cargo features:
 ## Runtime Configuration For Preload
 
 - `RS_PREDICTOR_INIT_BATCH`: Initial per-size-class predictor batch value for small allocation refills. Defaults to `128`.
-- `RS_EMA_ALPHA`: Exponential moving average alpha value for the refill predictor. Defaults to `0.15` and is clamped to `0.05..=0.25`.
+
 - `RS_MAX_REFILL_RETRIES`: Maximum number of refill retries. Defaults to `3`.
 - `RS_BUDDY_PER_CACHE_SIZE`: Initial buddy allocator region size for big allocations. Defaults to `268435456` bytes, is clamped to at least `268435456`, and is rounded up to a power of two.
 - `RS_BUDDY_ATTEMPT_HUGEPAGE`: Set to `1` to request transparent huge pages for buddy allocator regions.

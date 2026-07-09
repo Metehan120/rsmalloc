@@ -7,10 +7,10 @@ use crate::{
     ALIGN_TAG, BIG_MAGIC, BUDDY_ATTEMPT_HUGE, BUDDY_MAX_CACHE, DISABLE_TRIM_THREAD, FREED_MAGIC,
     MAGIC, RS_DISABLE_THP, RSMallocError, TRIM_THRESHOLD,
     big_allocations::buddy::BIG_BUDDY_ALLOCATOR,
-    core_prim::predictor::{DEFAULT_BATCH, EMA_ALPHA, PREDICTOR_INIT_BATCH},
+    core_prim::predictor::{DEFAULT_BATCH, PREDICTOR_INIT_BATCH},
     inner::alloc::MAX_REFILL_RETRIES,
     internals::{
-        env::{get_env_f32, get_env_usize},
+        env::get_env_usize,
         l3_main_radix::{L3_RADIX, RadixTree},
     },
     rseq_core::{rseq_cache::RSEQ_CACHE, rseq_main::__rseq_size},
@@ -88,10 +88,6 @@ pub unsafe fn bootstrap() {
     }
 
     MAX_REFILL_RETRIES = get_env_usize("RS_MAX_REFILL_RETRIES".as_bytes()).unwrap_or(3);
-
-    EMA_ALPHA = get_env_f32("RS_EMA_ALPHA".as_bytes())
-        .unwrap_or(0.15)
-        .clamp(0.05, 0.25);
 
     let predictor = get_env_usize("RS_PREDICTOR_INIT_BATCH".as_bytes()).unwrap_or(DEFAULT_BATCH);
     PREDICTOR_INIT_BATCH = predictor;

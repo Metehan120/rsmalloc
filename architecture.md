@@ -90,7 +90,6 @@ Bootstrap initializes:
 1. RSEQ availability through libc-provided RSEQ TLS state.
 2. Runtime knobs:
    - `RS_MAX_REFILL_RETRIES`,
-   - `RS_EMA_ALPHA`,
    - `RS_PREDICTOR_INIT_BATCH`,
    - buddy cache size / THP / trim options in preload mode.
 3. `L3_RADIX`, the ownership map.
@@ -215,7 +214,7 @@ The queue is initialized during `RSEQ_CACHE` setup from the parsed NUMA topology
 
 Queue heads are ABA-tagged in the low 12 bits. This relies on `MetaData` being placed at the base of an mmap-backed page-aligned mapping. The queue is a cold/slow refill structure, not part of the normal RSEQ block pop/push path.
 
-## EMA Refill Prediction
+## Adaptive Refill Prediction
 
 Small refill sizes are adaptive instead of fixed. The goal is to avoid two bad extremes:
 
@@ -233,21 +232,23 @@ Current predictor state is intentionally small:
 
 ```rust
 struct Predictor {
-    ema: f32,
     batch: usize,
+    low_count: u8,
     once: Once,
     is_fill: bool,
     _class: usize,
 }
 ```
 
-The predictor is initialized lazily on first use. Normal cache/mail prediction starts from `PREDICTOR_INIT_BATCH` (`RS_PREDICTOR_INIT_BATCH` in runtime config paths). Bulk-fill prediction starts from `BULK_FILL_PREDICTOR_INIT_BATCH`. `EMA_ALPHA` controls responsiveness and currently defaults to `0.15`.
+The predictor is initialized lazily on first use. Normal cache/mail prediction starts from `PREDICTOR_INIT_BATCH` (`RS_PREDICTOR_INIT_BATCH` in runtime config paths). Bulk-fill prediction starts from `BULK_FILL_PREDICTOR_INIT_BATCH`.
 
-The update rule is the standard exponential moving average:
+The update rule is integer-only. If observed demand exceeds the current batch, the predictor grows immediately by roughly 1.5x or to the observed demand, whichever is larger. If observed demand stays below one quarter of the current batch for several refill observations, the predictor halves the batch.
 
 ```text
-ema_next = alpha * observed_demand + (1 - alpha) * ema_old
-batch_next = ceil(ema_next).clamp(1, ITERATIONS[class])
+if observed > batch:
+    batch = max(batch + batch / 2, observed).clamp(1, ITERATIONS[class])
+else if observed * 4 < batch for 4 refill observations:
+    batch = (batch / 2).clamp(1, ITERATIONS[class])
 ```
 
 `ITERATIONS[class]` is the hard per-class maximum derived from refill target bytes and block size. This keeps predictor output bounded even if a workload keeps asking for more.
@@ -259,9 +260,9 @@ The predictor does not observe application allocation demand directly. It observ
 - if only a few blocks were available, the observation is small and future batches shrink gradually,
 - if the requested batch was fully satisfied, that is treated as a signal that demand may be at least as large as the request.
 
-The second case matters because a plain EMA can get stuck too low. Example: if `batch == 8` and every refill gets exactly 8 blocks, feeding `8` back into the EMA forever never lets the predictor discover that the workload could use `16`, `32`, or more.
+The second case matters because feeding the exact returned count back forever can keep the predictor stuck too low. Example: if `batch == 8` and every refill gets exactly 8 blocks, feeding `8` back forever never lets the predictor discover that the workload could use larger batches.
 
-To avoid that, when a refill returns exactly the requested batch and the class still has headroom, the observed value is lifted by `+25%` before updating the EMA:
+To avoid that, when a refill returns exactly the requested batch and the class still has headroom, the observed value is lifted by `+25%` before updating the predictor:
 
 ```text
 if returned == requested && requested < ITERATIONS[class]:
@@ -272,7 +273,7 @@ else:
 
 This is deliberately conservative. It lets the predictor climb out of too-small batches during sustained pressure, but avoids doubling into large over-refills after one successful refill.
 
-### Why EMA Instead Of Instant Batch Changes?
+### Why Gradual Shrink Instead Of Instant Batch Changes?
 
 Refill behavior is noisy:
 
@@ -281,7 +282,7 @@ Refill behavior is noisy:
 - bursty workloads may allocate heavily for a short phase and then stop,
 - thread migration means CPU-local cache state is not a perfect demand signal.
 
-EMA smooths those transient observations. With `alpha = 0.15`, recent refill results matter, but one odd refill does not immediately rewrite the batch size. The tradeoff is that the predictor reacts over multiple refill calls rather than instantly.
+The predictor grows quickly on clear pressure because under-refilling causes repeated slow-path trips. It shrinks only after repeated low-demand observations so one odd refill does not immediately collapse the batch size.
 
 ### Debugging Prediction Quality
 
@@ -297,7 +298,7 @@ The counters should be interpreted as tuning signals, not correctness requiremen
 
 - Predictors are thread-local, not global. This avoids atomics on the hot path but means new threads start from initial settings.
 - The predictor sees allocator-side refill results, not future application demand.
-- The `+25%` uplift helps sustained full-batch pressure, but it is still intentionally slower than an aggressive doubling strategy.
+- The `+25%` uplift helps sustained full-batch pressure, while 1.5x growth avoids jumping as aggressively as a doubling strategy.
 - Very synchronized refill storms can still bottleneck in the refill path, but pending refill metadata stays thread-local by default to avoid shared refill locks.
 
 ## Free Path

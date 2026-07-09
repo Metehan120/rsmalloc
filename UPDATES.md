@@ -26,7 +26,7 @@ v0.2.0-alpha focuses on memory reclamation, NUMA-aware placement, buddy allocato
 - Updated Rust global-allocator configuration with `TrimThreadSettings`, `TrimThread`, `Bytes`, `ReliefSettings`, `ReliefState`, and `Percentage` for background trim worker and opt-in system-memory-pressure relief control.
 - Updated C alignment APIs toward standard behavior, including `posix_memalign`-style validation, `aligned_alloc` size-multiple checks, checked `pvalloc` page rounding, and `memalign` errno reporting.
 - Updated calloc zeroing to use allocation zero-state flags correctly while always zeroing under `lazy-page-trim`.
-- Updated preload runtime configuration documentation for `RS_DISABLE_TRIM_THREAD`, `RS_TRIMMER_THRESHOLD`, default-disabled `RS_DISABLE_RELIEF`, buddy relief pressure thresholds, current EMA clamping, and buddy-cache sizing behavior.
+- Updated preload runtime configuration documentation for `RS_DISABLE_TRIM_THREAD`, `RS_TRIMMER_THRESHOLD`, default-disabled `RS_DISABLE_RELIEF`, buddy relief pressure thresholds, adaptive refill predictor initialization, and buddy-cache sizing behavior.
 - Replaced the old `speed` benchmark with `book_speed` and `rstress`, and added checked-in `rstress` benchmark results with thread-churn, allocator edge-case, SIMD, teardown, and trim-pressure coverage.
 - Updated README, TODO, and architecture documentation for current trim capabilities, NUMA-aware subsystems, pending metadata queue behavior, and feature flags.
 
@@ -49,6 +49,13 @@ v0.2.0-alpha focuses on memory reclamation, NUMA-aware placement, buddy allocato
 - Added a lock-free global pending metadata queue for abandoned thread-local refill metadata, indexed by NUMA node and size class.
 - Added thread-exit draining of thread-local pending refill metadata into the per-node global pending queue to reduce stranded pending slabs.
 - Added low-level TLS destructor registration for `ThreadBulk` cleanup and a regression test proving pending metadata is drained on thread exit.
+
+### Adaptive refill batcher
+
+- Replaced the old EMA refill predictor with a small integer adaptive batcher for per-thread/per-class refill sizing.
+- The batcher is inspired by allocator pressure-control and AIMD-style feedback loops: grow quickly when a refill fully satisfies the requested batch, then shrink only after repeated low-demand observations.
+- Growth uses the larger of observed demand and roughly 1.5x the current batch, while sustained low demand halves the batch after several samples. This avoids floating-point work, reacts faster to refill pressure than EMA, and avoids aggressive doubling.
+- Renamed the Rust configuration API from `EMASettings`/`with_ema_settings` to `RefillPredictorSettings`/`with_refill_predictor_settings`. Preload builds keep `RS_PREDICTOR_INIT_BATCH` as the initial batch-size knob and no longer use an EMA alpha knob.
 
 ### Testing
 
@@ -76,13 +83,13 @@ v0.2.0-alpha focuses on memory reclamation, NUMA-aware placement, buddy allocato
 - Added direct Rust-facing helper methods on `RSMalloc` for malloc-style allocation, calloc, aligned allocation, realloc, buddy trimming, free, and usable-size queries.
 - Added `Size::RS` and `Size::NotRS` usable-size result variants for the Rust-facing API.
 - Added `RSMallocTrim` and `RSTrimStatus` for the Rust-facing buddy trim API.
-- Added public non-preload configuration exports for `RSMallocConfig`, `THPSettings`, `THP`, `BuddyTHP`, `EMASettings`, `EmaAlpha`, `MagicSafety`, `MagicSafetyDisable`, `DisableMagic`, `ForeignPointerSettings`, `ForeignPointerPolicy`, `PerCacheLimit`, `ExperimentalFeatures`, `RSMallocTrim`, `RSTrimStatus`, `Size`, `RSMallocCapabilities`, and `RSMalloc`.
+- Added public non-preload configuration exports for `RSMallocConfig`, `THPSettings`, `THP`, `BuddyTHP`, `RefillPredictorSettings`, `MagicSafety`, `MagicSafetyDisable`, `DisableMagic`, `ForeignPointerSettings`, `ForeignPointerPolicy`, `PerCacheLimit`, `ExperimentalFeatures`, `RSMallocTrim`, `RSTrimStatus`, `Size`, `RSMallocCapabilities`, and `RSMalloc`.
 
 ### Runtime configuration
 
 - Added grouped runtime configuration for the Rust global allocator:
   - `THPSettings`, `THP`, and `BuddyTHP` control general THP behavior and buddy-region huge-page requests without raw boolean arguments.
-  - `EMASettings` and `EmaAlpha` control refill predictor responsiveness.
+  - `RefillPredictorSettings` controls the initial refill predictor batch.
   - `MagicSafety` controls randomized magic values, fixed magic values, or disabled magic validation.
   - `ForeignPointerSettings` controls whether foreign pointers in non-preload/global-allocator mode are ignored or abort.
   - `max_refill_retries` controls refill and mapping retry counts.
@@ -179,7 +186,7 @@ v0.2.0-alpha focuses on memory reclamation, NUMA-aware placement, buddy allocato
   - `RS_DISABLE_THP`
   - `RS_DISABLE_RANDOMIZING`
 - Added `RS_PREDICTOR_INIT_BATCH` to configure the initial predictor batch size for small allocation refills.
-- Added `RS_EMA_ALPHA` to configure the exponential moving average alpha value for the predictor.
+- Added early refill predictor runtime tuning. Current alpha releases use `RS_PREDICTOR_INIT_BATCH` instead of an EMA alpha knob.
 - Updated big allocation metadata to track allocation order so pooled blocks can be returned to the buddy allocator correctly.
 - Changed big allocation ownership tracking to use single radix entries for direct mappings and full ranges for buddy regions.
 - Added raw RSEQ registration support with an internal thread-local `rseq` fallback when libc TLS RSEQ symbols are unavailable.

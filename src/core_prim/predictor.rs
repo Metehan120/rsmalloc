@@ -3,11 +3,9 @@ use crate::{internals::once::Once, utility::NUM_SIZE_CLASSES};
 pub const DEFAULT_BATCH: usize = 128;
 pub static mut PREDICTOR_INIT_BATCH: usize = DEFAULT_BATCH;
 pub static mut BULK_FILL_PREDICTOR_INIT_BATCH: usize = 384;
-pub static mut EMA_ALPHA: f32 = 0.15;
-
 pub struct Predictor {
-    ema: f32,
     batch: usize,
+    low_count: u8,
     once: Once,
     is_fill: bool,
     _class: usize,
@@ -16,8 +14,8 @@ pub struct Predictor {
 impl Predictor {
     pub const fn new(fill: bool, class: usize) -> Self {
         Self {
-            ema: 1.0,
             batch: 1,
+            low_count: 0,
             once: Once::new(),
             is_fill: fill,
             _class: class,
@@ -33,7 +31,7 @@ impl Predictor {
             };
 
             self.batch = init_batch;
-            self.ema = init_batch as f32;
+            self.low_count = 0;
         });
     }
 
@@ -42,8 +40,23 @@ impl Predictor {
         self.update_global_batch_value();
         let demand = demand.max(1);
 
-        self.ema = EMA_ALPHA * demand as f32 + (1.0 - EMA_ALPHA) * self.ema;
-        self.batch = (self.ema.ceil() as usize).clamp(min, max);
+        if demand > self.batch {
+            let grow = self.batch.saturating_add(self.batch >> 1).max(demand);
+            self.batch = grow.clamp(min, max);
+            self.low_count = 0;
+            return;
+        }
+
+        if demand.saturating_mul(4) < self.batch {
+            self.low_count = self.low_count.saturating_add(1);
+
+            if self.low_count >= 4 {
+                self.batch = (self.batch >> 1).clamp(min, max);
+                self.low_count = 0;
+            }
+        } else {
+            self.low_count = 0;
+        }
     }
 
     #[inline(always)]

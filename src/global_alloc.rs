@@ -5,7 +5,7 @@ use std::ptr::{null_mut, write_bytes};
 use rustix::rand::{GetRandomFlags, getrandom};
 
 use crate::big_allocations::buddy::BIG_BUDDY_ALLOCATOR;
-use crate::core_prim::predictor::{DEFAULT_BATCH, EMA_ALPHA, PREDICTOR_INIT_BATCH};
+use crate::core_prim::predictor::{DEFAULT_BATCH, PREDICTOR_INIT_BATCH};
 use crate::core_prim::wrappers::UnsafePointer;
 use crate::inner::align::memalign_inner;
 use crate::inner::alloc::{MAX_REFILL_RETRIES, rs_alloc, usable_size};
@@ -107,40 +107,20 @@ impl ExperimentalFeatures {
     pub const DEFAULT: Self = Self {};
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum EmaAlpha {
-    /// Prioritizes stability over responsiveness.
-    Smooth,
-    /// Prioritizes responsiveness over stability.
-    Fast,
-}
-
-impl EmaAlpha {
-    const fn value(self) -> f32 {
-        match self {
-            Self::Smooth => 0.15,
-            Self::Fast => 0.25,
-        }
-    }
-}
-
 /// Configuration for the small-allocation refill predictor.
 #[derive(Clone, Copy, Debug)]
-pub struct EMASettings {
-    /// EMA alpha preset or custom value.
-    pub alpha: EmaAlpha,
+pub struct RefillPredictorSettings {
     /// Initial predicted refill batch size.
     pub init_batch: u8,
 }
 
-impl EMASettings {
+impl RefillPredictorSettings {
     pub const DEFAULT: Self = Self {
-        alpha: EmaAlpha::Smooth,
         init_batch: DEFAULT_BATCH as u8,
     };
 
-    pub const fn new(alpha: EmaAlpha, init_batch: u8) -> Self {
-        Self { alpha, init_batch }
+    pub const fn new(init_batch: u8) -> Self {
+        Self { init_batch }
     }
 }
 
@@ -454,7 +434,7 @@ impl ReliefSettings {
 #[must_use]
 pub struct RSMallocConfig {
     pub thp_settings: THPSettings,
-    pub ema_settings: EMASettings,
+    pub predictor_settings: RefillPredictorSettings,
     pub magic_safety: MagicSafety,
     pub foreign_pointer: ForeignPointerSettings,
     pub max_refill_retries: u8,
@@ -473,7 +453,7 @@ impl RSMallocConfig {
     pub const DEFAULT: Self = Self {
         thp_settings: THPSettings::DEFAULT,
         max_refill_retries: 3,
-        ema_settings: EMASettings::DEFAULT,
+        predictor_settings: RefillPredictorSettings::DEFAULT,
         foreign_pointer: ForeignPointerSettings::DEFAULT,
         trim_thread: TrimThreadSettings {
             background_worker: TrimThread::Disabled,
@@ -507,9 +487,9 @@ impl RSMallocConfig {
     }
 
     #[must_use]
-    pub const fn with_ema_settings(&self, settings: EMASettings) -> Self {
+    pub const fn with_refill_predictor_settings(&self, settings: RefillPredictorSettings) -> Self {
         Self {
-            ema_settings: settings,
+            predictor_settings: settings,
             ..*self
         }
     }
@@ -588,14 +568,7 @@ unsafe fn init(rs: &RSMalloc) {
     RS_DISABLE_THP = !rs.config.thp_settings.thp.enabled();
     BUDDY_MAX_CACHE = rs.config.max_per_buddy_cache.get_size().next_power_of_two();
 
-    let alpha = rs.config.ema_settings.alpha;
-    EMA_ALPHA = if alpha.value().is_finite() {
-        alpha.value().clamp(0.1, 0.95)
-    } else {
-        EMASettings::DEFAULT.alpha.value()
-    };
-
-    PREDICTOR_INIT_BATCH = rs.config.ema_settings.init_batch as usize;
+    PREDICTOR_INIT_BATCH = rs.config.predictor_settings.init_batch as usize;
     BUDDY_ATTEMPT_HUGE = rs.config.thp_settings.buddy_use_thp.enabled();
 
     L3_RADIX = RadixTree::new();

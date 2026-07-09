@@ -20,7 +20,7 @@ flowchart TD
     INNER[inner allocation operations]
     SMALL[small allocation path]
     RSEQ[RSEQ per-CPU caches]
-    REFILL[bulk refill / EMA prediction]
+    REFILL[Adaptive bulk refill]
     PENDING[per-node pending metadata queue]
     TLS[thread-local pending metadata]
     NUMA[NUMA topology and preferred node policy]

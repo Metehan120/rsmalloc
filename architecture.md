@@ -21,8 +21,11 @@ flowchart TD
     SMALL[small allocation path]
     RSEQ[RSEQ per-CPU caches]
     REFILL[bulk refill / EMA prediction]
+    PENDING[per-node pending metadata queue]
+    TLS[thread-local pending metadata]
+    NUMA[NUMA topology and preferred node policy]
     BIG[big allocation path]
-    BUDDY[buddy allocator cache]
+    BUDDY[NUMA-aware buddy allocator cache]
     RADIX[L3 radix ownership map]
     MAP[big allocation metadata map]
 
@@ -34,7 +37,16 @@ flowchart TD
     INNER --> BIG
     SMALL --> RSEQ
     SMALL --> REFILL
+    REFILL --> TLS
+    TLS --> REFILL
+    TLS --> PENDING
+    PENDING --> REFILL
     REFILL --> RSEQ
+    NUMA --> RSEQ
+    NUMA --> REFILL
+    NUMA --> PENDING
+    NUMA --> BUDDY
+    NUMA --> BIG
     BIG --> BUDDY
     BIG --> MAP
     SMALL --> RADIX
@@ -48,10 +60,10 @@ Main source areas:
 | `src/abi` | C ABI entry points for `LD_PRELOAD` builds. |
 | `src/global_alloc.rs` | Rust `GlobalAlloc` integration, Rust-facing configuration, capabilities, stats, and direct helper methods. |
 | `src/inner` | Shared allocation operations: alloc, free, realloc, calloc, alignment, fallback/free handling. |
-| `src/rseq_core` | RSEQ cache layout, inline assembly critical sections, bulk refill metadata, RSEQ TLS access. |
-| `src/big_allocations` | Big allocation path and buddy allocator. |
-| `src/internals` | Radix ownership map, big allocation map, locks, once primitives, env parsing. |
-| `src/core_prim` | Bootstrap, fork handling, predictor state, raw RSEQ registration fallback, pointer wrappers. |
+| `src/rseq_core` | RSEQ cache layout, inline assembly critical sections, bulk refill metadata, pending queue, RSEQ TLS access. |
+| `src/big_allocations` | Big allocation path and NUMA-aware buddy allocator. |
+| `src/internals` | Radix ownership map, big allocation map, NUMA parsing/binding helpers, locks, once primitives, env parsing. |
+| `src/core_prim` | Bootstrap, fork handling, predictor state, pointer wrappers. |
 | `src/utility.rs` | Size classes, refill targets, lookup tables, shared helpers. |
 
 ## Allocation Classes
@@ -85,8 +97,8 @@ Bootstrap initializes:
 4. `RSEQ_CACHE`, the per-CPU cache array and NUMA topology snapshot.
 5. `PENDING_QUEUE`, the per-node/per-class global pending metadata queue.
 6. `BIG_BUDDY_ALLOCATOR`, when configured.
-6. Fork handlers for preload/fallback state.
-7. Randomized magic values and aligned-allocation tag, unless randomization is explicitly disabled.
+7. Fork handlers for preload/fallback state.
+8. Randomized magic values and aligned-allocation tag, unless randomization is explicitly disabled.
 
 In non-preload Rust mode, this is driven through `RSMalloc::init()` from `global_alloc.rs`. In preload mode, C ABI entry points bootstrap on first use.
 
@@ -101,10 +113,17 @@ flowchart TD
     B -- "yes" --> C["RSEQ_CACHE.pop(class)"]
     C -- "hit" --> D["mark MAGIC"]
     C -- "miss" --> E["fill(class)"]
-    E --> F{"mail/victim pop?"}
-    F -- "hit" --> D
-    F -- "miss" --> G["bulk_fill"]
-    G --> H["push remainder to RSEQ cache"]
+    E --> F{"local mail hit?"}
+    F -- "yes" --> D
+    F -- "no" --> N["same-node victim scan"]
+    N --> R{"remote scan if NUMA?"}
+    R -- "hit" --> D
+    R -- "miss" --> G["bulk_fill"]
+    G --> P{"thread/local-node pending metadata?"}
+    P -- "hit" --> I["initialize batch"]
+    P -- "miss" --> M["mmap and prefer current node"]
+    M --> I
+    I --> H["push remainder to RSEQ cache"]
     H --> D
     D --> RET["return payload"]
 ```
@@ -518,6 +537,8 @@ sequenceDiagram
     participant User
     participant Inner as inner::*
     participant RSEQ as RSEQ_CACHE
+    participant NUMA as NUMA topology
+    participant Pending as PENDING_QUEUE
     participant Refill as bulk_fill
     participant Big as big_malloc/buddy
     participant Radix as L3_RADIX
@@ -529,19 +550,27 @@ sequenceDiagram
         alt cache hit
             RSEQ-->>Inner: Header
         else miss
-            Inner->>RSEQ: try_pop mail/victims
-            alt mail hit
+            RSEQ->>NUMA: find local node/ranges
+            Inner->>RSEQ: try_pop local mail and node-local victims
+            alt mail or victim hit
                 RSEQ-->>Inner: batch
             else refill
                 Inner->>Refill: bulk_fill class
-                Refill->>Radix: mark slab owned
+                Refill->>NUMA: current CPU node
+                Refill->>Pending: pop local-node metadata
+                alt pending miss
+                    Refill->>Refill: mmap and prefer node
+                    Refill->>Radix: mark slab owned
+                end
                 Refill-->>Inner: initialized batch
                 Inner->>RSEQ: push remainder
             end
         end
         Inner-->>User: payload
     else big allocation
+        Inner->>NUMA: current CPU node
         Inner->>Big: big_malloc
+        Big->>Big: try local buddy then remote fallback
         Big->>Radix: mark mapping/region owned
         Big-->>Inner: payload
         Inner-->>User: payload

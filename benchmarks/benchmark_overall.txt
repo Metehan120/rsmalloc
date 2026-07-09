@@ -2,7 +2,44 @@
 
 # test    alloc   time  rss    user  sys  page-faults page-reclaims
 
-# And due to RSEQ as a core, single thread will be be slower than multi-thread.
+rsmalloc 0.2.0-alpha:
+# These are consistent across runs
+cfrac       sys   03.20 3840 3.19 0.00 0 743
+espresso    sys   03.02 5440 2.99 0.02 0 1020
+barnes      sys   01.76 59012 1.74 0.02 0 16775
+
+# Acceptable slowdown still faster than jemalloc
+redis       sys   2.939 10388 0.09 0.03 0 1931
+
+# Architectural worst case benchmark as documented in 0.1.0-alpha, slowdowns probably thermal noise
+leanN       sys   08.15 253672 18.87 0.39 0 64308
+larsonN-sized sys   4.106 79128 58.59 0.10 0 19228
+
+# Consistent across runs
+mstressN    sys   01.04 264668 7.67 0.25 0 66677
+# Probably slowdown due to thermal noise I am gonna run benchmarks again
+rptestN     sys   .850 57716 1.70 0.30 0 16659
+
+# Consistently outperforming others
+lua         sys   01.08 101432 5.85 0.60 0 180474
+
+alloc-test1 sys   02.50 17044 2.48 0.00 0 3605
+alloc-testN sys   03.37 18832 39.60 0.02 0 4114
+
+# once I saw <850ms but I lost that result
+xmalloc-testN sys   0.870 17376 57.54 0.54 0 4353
+
+# No meaningful slowdown just a few branches
+cache-scratch1 sys   00.87 4496 0.87 0.00 0 410
+cache-scratchN sys   00.15 4528 1.80 0.00 0 460
+
+# Consistent across runs
+glibc-simple sys   01.73 2696 1.72 0.00 0 546
+glibc-thread sys   1.368 8656 23.84 0.00 0 2070
+
+# New adaptive refill improved performance
+rocksdb     sys   03.52 101388 3.11 0.71 0 21945
+
 rsmalloc 0.1.0-alpha:
 # Ah yes some of them RSEQ-premium tax test results my favorite tax
 

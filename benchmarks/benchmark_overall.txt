@@ -26,6 +26,10 @@ lua         sys   01.08 101432 5.85 0.60 0 180474
 alloc-test1 sys   02.50 17044 2.48 0.00 0 3605
 alloc-testN sys   03.37 18832 39.60 0.02 0 4114
 
+# Architectural worst case benchmark as documented in 0.1.0-alpha
+sh6benchN   sys   00.56 368044 2.54 0.31 0 92020
+sh8benchN   sys   01.28 137648 13.45 0.09 0 34391
+
 # once I saw <850ms but I lost that result
 xmalloc-testN sys   0.870 17376 57.54 0.54 0 4353
 

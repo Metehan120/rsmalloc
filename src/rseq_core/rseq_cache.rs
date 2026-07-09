@@ -149,7 +149,7 @@ impl RseqCache {
                     cpu_to_node: null_mut(),
                     ncpu: ncpu,
                     node_ids: null_mut(),
-                    nnodes: 0,
+                    nnodes: 1,
                     cpu_ranges: null_mut(),
                     nranges: 1,
                 };

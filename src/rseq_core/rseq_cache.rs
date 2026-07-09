@@ -486,7 +486,6 @@ impl RseqCache {
                     let node_id = self.node_for_cpu(cpu_id, inner);
                     self.mark_numa_nonempty(&inner, node_id as usize, class);
                 }
-
                 return;
             }
 
@@ -516,7 +515,6 @@ impl RseqCache {
                     let node_id = self.node_for_cpu(cpu_id, inner);
                     self.mark_numa_nonempty(&inner, node_id as usize, class);
                 }
-
                 return;
             }
 

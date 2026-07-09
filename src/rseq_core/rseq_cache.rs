@@ -4,7 +4,7 @@ use std::{
     hint::{likely, spin_loop, unlikely},
     ptr::{addr_of, null_mut, read_volatile},
     sync::atomic::{
-        AtomicUsize,
+        AtomicU64, AtomicUsize,
         Ordering::{self, Relaxed},
     },
 };
@@ -44,6 +44,7 @@ pub struct MainCache {
 pub struct RseqInner {
     cache: *mut MainCache,
     numa: NumaTopology,
+    numa_map: *mut AtomicU64,
     pub is_numa: bool,
 }
 
@@ -78,10 +79,42 @@ impl RseqCache {
                     cpu_ranges: null_mut(),
                     nranges: 0,
                 },
+                numa_map: null_mut(),
                 is_numa: false,
             }),
             once: Once::new(),
         }
+    }
+
+    #[inline(always)]
+    fn class(&self, class: usize) -> u64 {
+        1u64 << class
+    }
+
+    #[inline(always)]
+    unsafe fn mark_numa_nonempty(&self, inner: &RseqInner, node: usize, class: usize) {
+        let numa_map = inner.numa_map.add(node);
+        let bit = self.class(class);
+
+        if (*numa_map).load(Ordering::Relaxed) & bit == 0 {
+            (*numa_map).fetch_or(bit, Ordering::Relaxed);
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn clear_numa_hint(&self, inner: &RseqInner, node: usize, class: usize) {
+        let numa_map = inner.numa_map.add(node);
+        let bit = self.class(class);
+
+        if (*numa_map).load(Ordering::Relaxed) & bit != 0 {
+            (*numa_map).fetch_and(!bit, Ordering::Relaxed);
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn is_empty(&self, inner: &RseqInner, node: usize, class: usize) -> bool {
+        let numa_map = inner.numa_map.add(node);
+        (*numa_map).load(Ordering::Relaxed) & self.class(class) == 0
     }
 
     pub unsafe fn ensure_cache(&self) {
@@ -111,6 +144,32 @@ impl RseqCache {
                 if numa.nnodes > 1 {
                     inner.is_numa = true;
                 }
+            } else {
+                inner.numa = NumaTopology {
+                    cpu_to_node: null_mut(),
+                    ncpu: ncpu,
+                    node_ids: null_mut(),
+                    nnodes: 0,
+                    cpu_ranges: null_mut(),
+                    nranges: 1,
+                };
+            }
+
+            if inner.is_numa {
+                let range = mmap_anonymous(
+                    null_mut(),
+                    size_of::<AtomicU64>() * inner.numa.nranges,
+                    ProtFlags::READ | ProtFlags::WRITE,
+                    MapFlags::PRIVATE,
+                )
+                .unwrap_or_else(|err| {
+                    RSMallocError::OutOfMemory.log_and_abort(
+                        null_mut(),
+                        "cannot initialize numa bitmap",
+                        Some(err.raw_os_error()),
+                    )
+                }) as *mut AtomicU64;
+                inner.numa_map = range;
             }
 
             PENDING_QUEUE.init(inner.numa.nranges, inner.is_numa);
@@ -285,7 +344,7 @@ impl RseqCache {
 
     #[inline(always)]
     pub unsafe fn node_for_cpu(&self, cpu_id: usize, inner: &RseqInner) -> u16 {
-        if !inner.is_numa || cpu_id >= inner.numa.ncpu || inner.numa.cpu_to_node.is_null() {
+        if !inner.is_numa {
             return 0;
         }
         *inner.numa.cpu_to_node.add(cpu_id)
@@ -365,8 +424,12 @@ impl RseqCache {
         }
 
         if inner.is_numa {
-            for i in 0..inner.numa.nranges {
+            for i in 1..inner.numa.nranges {
                 let node_id = (i + node_id as usize) % inner.numa.nranges;
+
+                if self.is_empty(&inner, node_id, class) {
+                    continue;
+                }
 
                 let (start, end) = {
                     let cpu = *inner.numa.cpu_ranges.add(node_id);
@@ -387,6 +450,8 @@ impl RseqCache {
                         );
                     }
                 }
+
+                self.clear_numa_hint(&inner, node_id, class);
             }
         }
 
@@ -417,6 +482,11 @@ impl RseqCache {
                 .compare_exchange(old, new, Ordering::Release, Ordering::Relaxed)
                 .is_ok()
             {
+                if inner.is_numa {
+                    let node_id = self.node_for_cpu(cpu_id, inner);
+                    self.mark_numa_nonempty(&inner, node_id as usize, class);
+                }
+
                 return;
             }
 
@@ -442,6 +512,11 @@ impl RseqCache {
                 .compare_exchange(old, new, Ordering::Release, Ordering::Relaxed)
                 .is_ok()
             {
+                if inner.is_numa {
+                    let node_id = self.node_for_cpu(cpu_id, inner);
+                    self.mark_numa_nonempty(&inner, node_id as usize, class);
+                }
+
                 return;
             }
 

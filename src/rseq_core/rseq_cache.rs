@@ -96,8 +96,8 @@ impl RseqCache {
         let numa_map = inner.numa_map.add(node);
         let bit = self.class(class);
 
-        if (*numa_map).load(Ordering::Relaxed) & bit == 0 {
-            (*numa_map).fetch_or(bit, Ordering::Relaxed);
+        if (*numa_map).load(Ordering::Acquire) & bit == 0 {
+            (*numa_map).fetch_or(bit, Ordering::Release);
         }
     }
 
@@ -106,15 +106,15 @@ impl RseqCache {
         let numa_map = inner.numa_map.add(node);
         let bit = self.class(class);
 
-        if (*numa_map).load(Ordering::Relaxed) & bit != 0 {
-            (*numa_map).fetch_and(!bit, Ordering::Relaxed);
+        if (*numa_map).load(Ordering::Acquire) & bit != 0 {
+            (*numa_map).fetch_and(!bit, Ordering::Release);
         }
     }
 
     #[inline(always)]
     unsafe fn is_empty(&self, inner: &RseqInner, node: usize, class: usize) -> bool {
         let numa_map = inner.numa_map.add(node);
-        (*numa_map).load(Ordering::Relaxed) & self.class(class) == 0
+        (*numa_map).load(Ordering::Acquire) & self.class(class) == 0
     }
 
     pub unsafe fn ensure_cache(&self) {

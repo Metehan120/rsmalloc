@@ -31,7 +31,7 @@ The current snapshot compares:
 This snapshot was collected with `mimalloc-bench` on:
 
 * Fedora 44
-* default Fedora kernel
+* default Fedora kernel (Kernel 7.x)
 * AMD Ryzen 5 5600X
 * DDR4 3200 MT/s CL16 RAM
 

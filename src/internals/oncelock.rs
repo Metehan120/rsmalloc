@@ -7,8 +7,8 @@ pub struct OnceLock<T> {
     value: UnsafeCell<MaybeUninit<T>>,
 }
 
-unsafe impl<T: Send + Sync> Sync for OnceLock<T> {}
-unsafe impl<T: Send + Sync> Send for OnceLock<T> {}
+unsafe impl<T> Sync for OnceLock<T> {}
+unsafe impl<T> Send for OnceLock<T> {}
 
 // Use Spinlock-based OnceLock implementation for better Fork Safety
 impl<T> OnceLock<T> {

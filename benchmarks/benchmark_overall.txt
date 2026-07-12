@@ -11,13 +11,12 @@ barnes      sys   01.76 59012 1.74 0.02 0 16775
 # Acceptable slowdown still faster than jemalloc
 redis       sys   2.939 10388 0.09 0.03 0 1931
 
-# Architectural worst case benchmark as documented in 0.1.0-alpha, slowdowns probably thermal noise
+# Architectural worst case benchmark as documented in 0.1.0-alpha
 leanN       sys   08.15 253672 18.87 0.39 0 64308
 larsonN-sized sys   4.106 79128 58.59 0.10 0 19228
 
 # Consistent across runs
 mstressN    sys   01.04 264668 7.67 0.25 0 66677
-# Probably slowdown due to thermal noise I am gonna run benchmarks again
 rptestN     sys   .850 57716 1.70 0.30 0 16659
 
 # Consistently outperforming others

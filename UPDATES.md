@@ -23,7 +23,8 @@ Major themes include memory reclamation, NUMA-aware placement, buddy-backend ove
 - Updated fallback symbol initialization to use resettable once-lock state after fork.
 - Added preload errno helpers and improved C ABI errno behavior for calloc overflow/failure and alignment API failures.
 - Added NUMA topology parsing from sysfs with CPU-to-node mapping, direct `cpu_ranges[node_id]` lookup, malformed-list handling, overflow checks, CPU clipping, and fallback to node `0` for missing/invalid CPU entries.
-- Added `internals::binder` for preferred NUMA placement and moved small refill, transfer stealing, buddy allocation, and direct big mappings toward current-CPU node locality.
+- Added `internals::binder` for NUMA placement helpers, including preferred binding (`MPOL_PREFERRED`) and strict node binding (`MPOL_BIND`).
+- Moved small refill, transfer stealing, buddy allocation, and direct big mappings toward current-CPU node locality, and bulk-bound contiguous per-CPU slab/transfer cache ranges to their NUMA node when topology is available.
 - Added NUMA preferred-placement support through `prefer_node(...)`, currently using the `syscalls` crate's `mbind` wrapper with `MPOL_PREFERRED | MPOL_F_STATIC_NODES`.
 - Reworked RSEQ assembly into `src/rseq_core/rseq_asm.rs` and removed the old `rseq_core.rs` module.
 - Renamed `BIG_BUDDY_ALLOCATOR` to `BUDDY_BACKEND`.

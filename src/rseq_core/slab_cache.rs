@@ -23,6 +23,7 @@ use crate::{
     GenericCache, Header, NCPU, RSMallocError, RseqCoreTrait,
     core_prim::wrappers::UnsafePointer,
     internals::{
+        binder::bind_node,
         numa_parser::{NumaTopology, parse_numa_topology},
         once::Once,
     },
@@ -130,6 +131,20 @@ impl SlabCache {
                     cpu_ranges: null_mut(),
                     nranges: 2,
                 };
+            }
+
+            if inner.is_numa {
+                for range in 0..inner.numa.nranges {
+                    let cpu_range = *inner.numa.cpu_ranges.add(range);
+                    let start = cpu_range.start_cpu;
+                    let end = cpu_range.end_cpu.min(ncpu.saturating_sub(1));
+
+                    if start <= end {
+                        let cache = inner.cache.add(start) as *mut _;
+                        let len = size_of::<MainCache>() * (end - start + 1);
+                        bind_node(cache, len, cpu_range.node_id);
+                    }
+                }
             }
 
             let alloc_size = ncpu + 1;

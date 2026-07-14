@@ -32,8 +32,6 @@ Major themes include memory reclamation, NUMA-aware placement, buddy-backend ove
 - Renamed `RSEQ_CACHE` to `SLAB_CACHE`, `RseqInner` to `SlabCacheInner`, and `SelfMail` to `TransferCache`.
 - Renamed transfer-cache APIs from `mail_*` to `transfer_*`, including `transfer_push_batch`, `transfer_push_single`, `transfer_pop`, and `transfer_pop_single`.
 - Updated the medium/large slab allocation path to favor transfer-cache reuse instead of filling the hot per-CPU RSEQ class cache with larger blocks.
-- Updated `alloc_medium(class)` to pop directly from `SLAB_CACHE.transfer_pop_single(class, cpu_id)` instead of using the hot per-CPU RSEQ class cache.
-- Routed requests larger than `SMALL_CLASS_BYTES` through `alloc_medium(class)` before refill, leaving smaller class requests on `SLAB_CACHE.pop(class)`.
 - Renamed `RSEQ_MAX_BLOCKS` to `CACHE_HIGH_BLOCKS` and split cache byte targets into `SMALL_CLASS_BYTES`, `MEDIUM_CLASS_BYTES`, and `BIG_CLASS_BYTES`.
 - Added `CACHE_LOW_BLOCKS` as a derived half-watermark table for future cache pressure policy.
 - Added global `NCPU` initialized during `SLAB_CACHE.ensure_cache()` and reused by medium allocation and trim scanning.

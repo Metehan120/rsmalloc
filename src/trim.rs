@@ -14,9 +14,9 @@ use rustix::{
 
 use crate::{
     ALLOCATED_FLAG, AVERAGE_BLOCK_TIMES, CURRENT_STAMP, DISABLE_TRIM_THREAD, GLOBAL_TRIM_LOCK,
-    Header, TRIMMED_FLAG,
-    big_allocations::buddy::BIG_BUDDY_ALLOCATOR,
-    rseq_core::rseq_cache::{RSEQ_CACHE, pack, unpack_ptr},
+    Header, NCPU, TRIMMED_FLAG,
+    big_allocations::buddy::BUDDY_BACKEND,
+    rseq_core::slab_cache::{SLAB_CACHE, pack, unpack_ptr},
     utility::{NUM_SIZE_CLASSES, SIZE_CLASSES, get_size_4096_class},
 };
 
@@ -46,6 +46,10 @@ pub static mut BUDDY_DISABLE_PERCENTAGE: usize = 85;
 pub static mut BUDDY_ENABLE_PERCENTAGE: usize = 80;
 pub static mut DISABLE_RELIEF: bool = true;
 pub static UNDER_AFTER: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "debug")]
+pub static TOTAL_TRIM_CALLS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "debug")]
+pub static TOTAL_TRIMMED_VA: AtomicUsize = AtomicUsize::new(0);
 
 pub unsafe fn relief_paths() {
     let pressure = check_memory_pressure();
@@ -53,7 +57,7 @@ pub unsafe fn relief_paths() {
     if pressure >= BUDDY_DISABLE_PERCENTAGE && !DISABLE_BUDDY.load(Relaxed) {
         DISABLE_BUDDY.store(true, Relaxed);
         UNDER_AFTER.store(0, Relaxed);
-        BIG_BUDDY_ALLOCATOR.trim(0);
+        BUDDY_BACKEND.trim(0);
 
         return;
     }
@@ -95,11 +99,11 @@ pub unsafe fn trimmer_main() -> ! {
         if stamp.saturating_sub(latest_stamp) > AVERAGE_BLOCK_TIMES.load(Relaxed)
             && !DISABLE_TRIM_THREAD
         {
-            use crate::big_allocations::buddy::BIG_BUDDY_ALLOCATOR;
+            use crate::big_allocations::buddy::BUDDY_BACKEND;
             latest_stamp = stamp;
 
             trim_small(0);
-            BIG_BUDDY_ALLOCATOR.trim_old(0);
+            BUDDY_BACKEND.trim_old(0);
         }
     }
 }
@@ -109,16 +113,19 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
         return 0;
     };
 
-    let ncpu = RSEQ_CACHE.get_ncpu();
-    let mut total_trimmed = 0;
+    #[cfg(feature = "debug")]
+    TOTAL_TRIM_CALLS.fetch_add(1, Relaxed);
 
-    for cpu in 0..ncpu {
+    let mut total_trimmed = 0;
+    let inner = SLAB_CACHE.get_inner();
+
+    for cpu in 0..NCPU {
         for class in get_size_4096_class()..NUM_SIZE_CLASSES {
-            let main_list = RSEQ_CACHE.get_list(cpu, class);
+            let main_list = SLAB_CACHE.get_list(cpu, class);
             let output = {
                 let mut list = main_list.list.load(Acquire);
                 loop {
-                    let unpacked = unpack_ptr(list);
+                    let (unpacked, tag) = unpack_ptr(list);
 
                     if unpacked.is_null() {
                         break null_mut();
@@ -126,7 +133,7 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
 
                     match main_list.list.compare_exchange(
                         list,
-                        pack(null_mut(), list),
+                        pack(null_mut(), tag),
                         Acquire,
                         Relaxed,
                     ) {
@@ -175,7 +182,7 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
                 }
 
                 if total_push == TRIM_REPUSH_BATCH && is_push {
-                    RSEQ_CACHE.mail_push_batch(class, push_list, push_list_start, cpu);
+                    SLAB_CACHE.transfer_push_batch(class, push_list, push_list_start, cpu, inner);
                     total_push = 0;
                     push_list = null_mut();
                     push_list_start = null_mut();
@@ -190,7 +197,7 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
             }
 
             if total_push > 0 {
-                RSEQ_CACHE.mail_push_batch(class, push_list, push_list_start, cpu);
+                SLAB_CACHE.transfer_push_batch(class, push_list, push_list_start, cpu, inner);
             }
 
             while !trim_list.is_null() {
@@ -198,12 +205,14 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
                 if requested_size == 0 || total_trimmed < requested_size {
                     let is_ok = release_memory(trim_list, SIZE_CLASSES[class]);
                     if is_ok {
+                        #[cfg(feature = "debug")]
+                        TOTAL_TRIMMED_VA.fetch_add(SIZE_CLASSES[class], Relaxed);
                         (*trim_list).flags = TRIMMED_FLAG;
                         total_trimmed += SIZE_CLASSES[class];
                     }
                 }
                 (*trim_list).life_time = stamp;
-                RSEQ_CACHE.mail_push_single(class, trim_list, cpu);
+                SLAB_CACHE.transfer_push_single(class, trim_list, cpu, inner);
                 trim_list = next;
             }
         }

@@ -3,8 +3,6 @@ use std::sync::atomic::AtomicBool;
 use std::{hint::likely, ptr::null_mut};
 
 use crate::ALLOCATED_FLAG;
-#[cfg(feature = "debug")]
-use crate::TOTAL_REFILL_CALLS;
 #[cfg(feature = "preload")]
 use crate::inner::libc_int::set_nomem;
 use crate::{
@@ -15,10 +13,12 @@ use crate::{
         wrappers::UnsafePointer,
     },
     inner::free::find_original_ptr,
-    internals::{hashmap::BIG_ALLOC_MAP, l3_main_radix::L3_RADIX},
-    rseq_core::{bulk_fill::bulk_fill, rseq_cache::RSEQ_CACHE, rseq_main::get_rseq},
+    internals::{hashmap::BIG_META_MAP, l3_main_radix::RADIX},
+    rseq_core::{bulk_fill::bulk_fill, rseq_offsets::get_rseq, slab_cache::SLAB_CACHE},
     utility::{ITERATIONS, SIZE_CLASSES, match_size_class},
 };
+#[cfg(feature = "debug")]
+use crate::{REFILLS_BY_CLASS, TOTAL_REFILL_CALLS};
 use crate::{TOTAL_CACHED_VA, TRIM_THRESHOLD, trim::trimmer_main};
 #[cfg(feature = "debug")]
 use std::sync::atomic::Ordering;
@@ -60,6 +60,7 @@ unsafe fn record_refill_prediction(
     cpu_id: usize,
     can_probe_more: bool,
 ) {
+    let inner = SLAB_CACHE.get_inner();
     if wanted <= 1 || count == 0 {
         return;
     }
@@ -73,9 +74,15 @@ unsafe fn record_refill_prediction(
 
     if count < wanted {
         let missing = wanted - count;
-        let (extra, extra_tail, extra_count) = RSEQ_CACHE.try_pop(class, missing, cpu_id);
+        let (extra, extra_tail, extra_count) = SLAB_CACHE.try_pop(class, missing, cpu_id);
         if extra_count > 0 && !extra.is_null() {
-            RSEQ_CACHE.mail_push_batch(class, extra.as_ptr(), extra_tail.as_ptr(), cpu_id);
+            SLAB_CACHE.transfer_push_batch(
+                class,
+                extra.as_ptr(),
+                extra_tail.as_ptr(),
+                cpu_id,
+                inner,
+            );
         }
 
         if count + extra_count < wanted {
@@ -85,10 +92,16 @@ unsafe fn record_refill_prediction(
     }
 
     if wanted >= 8 && wanted < ITERATIONS[class] {
-        let (extra, extra_tail, extra_count) = RSEQ_CACHE.try_pop(class, 1, cpu_id);
+        let (extra, extra_tail, extra_count) = SLAB_CACHE.try_pop(class, 1, cpu_id);
         if extra_count > 0 && !extra.is_null() {
             crate::REFILL_UNDER_PREDICTS.fetch_add(1, Ordering::Relaxed);
-            RSEQ_CACHE.mail_push_batch(class, extra.as_ptr(), extra_tail.as_ptr(), cpu_id);
+            SLAB_CACHE.transfer_push_batch(
+                class,
+                extra.as_ptr(),
+                extra_tail.as_ptr(),
+                cpu_id,
+                inner,
+            );
         }
     }
 }
@@ -105,13 +118,16 @@ unsafe fn take_one_from_batch(
 ) -> UnsafePointer<Header> {
     let first = start;
 
+    #[cfg(feature = "debug-printer-thread")]
+    crate::debug_printer_thread::start();
+
     if count > 1 {
         #[cfg(feature = "debug")]
         record_refill_prediction(class, count, wanted, cpu_id, can_probe_more);
 
         let rest = (*first).next;
         if !rest.is_null() {
-            RSEQ_CACHE.push_tailed(class, rest, tail, count - 1);
+            SLAB_CACHE.push_tailed(class, rest, tail, count - 1);
         }
     }
 
@@ -162,12 +178,11 @@ pub unsafe fn maybe_start_trimmer() {
     };
 }
 
-#[unsafe(link_section = ".text.hot")]
-#[cold]
 #[inline(never)]
 pub unsafe fn refill(class: usize, cpu_id: usize) -> UnsafePointer<Header> {
     for _ in 0..MAX_REFILL_RETRIES {
         let bulk_batch = bulk_refill!(class);
+
         match bulk_fill(class, cpu_id, bulk_batch) {
             Ok((start, tail, count)) => {
                 let observed = if count == bulk_batch && bulk_batch < ITERATIONS[class] {
@@ -200,7 +215,7 @@ pub unsafe fn refill(class: usize, cpu_id: usize) -> UnsafePointer<Header> {
         }
     }
 
-    RSEQ_CACHE.try_pop(class, 1, cpu_id).0
+    SLAB_CACHE.try_pop(class, 1, cpu_id).0
 }
 
 #[unsafe(link_section = ".text.hot")]
@@ -210,9 +225,13 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
     let cpu_id = get_rseq().cpu_id as usize;
 
     #[cfg(feature = "debug")]
-    TOTAL_REFILL_CALLS.fetch_add(1, Ordering::Relaxed);
+    {
+        TOTAL_REFILL_CALLS.fetch_add(1, Ordering::Relaxed);
+        REFILLS_BY_CLASS[class].fetch_add(1, Ordering::Relaxed);
+    }
 
-    let (start, tail, count) = RSEQ_CACHE.try_pop(class, cache_batch, cpu_id);
+    let (start, tail, count) = SLAB_CACHE.try_pop(class, cache_batch, cpu_id);
+
     if count > 0 {
         let observed = if count == cache_batch && cache_batch < ITERATIONS[class] {
             cache_batch
@@ -248,7 +267,7 @@ pub unsafe fn rs_alloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
     let class = match_size_class(size);
 
     if let Some(class) = class {
-        let cache = RSEQ_CACHE.pop(class);
+        let cache = SLAB_CACHE.pop(class);
 
         let cache = if cache.is_null() {
             let class = fill(class);
@@ -279,14 +298,14 @@ pub unsafe fn rs_alloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
 pub unsafe fn usable_size(ptr: UnsafePointer<Header>) -> usize {
     let ptr_addr = ptr.cast_usize();
 
-    if likely(L3_RADIX.is_owned(ptr_addr)) {
+    if likely(RADIX.is_owned(ptr_addr)) {
         let original_payload = find_original_ptr(ptr);
         let original_payload_addr = original_payload.cast_usize();
         let offset = ptr_addr - original_payload_addr;
         let header = original_payload.get_actual_header().apply_safe();
 
         if header.magic == BIG_MAGIC {
-            let meta = BIG_ALLOC_MAP.get(original_payload_addr).unwrap_or_else(|| {
+            let meta = BIG_META_MAP.get(original_payload_addr).unwrap_or_else(|| {
                 RSMallocError::MemoryCorruption.log_and_abort(
                     null_mut(),
                     "missing header for big allocation",

@@ -75,25 +75,25 @@ pub const fn align_to(size: usize, align: usize) -> usize {
     (size + al) & !al
 }
 
-pub const RSEQ_BIG_CLASS_BYTES: usize = 1024 * 96;
-pub const RSEQ_MEDIUM_CLASS_BYTES: usize = 1024 * 128;
-pub const RSEQ_SMALL_CLASS_BYTES: usize = 1024 * 196;
-pub const RSEQ_MAX_BLOCKS: [usize; NUM_SIZE_CLASSES] = {
+pub const BIG_CLASS_BYTES: usize = 1024 * 96;
+pub const MEDIUM_CLASS_BYTES: usize = 1024 * 96;
+pub const SMALL_CLASS_BYTES: usize = 1024 * 128;
+pub const CACHE_HIGH_BLOCKS: [usize; NUM_SIZE_CLASSES] = {
     let mut arr = [0; NUM_SIZE_CLASSES];
     let mut i = 0;
 
     while i < NUM_SIZE_CLASSES {
         let payload = SIZE_CLASSES[i];
         let block_size = align_to(payload + Header::SIZE, 16);
-        let mut blocks = if block_size > RSEQ_SMALL_CLASS_BYTES {
+        let mut blocks = if block_size > SMALL_CLASS_BYTES {
             1
         } else {
             if payload < 256 {
-                RSEQ_SMALL_CLASS_BYTES / block_size
+                SMALL_CLASS_BYTES / block_size
             } else if payload < 1024 * 16 {
-                RSEQ_MEDIUM_CLASS_BYTES / block_size
+                MEDIUM_CLASS_BYTES / block_size
             } else {
-                RSEQ_BIG_CLASS_BYTES / block_size
+                BIG_CLASS_BYTES / block_size
             }
         };
 
@@ -102,6 +102,20 @@ pub const RSEQ_MAX_BLOCKS: [usize; NUM_SIZE_CLASSES] = {
         }
 
         arr[i] = blocks;
+        i += 1;
+    }
+
+    arr
+};
+
+#[allow(dead_code)]
+pub const CACHE_LOW_BLOCKS: [usize; NUM_SIZE_CLASSES] = {
+    let mut arr = [0; NUM_SIZE_CLASSES];
+    let mut i = 0;
+
+    while i < NUM_SIZE_CLASSES {
+        let low = CACHE_HIGH_BLOCKS[i] / 2;
+        arr[i] = if low == 0 { 1 } else { low };
         i += 1;
     }
 

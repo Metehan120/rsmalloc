@@ -16,6 +16,8 @@ use crate::{MetaData, internals::once::Once, utility::NUM_SIZE_CLASSES};
 const PAGE_SIZE: usize = 4096;
 const TAG_MASK: usize = PAGE_SIZE - 1;
 const PTR_MASK: usize = !TAG_MASK;
+#[cfg(feature = "debug")]
+pub static GLOBAL_QUEUE_REPORTS: AtomicUsize = AtomicUsize::new(0);
 
 #[inline(always)]
 fn pack(ptr: *mut MetaData, old_word: usize) -> usize {
@@ -92,6 +94,9 @@ impl ThreadQueue {
         let Some(head) = self.head((*node).node_id, class) else {
             return;
         };
+
+        #[cfg(feature = "debug")]
+        GLOBAL_QUEUE_REPORTS.fetch_add(1, Ordering::Relaxed);
 
         loop {
             let old = head.load(Ordering::Relaxed);

@@ -37,8 +37,8 @@ pub struct BigAllocMap {
     lock: SpinLock,
 }
 
-pub static BIG_ALLOC_MAP: BigAllocMap = BigAllocMap::new();
-pub use BIG_ALLOC_MAP as BIG_MAP;
+pub static BIG_META_MAP: BigAllocMap = BigAllocMap::new();
+pub use BIG_META_MAP as BIG_MAP;
 
 impl BigAllocMap {
     pub const fn new() -> Self {

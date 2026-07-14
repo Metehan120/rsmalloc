@@ -2,7 +2,7 @@ use std::os::raw::{c_int, c_void};
 
 use crate::{
     Header,
-    big_allocations::buddy::BIG_BUDDY_ALLOCATOR,
+    big_allocations::buddy::BUDDY_BACKEND,
     core_prim::wrappers::UnsafePointer,
     inner::alloc::{rs_alloc, usable_size},
     trim::trim_small,
@@ -20,7 +20,7 @@ pub unsafe extern "C" fn malloc_usable_size(ptr: *mut c_void) -> usize {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn malloc_trim(requested_size: usize) -> c_int {
-    let buddy_trim = BIG_BUDDY_ALLOCATOR.trim_old(requested_size);
+    let buddy_trim = BUDDY_BACKEND.trim_old(requested_size);
 
     if requested_size != 0 && buddy_trim >= requested_size {
         return 1;

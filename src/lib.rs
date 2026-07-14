@@ -52,7 +52,7 @@ use std::{
 };
 
 use crate::{
-    core_prim::wrappers::UnsafePointer, internals::lock::SpinLock, rseq_core::rseq_main::rseq,
+    core_prim::wrappers::UnsafePointer, internals::lock::SpinLock, rseq_core::rseq_offsets::rseq,
 };
 
 #[cfg(not(target_arch = "x86_64"))]
@@ -86,10 +86,55 @@ pub(crate) static mut DISABLE_TRIM_THREAD: bool = false;
 pub(crate) static mut TRIM_THRESHOLD: usize = 1024 * 1024 * 10;
 
 pub(crate) static TOTAL_CACHED_VA: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "debug")]
+pub(crate) static HIGH_WATER_SLAB_CACHED_VA: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "debug")]
+pub(crate) static HIGH_WATER_BUDDY_CACHED_VA: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "debug")]
+pub(crate) static HIGH_WATER_TOTAL_CACHED_VA: AtomicUsize = AtomicUsize::new(0);
 
-/// Showing the total cached virtual address space, does not mirror actual memory usage.
 pub fn get_total_cached_va() -> usize {
     TOTAL_CACHED_VA.load(Ordering::Relaxed)
+}
+
+#[cfg(feature = "debug")]
+#[inline(always)]
+pub(crate) fn update_high_water(max: &AtomicUsize, value: usize) {
+    let mut current = max.load(Ordering::Relaxed);
+    while value > current {
+        match max.compare_exchange_weak(current, value, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
+#[inline(always)]
+pub(crate) fn add_slab_cached_va(bytes: usize) {
+    let _slab = TOTAL_CACHED_VA
+        .fetch_add(bytes, Ordering::Relaxed)
+        .saturating_add(bytes);
+
+    #[cfg(feature = "debug")]
+    {
+        let buddy = crate::big_allocations::buddy::BUDDY_TOTAL_CACHED_VA.load(Ordering::Relaxed);
+        update_high_water(&HIGH_WATER_SLAB_CACHED_VA, _slab);
+        update_high_water(&HIGH_WATER_TOTAL_CACHED_VA, _slab.saturating_add(buddy));
+    }
+}
+
+#[inline(always)]
+pub(crate) fn add_buddy_cached_va(bytes: usize) {
+    let _buddy = crate::big_allocations::buddy::BUDDY_TOTAL_CACHED_VA
+        .fetch_add(bytes, Ordering::Relaxed)
+        .saturating_add(bytes);
+
+    #[cfg(feature = "debug")]
+    {
+        let slab = TOTAL_CACHED_VA.load(Ordering::Relaxed);
+        update_high_water(&HIGH_WATER_BUDDY_CACHED_VA, _buddy);
+        update_high_water(&HIGH_WATER_TOTAL_CACHED_VA, slab.saturating_add(_buddy));
+    }
 }
 
 #[cfg(feature = "debug")]
@@ -99,17 +144,41 @@ pub(crate) static REFILL_OVER_PREDICTS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "debug")]
 pub(crate) static TOTAL_REFILL_CALLS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "debug")]
+pub(crate) static REFILLS_BY_CLASS: [AtomicUsize; utility::NUM_SIZE_CLASSES] =
+    [const { AtomicUsize::new(0) }; utility::NUM_SIZE_CLASSES];
+#[cfg(feature = "debug")]
 pub(crate) static ABORTS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "debug-exact")]
 pub(crate) static GLOBAL_LOCKS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "debug-exact")]
 pub(crate) static GLOBAL_LOCK_RETRIES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "debug-exact")]
+pub(crate) static GLOBAL_TRY_LOCKS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "debug-exact")]
+pub(crate) static GLOBAL_TRY_LOCK_MISSES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "debug-exact")]
+pub(crate) static GLOBAL_SPIN_WAITS: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) static TIME_STAMP: OnceLock<Instant> = OnceLock::new();
 pub(crate) static CURRENT_STAMP: AtomicU32 = AtomicU32::new(0);
 pub(crate) static AVERAGE_BLOCK_TIMES: AtomicU32 = AtomicU32::new(1000);
 pub(crate) static BUDDY_AVERAGE_BLOCK_TIMES: AtomicU32 = AtomicU32::new(1000);
 pub(crate) static GLOBAL_TRIM_LOCK: SpinLock = SpinLock::new();
+pub(crate) static mut NCPU: usize = 0;
+
+#[cfg(feature = "transfer-debug")]
+pub(crate) static TOTAL_TRANSFER_STEALS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "transfer-debug")]
+pub(crate) static TOTAL_TRANSFER_RETRIES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "transfer-debug")]
+pub(crate) static DRY_TRANSFER_STEALS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "transfer-debug-exact")]
+pub(crate) static TOTAL_TRANSFER_POP_CALLS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "transfer-debug-exact")]
+pub(crate) static TOTAL_TRANSFER_PUSH_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(feature = "debug")]
+pub(crate) static mut START_TIME: Option<Instant> = None;
 
 pub(crate) fn get_clock() -> &'static Instant {
     TIME_STAMP.get_or_init(|| {
@@ -130,6 +199,10 @@ pub(crate) const TRIMMED_FLAG: u8 = 3;
 pub(crate) mod abi;
 pub(crate) mod big_allocations;
 pub(crate) mod core_prim;
+#[cfg(feature = "debug-print")]
+mod debug_exit_printer;
+#[cfg(feature = "debug-printer-thread")]
+mod debug_printer_thread;
 #[cfg(not(feature = "preload"))]
 pub(crate) mod global_alloc;
 pub(crate) mod inner;
@@ -263,6 +336,7 @@ pub(crate) trait RseqCoreTrait {
         rseq: &rseq,
         cpu_id: usize,
         header: *mut Header,
+        usage_ptr: *mut usize,
     ) -> usize;
     unsafe fn push_tailed(
         &self,
@@ -271,44 +345,14 @@ pub(crate) trait RseqCoreTrait {
         cpu_id: usize,
         header: *mut Header,
         tail: *mut Header,
+        usage_ptr: *mut usize,
+        batch_total: usize,
     ) -> usize;
-    unsafe fn pop(&self, list_ptr: *mut *mut Header, rseq: &rseq, cpu_id: usize) -> *mut Header;
-}
-
-#[cfg(feature = "debug-print")]
-#[used]
-#[unsafe(link_section = ".fini_array")]
-static RSMALLOC_FINI: unsafe extern "C" fn() = rsmalloc_fini;
-
-#[cfg(feature = "debug-print")]
-unsafe extern "C" fn rsmalloc_fini() {
-    use std::sync::atomic::Ordering::Relaxed;
-
-    let total = TOTAL_REFILL_CALLS.load(Relaxed);
-    let overpredicts = REFILL_OVER_PREDICTS.load(Relaxed);
-    let underpredicts = REFILL_UNDER_PREDICTS.load(Relaxed);
-    let total_cached_va = TOTAL_CACHED_VA.load(Relaxed);
-
-    let aborts = ABORTS.load(Relaxed);
-
-    let percentage = ((overpredicts + underpredicts) as f64 / total as f64) * 100.0;
-
-    #[cfg(not(feature = "debug-exact"))]
-    eprintln!(
-        "rsmalloc: total refill calls={}, overpredicts={}, underpredicts={}, total cached VA={}, RSEQ Aborts={}, miss percentage={:.2}%",
-        total, overpredicts, underpredicts, total_cached_va, aborts, percentage,
-    );
-
-    #[cfg(feature = "debug-exact")]
-    eprintln!(
-        "rsmalloc: total refill calls={}, overpredicts={}, underpredicts={}, total cached VA={}, RSEQ Aborts={}, miss percentage={:.4}%, total lock count={}, total lock retries={}",
-        total,
-        overpredicts,
-        underpredicts,
-        total_cached_va,
-        aborts,
-        percentage,
-        GLOBAL_LOCKS.load(Relaxed),
-        GLOBAL_LOCK_RETRIES.load(Relaxed),
-    );
+    unsafe fn pop(
+        &self,
+        list_ptr: *mut *mut Header,
+        rseq: &rseq,
+        cpu_id: usize,
+        usage_ptr: *mut usize,
+    ) -> *mut Header;
 }

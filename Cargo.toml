@@ -19,13 +19,19 @@ rustix = { version = "1.1.4", features = [
 ] }
 
 [features]
-default = ["rseq-thread-failure-fallback"]
+default = ["rseq-thread-failure-fallback",]
 preload = []
 debug-print = ["debug"]
+debug-printer-thread = ["debug-print"]
 debug = []
 debug-exact = ["debug", "debug-print"]
 debug-predictor-exact = ["debug", "debug-print"]
 predictor-debug = []
+transfer-debug = ["debug-exact"]
+transfer-debug-exact = ["transfer-debug"]
+debug-full = ["transfer-debug-exact"]
+debug-full-critic = ["transfer-debug-exact", "debug-predictor-exact"]
+
 extended-header = []
 rseq-thread-failure-fallback = []
 lazy-page-trim = []
@@ -50,7 +56,7 @@ doctest = false
 [profile.release]
 opt-level = 3
 panic = "abort"
-strip = true
 overflow-checks = false
 lto = "fat"
 codegen-units = 1
+debug = 2

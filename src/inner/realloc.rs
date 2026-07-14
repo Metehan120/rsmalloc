@@ -11,7 +11,7 @@ use crate::{
     BIG_MAGIC, BigAllocMeta, Header, MetaData,
     big_allocations::{
         big_allocation::{big_free, big_malloc, estimate_and_align_2mb},
-        buddy::{BIG_BUDDY_ALLOCATOR, BIG_BUDDY_MAX_ORDER},
+        buddy::{BIG_BUDDY_MAX_ORDER, BUDDY_BACKEND},
     },
     core_prim::wrappers::{SafePointer, UnsafePointer},
     inner::{
@@ -19,7 +19,7 @@ use crate::{
         alloc::{rs_alloc, usable_size},
         free::{find_original_ptr, rs_free},
     },
-    internals::{hashmap::BIG_ALLOC_MAP, l3_main_radix::L3_RADIX},
+    internals::{hashmap::BIG_META_MAP, l3_main_radix::RADIX},
     utility::{SIZE_CLASSES, align_to, match_size_class},
 };
 
@@ -74,7 +74,7 @@ unsafe fn small_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePoin
             );
 
             if map.is_ok() {
-                L3_RADIX.set_range(mapping_base, new_total, true);
+                RADIX.set_range(mapping_base, new_total, true);
 
                 let mut new_header_ptr = header_ptr;
                 new_header_ptr.class = new_class as u8;
@@ -101,7 +101,7 @@ unsafe fn small_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePoin
 unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointer<Header> {
     let old_ptr = ptr.cast_usize();
     let old_mapping = (old_ptr - Header::SIZE) as *mut c_void;
-    let old_meta = match BIG_ALLOC_MAP.get(old_ptr) {
+    let old_meta = match BIG_META_MAP.get(old_ptr) {
         Some(meta) => meta,
         None => return UnsafePointer::NULL,
     };
@@ -109,7 +109,7 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
     if new_size <= old_meta.size {
         return ptr.apply_unsafe();
     }
-    let is_in_buddy = BIG_BUDDY_ALLOCATOR.is_in_pool(old_ptr);
+    let is_in_buddy = BUDDY_BACKEND.is_in_pool(old_ptr);
 
     let old_mapped_size = if is_in_buddy {
         1usize << old_meta.order
@@ -148,7 +148,7 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
                 aligned: false,
             };
 
-            let _ = BIG_ALLOC_MAP.replace(old_ptr, new_meta);
+            let _ = BIG_META_MAP.replace(old_ptr, new_meta);
             return UnsafePointer::new(new_addr as *mut Header).walk_header();
         }
     } else {
@@ -162,12 +162,12 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
             }
 
             if let Some((new_addr, new_order)) =
-                BIG_BUDDY_ALLOCATOR.try_grow_inplace(current_addr, current_order)
+                BUDDY_BACKEND.try_grow_inplace(current_addr, current_order)
             {
                 current_addr = new_addr;
                 current_order = new_order;
 
-                let _ = BIG_ALLOC_MAP.replace(
+                let _ = BIG_META_MAP.replace(
                     old_ptr,
                     BigAllocMeta {
                         next: std::ptr::null_mut(),
@@ -185,7 +185,7 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
                         order: current_order,
                         aligned: old_meta.aligned,
                     };
-                    let _ = BIG_ALLOC_MAP.replace(old_ptr, new_meta);
+                    let _ = BIG_META_MAP.replace(old_ptr, new_meta);
 
                     return UnsafePointer::new(current_addr as *mut Header).walk_header();
                 } else {
@@ -233,7 +233,7 @@ pub unsafe fn rs_realloc(ptr: UnsafePointer<Header>, new_size: usize) -> UnsafeP
 
     let ptr_addr = ptr.cast_usize();
 
-    if L3_RADIX.is_owned(ptr_addr) {
+    if RADIX.is_owned(ptr_addr) {
         let ptr_copy_for_search = UnsafePointer::new(ptr.cast_as_ptr::<Header>());
         let searched = find_original_ptr(ptr_copy_for_search);
 

@@ -7,7 +7,9 @@ use std::{
 };
 
 #[cfg(feature = "debug-exact")]
-use crate::{GLOBAL_LOCK_RETRIES, GLOBAL_LOCKS};
+use crate::{
+    GLOBAL_LOCK_RETRIES, GLOBAL_LOCKS, GLOBAL_SPIN_WAITS, GLOBAL_TRY_LOCK_MISSES, GLOBAL_TRY_LOCKS,
+};
 
 #[repr(transparent)]
 pub struct LockGuard(*const AtomicBool);
@@ -55,15 +57,27 @@ impl SpinLock {
 
     #[inline(always)]
     pub fn try_lock(&self) -> Option<LockGuard> {
-        self.state
+        #[cfg(feature = "debug-exact")]
+        GLOBAL_TRY_LOCKS.fetch_add(1, Ordering::Relaxed);
+
+        match self
+            .state
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .ok()
-            .map(|_| LockGuard(&self.state as *const AtomicBool))
+        {
+            Ok(_) => Some(LockGuard(&self.state as *const AtomicBool)),
+            Err(_) => {
+                #[cfg(feature = "debug-exact")]
+                GLOBAL_TRY_LOCK_MISSES.fetch_add(1, Ordering::Relaxed);
+                None
+            }
+        }
     }
 
     #[inline(always)]
     pub fn spin_until_unlock(&self) {
         while self.get_lock() {
+            #[cfg(feature = "debug-exact")]
+            GLOBAL_SPIN_WAITS.fetch_add(1, Ordering::Relaxed);
             spin_loop();
         }
     }

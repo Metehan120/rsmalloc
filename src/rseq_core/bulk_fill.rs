@@ -11,11 +11,11 @@ use std::{
 
 use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 
-use crate::rseq_core::{pending_queue::PENDING_QUEUE, rseq_cache::RSEQ_CACHE};
+use crate::rseq_core::{pending_queue::PENDING_QUEUE, slab_cache::SLAB_CACHE};
 use crate::{CURRENT_STAMP, ZERO_FLAG};
 use crate::{
-    Err, FREED_MAGIC, Header, MetaData, TOTAL_CACHED_VA,
-    internals::{binder::prefer_node, l3_main_radix::L3_RADIX},
+    Err, FREED_MAGIC, Header, MetaData, add_slab_cached_va,
+    internals::{binder::prefer_node, l3_main_radix::RADIX},
     utility::{ITERATIONS, NUM_SIZE_CLASSES, SIZE_CLASSES, align_to},
 };
 
@@ -135,8 +135,8 @@ unsafe fn alloc_metadata(
     block_size: usize,
     cpu_id: usize,
 ) -> Result<*mut MetaData, Err> {
-    let (_, inner) = RSEQ_CACHE.get_numa_and_inner();
-    let node_id = RSEQ_CACHE.node_for_cpu(cpu_id, inner);
+    let (_, inner) = SLAB_CACHE.get_numa_and_inner();
+    let node_id = SLAB_CACHE.node_for_cpu(cpu_id, inner);
 
     let pending = PENDING_QUEUE.pop(node_id, class);
     if !pending.is_null() {
@@ -166,9 +166,9 @@ unsafe fn alloc_metadata(
         prefer_node(mem, total, node_id);
     }
 
-    TOTAL_CACHED_VA.fetch_add(total, Ordering::Relaxed);
+    add_slab_cached_va(total);
 
-    L3_RADIX.set_range(mem as usize, total, true);
+    RADIX.set_range(mem as usize, total, true);
 
     let metadata = mem as *mut MetaData;
     write(

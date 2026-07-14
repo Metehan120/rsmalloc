@@ -171,6 +171,15 @@ impl Radix {
     }
 }
 
+#[cfg(feature = "debug")]
+pub struct RadixReport {
+    pub l1_nodes: usize,
+    pub l2_nodes: usize,
+    pub leaves: usize,
+    pub owned_chunks: usize,
+    pub metadata_bytes: usize,
+}
+
 pub struct RadixTree {
     pub nodes: Radix,
 }
@@ -232,10 +241,69 @@ impl RadixTree {
         self.nodes.get(addr / CHUNK_SIZE)
     }
 
+    #[cfg(feature = "debug")]
+    pub unsafe fn report(&self) -> RadixReport {
+        if self.nodes.l0.is_null() {
+            return RadixReport {
+                l1_nodes: 0,
+                l2_nodes: 0,
+                leaves: 0,
+                owned_chunks: 0,
+                metadata_bytes: 0,
+            };
+        }
+
+        let mut l1_nodes = 0usize;
+        let mut l2_nodes = 0usize;
+        let mut leaves = 0usize;
+        let mut owned_chunks = 0usize;
+
+        for i0 in 0..L0_SIZE {
+            let l1 = (*self.nodes.l0.as_ptr().add(i0)).load(Acquire) as *mut AtomicUsize;
+            if l1.is_null() {
+                continue;
+            }
+            l1_nodes += 1;
+
+            for i1 in 0..L1_SIZE {
+                let l2 = (*l1.add(i1)).load(Acquire) as *mut AtomicUsize;
+                if l2.is_null() {
+                    continue;
+                }
+                l2_nodes += 1;
+
+                for i2 in 0..L2_SIZE {
+                    let l3 = (*l2.add(i2)).load(Acquire) as *mut AtomicU64;
+                    if l3.is_null() {
+                        continue;
+                    }
+                    leaves += 1;
+
+                    for word in 0..L3_BITMAP_WORDS {
+                        owned_chunks += (*l3.add(word)).load(Acquire).count_ones() as usize;
+                    }
+                }
+            }
+        }
+
+        let metadata_bytes = (L0_SIZE * size_of::<AtomicUsize>())
+            + (l1_nodes * L1_SIZE * size_of::<AtomicUsize>())
+            + (l2_nodes * L2_SIZE * size_of::<AtomicUsize>())
+            + (leaves * L3_BITMAP_WORDS * size_of::<AtomicU64>());
+
+        RadixReport {
+            l1_nodes,
+            l2_nodes,
+            leaves,
+            owned_chunks,
+            metadata_bytes,
+        }
+    }
+
     #[inline(always)]
     const fn valid_user_addr(addr: usize) -> bool {
         addr < MAX_ADDR
     }
 }
 
-pub static mut L3_RADIX: RadixTree = unsafe { RadixTree::new_const() };
+pub static mut RADIX: RadixTree = unsafe { RadixTree::new_const() };

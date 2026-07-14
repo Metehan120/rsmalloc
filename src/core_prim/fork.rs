@@ -4,13 +4,13 @@ use std::{
     sync::{Mutex, MutexGuard},
 };
 
-use crate::rseq_core::rseq_main::__rseq_offset;
+use crate::rseq_core::rseq_offsets::__rseq_offset;
 use crate::{
     GLOBAL_TRIM_LOCK, RSMallocError,
-    big_allocations::buddy::BIG_BUDDY_ALLOCATOR,
+    big_allocations::buddy::BUDDY_BACKEND,
     inner::{fallback::fallback_reinit_on_fork, libc_int::pthread_atfork},
     internals::{hashmap::BIG_MAP, lock::LockGuard},
-    rseq_core::rseq_main::__rseq_size,
+    rseq_core::rseq_offsets::__rseq_size,
 };
 
 pub static BOOTSTRAP_LOCK: Mutex<()> = Mutex::new(());
@@ -44,7 +44,7 @@ unsafe extern "C" fn fork_child() {
     }
 
     fallback_reinit_on_fork();
-    BIG_BUDDY_ALLOCATOR.reset_locks_on_fork();
+    BUDDY_BACKEND.reset_locks_on_fork();
     BIG_MAP.reset_lock_on_fork();
     GLOBAL_TRIM_LOCK.reset_at_fork();
 

@@ -9,10 +9,10 @@ use rustix::mm::{Advice, MapFlags, ProtFlags, madvise, mmap_anonymous, munmap};
 use crate::{
     ALLOCATED_FLAG, BIG_MAGIC, BUDDY_INIT, BigAllocMeta, Header, RS_DISABLE_THP, RSMallocError,
     TRIMMED_FLAG, ZERO_FLAG,
-    big_allocations::buddy::{BIG_BUDDY_ALLOCATOR, BUDDY_TRIM_NOT_ALLOCATED, BUDDY_TRIM_TRIMMED},
+    big_allocations::buddy::{BUDDY_BACKEND, BUDDY_TRIM_NOT_ALLOCATED, BUDDY_TRIM_TRIMMED},
     core_prim::wrappers::UnsafePointer,
-    internals::{binder::prefer_node, hashmap::BIG_MAP, l3_main_radix::L3_RADIX},
-    rseq_core::{rseq_cache::RSEQ_CACHE, rseq_main::get_rseq},
+    internals::{binder::prefer_node, hashmap::BIG_MAP, l3_main_radix::RADIX},
+    rseq_core::{rseq_offsets::get_rseq, slab_cache::SLAB_CACHE},
     trim::DISABLE_BUDDY,
     utility::align_to,
 };
@@ -41,11 +41,11 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
     let mut actual_ptr: *mut u8 = null_mut();
     let mut flag = 100;
     let cpu_id = get_rseq().cpu_id as usize;
-    let (numa, inner) = RSEQ_CACHE.get_numa_and_inner();
-    let node_id = RSEQ_CACHE.node_for_cpu(cpu_id, inner);
+    let (numa, inner) = SLAB_CACHE.get_numa_and_inner();
+    let node_id = SLAB_CACHE.node_for_cpu(cpu_id, inner);
 
     if size <= 1024 * 1024 * 64 && BUDDY_INIT && !DISABLE_BUDDY.load(Relaxed) {
-        let buddy = BIG_BUDDY_ALLOCATOR.alloc(aligned_total, node_id, (numa, inner));
+        let buddy = BUDDY_BACKEND.alloc(aligned_total, node_id, (numa, inner));
 
         if let Some((addr, order, trim_state)) = buddy {
             actual_ptr = addr as *mut u8;
@@ -101,9 +101,9 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
 
     if registered {
     } else if !registered && !aligned {
-        L3_RADIX.set_single_big(actual_ptr as usize, true)
+        RADIX.set_single_big(actual_ptr as usize, true)
     } else {
-        L3_RADIX.set_range(actual_ptr as usize, mapped_total, true)
+        RADIX.set_range(actual_ptr as usize, mapped_total, true)
     };
 
     BIG_MAP.insert(
@@ -132,16 +132,16 @@ pub unsafe fn big_free(ptr: usize) {
     let payload_size = estimate_and_align_2mb(header.size + Header::SIZE);
 
     if BUDDY_INIT {
-        if BIG_BUDDY_ALLOCATOR.is_in_pool(mapping_base as usize) {
-            BIG_BUDDY_ALLOCATOR.free(mapping_base as usize, header.order);
+        if BUDDY_BACKEND.is_in_pool(mapping_base as usize) {
+            BUDDY_BACKEND.free(mapping_base as usize, header.order);
             return;
         }
     }
 
     if header.aligned {
-        L3_RADIX.set_range(mapping_base as usize, payload_size, false);
+        RADIX.set_range(mapping_base as usize, payload_size, false);
     } else {
-        L3_RADIX.set_single_big(mapping_base as usize, false);
+        RADIX.set_single_big(mapping_base as usize, false);
     }
 
     let _ = munmap(mapping_base as *mut c_void, payload_size);

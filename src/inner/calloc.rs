@@ -11,7 +11,7 @@ use crate::{
     Header, RSMallocError,
     core_prim::wrappers::UnsafePointer,
     inner::alloc::rs_alloc,
-    internals::hashmap::BIG_ALLOC_MAP,
+    internals::hashmap::BIG_META_MAP,
     utility::{SIZE_CLASSES, match_size_class},
 };
 
@@ -30,7 +30,7 @@ macro_rules! calloc_zero {
         }
 
         #[cfg(feature = "lazy-page-trim")]
-        if flags == ALLOCATED_FLAG || flags == TRIMMED_FLAG {
+        if flags == crate::ALLOCATED_FLAG || flags == TRIMMED_FLAG {
             std::ptr::write_bytes(
                 $ptr.cast_as_ptr() as *mut u8,
                 0,
@@ -89,7 +89,7 @@ pub unsafe fn rs_calloc(size: usize, zero_size: usize) -> UnsafePointer<Header> 
             ptr
         }
         None => {
-            let payload_size = BIG_ALLOC_MAP
+            let payload_size = BIG_META_MAP
                 .get(ptr.cast_usize())
                 .map(|meta| meta.size)
                 .unwrap_or_else(|| {

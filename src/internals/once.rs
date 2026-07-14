@@ -23,7 +23,6 @@ impl Once {
         if likely(self.state.load(Ordering::Relaxed) == 2) {
             return;
         }
-
         self.start(f);
     }
 

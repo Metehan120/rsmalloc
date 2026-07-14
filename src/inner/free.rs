@@ -1,15 +1,10 @@
-use std::{
-    hint::{likely, unlikely},
-    os::raw::c_void,
-    ptr::read_unaligned,
-    sync::atomic::Ordering,
-};
+use std::{hint::unlikely, os::raw::c_void, ptr::read_unaligned, sync::atomic::Ordering};
 
 use crate::{
     ALIGN_TAG, BIG_MAGIC, CURRENT_STAMP, FREED_MAGIC, GenericCache, Header, MAGIC, MAGIC_DISABLE,
     OFFSET_SIZE, RSMallocError, TAG_SIZE, big_allocations::big_allocation::big_free,
-    core_prim::wrappers::UnsafePointer, internals::l3_main_radix::L3_RADIX,
-    rseq_core::rseq_cache::RSEQ_CACHE,
+    core_prim::wrappers::UnsafePointer, internals::l3_main_radix::RADIX,
+    rseq_core::slab_cache::SLAB_CACHE,
 };
 
 #[inline(always)]
@@ -21,7 +16,7 @@ pub unsafe fn find_original_ptr(ptr: UnsafePointer<Header>) -> UnsafePointer<Hea
         let raw_loc = (header_search_ptr.cast_usize()).wrapping_sub(OFFSET_SIZE) as *const usize;
         let presumed_original_ptr = read_unaligned(raw_loc) as *mut c_void;
 
-        if !L3_RADIX.is_owned(presumed_original_ptr as usize) {
+        if !RADIX.is_owned(presumed_original_ptr as usize) {
             RSMallocError::AttackOrCorruption.log_and_abort(
                 header_search_ptr.as_ptr() as *mut c_void,
                 "CRITICAL: possible aligned-path metadata injection: recovered pointer is not owned by rsmalloc",
@@ -41,7 +36,7 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
         return;
     }
 
-    if !L3_RADIX.is_owned(ptr.cast_usize()) {
+    if !RADIX.is_owned(ptr.cast_usize()) {
         #[cfg(feature = "preload")]
         crate::inner::fallback::free_fallback(ptr.cast_as_ptr() as *mut c_void);
 
@@ -59,18 +54,18 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
         return;
     }
 
-    let searched = find_original_ptr(ptr);
+    let searched = find_original_ptr(ptr.cast());
     let mut header = searched.cast::<Header>().get_actual_header().apply_safe();
 
     if header.magic == MAGIC {
         header.life_time = CURRENT_STAMP.load(Ordering::Relaxed);
         header.magic = FREED_MAGIC;
 
-        RSEQ_CACHE.push(header.class as usize, header.as_ptr());
+        SLAB_CACHE.push(header.class as usize, header.as_ptr());
         return;
     }
 
-    if likely(header.magic == BIG_MAGIC) {
+    if header.magic == BIG_MAGIC {
         big_free(searched.cast_usize());
         return;
     }

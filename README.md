@@ -1,8 +1,10 @@
 # RSMalloc (rseq/rust slab malloc)
 
-rsmalloc is an experimental Rust memory allocator focused on low-overhead concurrent allocation for real-world application workloads, not benchmark-only allocation patterns. The small-allocation path is built around Linux Restartable Sequences (RSEQ), so cache ownership is CPU-oriented rather than thread-oriented. Larger allocations use a separate big-allocation path with a buddy allocator for cached regions.
+rsmalloc is an experimental Rust memory allocator focused on low-overhead concurrent allocation for real-world application workloads, not benchmark-only allocation patterns. The slab allocation path is built around Linux Restartable Sequences (RSEQ), so cache ownership is CPU-oriented rather than thread-oriented. Larger allocations use a separate big-allocation path with a buddy backend for cached regions.
 
 Current release line: `0.2.0-alpha`.
+
+`0.2.0-alpha` is a full allocator overhaul from the `0.1.0-alpha` line: RSEQ/slab internals, transfer-cache balancing, lazy refill metadata reuse, NUMA placement, buddy caching/trimming, preload ABI behavior, and Rust configuration have all changed materially.
 
 crates.io: https://crates.io/crates/rsmalloc
 
@@ -24,26 +26,27 @@ The current codebase supports two intended modes:
 
 ## Current Capabilities
 
-- Small allocations are served from size classes backed by per-CPU RSEQ caches.
+- Small allocations are served from size classes backed by `SLAB_CACHE` per-CPU RSEQ caches, transfer caches, adaptive refill, and pending refill metadata reuse.
 - RSEQ fast paths use inline assembly critical sections for push/pop operations.
 - Overflow and zero-size handling exists for calloc/realloc paths.
-- Big allocations are tracked separately and can use a NUMA-aware 4 MiB to 64 MiB buddy allocator cache.
+- Big allocations are tracked separately in `BIG_METADATA_MAP` and can use the NUMA-aware 4 MiB to 64 MiB `BUDDY_BACKEND` cache with old-block trimming and optional memory-pressure relief.
 - Transparent huge page attempts are configurable for big allocation regions.
 - Preload builds provide C ABI allocation entry points including `malloc`, `calloc`, `realloc`, `reallocarray`, `recallocarray`, `free`, sized-free compatibility shims, usable-size queries, alignment APIs, and opt-in `malloc_trim(...)` support.
 - Trimming supports buddy-cache blocks and small-allocation/background trim scanning for size classes equal to or greater than 4096 bytes.
 - Non-preload builds expose `RSMalloc`, `RSMallocConfig`, and `GlobalAlloc` integration.
-- Runtime tuning is available for refill behavior, predictor behavior, THP behavior, buddy cache sizing, opt-in experimental buddy trimming, magic-value behavior, and foreign-pointer handling in global-allocator mode.
+- Runtime tuning is available for refill behavior, predictor behavior, THP behavior, buddy cache sizing, trim-thread behavior, memory-pressure relief, opt-in experimental buddy trimming, magic-value behavior, and foreign-pointer handling in global-allocator mode.
 - Small-allocation refill sizing uses a fast integer adaptive predictor, with a separate bulk-fill predictor so cache-pop/steal behavior does not force page/list initialization into tiny batches.
 - In the default thread-local refill path, pending refill metadata is drained on thread exit into a lock-free per-node global pending queue to reduce stranded per-thread pending slabs.
 - Optional `extended-header` Cargo feature provides wider allocator metadata for experiments and stress testing.
 - Non-preload builds expose a small capability snapshot with allocator version, configured THP state, and current public NUMA support status.
-- Internal allocation paths are NUMA-aware where topology is available: RSEQ victim stealing, small refill mappings, pending metadata reuse, buddy regions, and direct big mappings prefer the current CPU's node.
+- Internal allocation paths are NUMA-aware where topology is available: transfer-cache victim stealing, small refill mappings, pending metadata reuse, buddy backend regions, and direct big mappings prefer the current CPU's node.
+- Batch transfer-cache stealing uses relaxed per-class nonempty CPU hints to narrow victim selection before falling back to the actual ABA-tagged transfer-list pop path.
 
 ## Adaptive Refill Prediction
 
 Small-allocation cache refills use a fast integer adaptive predictor to estimate current per-size-class refill demand. When a refill returns exactly the requested batch and the class still has headroom, observed demand is slightly uplifted (+25%, clamped) so the next refill can grow quickly under pressure. Sustained low-demand samples shrink the predicted batch gradually to avoid oscillating on one-off dips.
 
-The initial predictor batch is configurable through `RefillPredictorSettings`/`with_refill_predictor_settings` in the Rust API and `RS_PREDICTOR_INIT_BATCH` in preload builds. A separate bulk-fill predictor is used so page/list initialization can still happen in practical batches even when cache-pop or steal behavior observes smaller short-term demand.
+The initial predictor batch is configurable through `RefillPredictorSettings`/`with_refill_predictor_settings` in the Rust API and `RS_PREDICTOR_INIT_BATCH` in preload builds. A separate bulk-fill predictor is used so page/list initialization can still happen in practical batches even when cache-pop or steal behavior observes smaller short-term demand. Bulk fill initializes headers only for the selected batch and keeps remaining mapped metadata as pending refill state.
 
 ## Current Limitations
 
@@ -162,17 +165,32 @@ cargo build --release --features extended-header
 Other optional Cargo features:
 
 - `rseq-thread-failure-fallback` enables the default recovery path for invalid/unregistered RSEQ CPU IDs.
-- `predictor-debug` enables refill-predictor debug logging.
-- `debug-predictor-exact` enables exact refill-mispredict accounting instrumentation (higher overhead than normal debug mode).
 - `lazy-page-trim` uses lazy page-free advice for small-allocation trim where supported instead of immediate `MADV_DONTNEED`-style advice.
+
+### Alpha-2 debug modes
+
+`0.2.0-alpha` has several explicit debug feature tiers. These modes are intentionally split because some are useful for routine allocator visibility while others add significant measurement overhead:
+
+- `debug`: base internal counters, including RSEQ/refill debug counters used by reports and stats.
+- `debug-print`: enables `debug` and prints an allocator report at process exit via `.fini_array`/`eprintln!`.
+- `debug-printer-thread`: enables `debug-print` and starts a background printer thread for live allocator-state snapshots.
+- `debug-exact`: enables `debug-print` and adds higher-overhead lock counters such as lock calls, retries, try-lock misses, and spin waits.
+- `debug-predictor-exact`: enables `debug-print` and uses more intrusive refill-prediction accounting to distinguish over/under prediction behavior.
+- `predictor-debug`: logs predictor batch decisions with `eprintln!` from the predictor path.
+- `transfer-debug`: enables `debug-exact` and tracks transfer-cache steals, dry steals, and CAS retries.
+- `transfer-debug-exact`: enables `transfer-debug` and also counts transfer-cache push/pop calls.
+- `debug-full`: convenience feature for broad transfer/debug instrumentation.
+- `debug-full-critic`: enables broad debug instrumentation plus exact predictor diagnostics.
+
+Use the exact/transfer/predictor modes only when diagnosing allocator behavior; they can materially change benchmark results.
 
 ## Runtime Configuration For Preload
 
 - `RS_PREDICTOR_INIT_BATCH`: Initial per-size-class predictor batch value for small allocation refills. Defaults to `128`.
 
 - `RS_MAX_REFILL_RETRIES`: Maximum number of refill retries. Defaults to `3`.
-- `RS_BUDDY_PER_CACHE_SIZE`: Initial buddy allocator region size for big allocations. Defaults to `268435456` bytes, is clamped to at least `268435456`, and is rounded up to a power of two.
-- `RS_BUDDY_ATTEMPT_HUGEPAGE`: Set to `1` to request transparent huge pages for buddy allocator regions.
+- `RS_BUDDY_PER_CACHE_SIZE`: Initial buddy backend region size for big allocations. Defaults to `268435456` bytes, is clamped to at least `268435456`, and is rounded up to a power of two.
+- `RS_BUDDY_ATTEMPT_HUGEPAGE`: Set to `1` to request transparent huge pages for buddy backend regions.
 - `RS_DISABLE_TRIM_THREAD`: Set to nonzero to disable the background trim worker. Manual `malloc_trim(...)` remains available.
 - `RS_TRIMMER_THRESHOLD`: Minimum cached virtual address space before starting the background trim worker. Defaults to `10485760` bytes.
 - `RS_DISABLE_RELIEF`: Controls system-memory-pressure relief behavior. Relief is disabled by default; set this to `0` to enable it.
@@ -191,16 +209,16 @@ The allocator is organized into a few main areas:
 - `global_alloc`: Rust `GlobalAlloc` integration and direct Rust-facing allocation helpers.
 - `core_prim`: bootstrap, predictor state, fork handling, and pointer wrappers.
 - `inner`: allocator operation implementations such as allocation, free, calloc, realloc, and alignment.
-- `big_allocations`: big allocation path and buddy allocator.
-- `internals`: internal data structures including the big allocation map, radix ownership tracking, NUMA parsing/binding helpers, locks, and once primitives.
-- `rseq_core`: RSEQ cache structures, inline assembly critical sections, bulk-fill metadata, and pending refill queues.
+- `big_allocations`: big allocation path and `BUDDY_BACKEND` implementation.
+- `internals`: internal data structures including `BIG_METADATA_MAP`, `RADIX` ownership tracking, NUMA parsing/binding helpers, locks, and once primitives.
+- `rseq_core`: `SLAB_CACHE` structures, transfer caches, inline assembly critical sections, bulk-fill metadata, and pending refill queues.
 - `utility`: size classes and shared allocation helpers.
 
 ## Design Notes
 
 rsmalloc treats the small allocation fast path as a per-CPU cache problem. RSEQ lets the allocator update CPU-local linked lists without normal lock overhead when the current CPU remains stable through the critical section. If the kernel preempts or migrates the thread during that critical section, the operation is aborted and retried or moved to a fallback path.
 
-Big allocations do not use the same slab path. They are tracked separately, can be mapped directly, and can be served from a NUMA-aware buddy allocator cache for eligible sizes.
+Big allocations do not use the same slab path. They are tracked separately in `BIG_METADATA_MAP`, can be mapped directly, and can be served from the NUMA-aware `BUDDY_BACKEND` cache for eligible sizes.
 
 ## Contributing
 

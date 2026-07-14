@@ -1,19 +1,20 @@
+use rustix::rand::{GetRandomFlags, getrandom};
 use std::ptr::null_mut;
 
-use rustix::rand::{GetRandomFlags, getrandom};
-
-use crate::rseq_core::rseq_main::__rseq_offset;
+#[cfg(feature = "debug")]
+use crate::START_TIME;
+use crate::rseq_core::rseq_offsets::__rseq_offset;
 use crate::{
     ALIGN_TAG, BIG_MAGIC, BUDDY_ATTEMPT_HUGE, BUDDY_MAX_CACHE, DISABLE_TRIM_THREAD, FREED_MAGIC,
     MAGIC, RS_DISABLE_THP, RSMallocError, TRIM_THRESHOLD,
-    big_allocations::buddy::BIG_BUDDY_ALLOCATOR,
+    big_allocations::buddy::BUDDY_BACKEND,
     core_prim::predictor::{DEFAULT_BATCH, PREDICTOR_INIT_BATCH},
     inner::alloc::MAX_REFILL_RETRIES,
     internals::{
         env::get_env_usize,
-        l3_main_radix::{L3_RADIX, RadixTree},
+        l3_main_radix::{RADIX, RadixTree},
     },
-    rseq_core::{rseq_cache::RSEQ_CACHE, rseq_main::__rseq_size},
+    rseq_core::{rseq_offsets::__rseq_size, slab_cache::SLAB_CACHE},
     trim::{BUDDY_DISABLE_PERCENTAGE, BUDDY_ENABLE_PERCENTAGE, DISABLE_RELIEF},
 };
 
@@ -87,13 +88,18 @@ pub unsafe fn bootstrap() {
         );
     }
 
+    #[cfg(feature = "debug")]
+    {
+        START_TIME = Some(std::time::Instant::now());
+    }
+
     MAX_REFILL_RETRIES = get_env_usize("RS_MAX_REFILL_RETRIES".as_bytes()).unwrap_or(3);
 
     let predictor = get_env_usize("RS_PREDICTOR_INIT_BATCH".as_bytes()).unwrap_or(DEFAULT_BATCH);
     PREDICTOR_INIT_BATCH = predictor;
 
-    L3_RADIX = RadixTree::new();
-    RSEQ_CACHE.ensure_cache();
+    RADIX = RadixTree::new();
+    SLAB_CACHE.ensure_cache();
     BUDDY_MAX_CACHE = get_env_usize("RS_BUDDY_PER_CACHE_SIZE".as_bytes())
         .unwrap_or(1024 * 1024 * 256)
         .clamp(1024 * 1024 * 256, 2 << 46)
@@ -114,7 +120,7 @@ pub unsafe fn bootstrap() {
     let disable_thp = get_env_usize("RS_DISABLE_THP".as_bytes()).unwrap_or(0);
     RS_DISABLE_THP = disable_thp == 1;
 
-    BIG_BUDDY_ALLOCATOR.init(BUDDY_MAX_CACHE, BUDDY_ATTEMPT_HUGE && !RS_DISABLE_THP);
+    BUDDY_BACKEND.init(BUDDY_MAX_CACHE, BUDDY_ATTEMPT_HUGE && !RS_DISABLE_THP);
 
     crate::core_prim::fork::register_fork_handlers();
 

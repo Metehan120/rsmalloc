@@ -163,7 +163,7 @@ pub(crate) unsafe fn print_report() {
     item(&mut report, "refills", total_refills);
     item(
         &mut report,
-        "misses",
+        "predictor misses",
         format!("{} ({:.2}%)", misses, miss_percent),
     );
     item(&mut report, "under predicts", under);
@@ -224,6 +224,20 @@ pub(crate) unsafe fn print_report() {
                 TOTAL_TRANSFER_RETRIES.load(Relaxed),
             );
         }
+    }
+
+    section(&mut report, "transfer class hints");
+    line(&mut report, "  1 = hinted nonempty, 0 = no nonempty hint");
+    for class in 0..SIZE_CLASSES.len() {
+        line(
+            &mut report,
+            &format!(
+                "  {:>3}  {:<9} {}",
+                class,
+                fmt_bytes_short(SIZE_CLASSES[class]),
+                SLAB_CACHE.transfer_hint_bits(class)
+            ),
+        );
     }
 
     section(&mut report, "cached virtual memory");

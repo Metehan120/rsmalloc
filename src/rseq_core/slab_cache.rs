@@ -426,6 +426,22 @@ impl SlabCache {
         total_usage
     }
 
+    #[cfg(feature = "debug")]
+    pub unsafe fn transfer_hint_bits(&self, class: usize) -> String {
+        let inner = &*self.inner.get();
+        let ncpu = inner.numa.ncpu;
+        let mut out = String::with_capacity(ncpu);
+
+        for cpu in 0..ncpu {
+            let (word, bit) = self.cpu_word_bit(cpu);
+            let ptr = self.bitmap_word(inner, class, word);
+            let bits = (*ptr).load(Ordering::Relaxed);
+            out.push(if bits & bit != 0 { '1' } else { '0' });
+        }
+
+        out
+    }
+
     pub fn get_inner(&self) -> &mut SlabCacheInner {
         unsafe { &mut *self.inner.get() }
     }

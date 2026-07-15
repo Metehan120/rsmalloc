@@ -52,9 +52,7 @@ use std::{
 };
 
 use crate::{
-    core_prim::wrappers::UnsafePointer,
-    internals::lock::SpinLock,
-    rseq_core::rseq_offsets::{get_rseq, rseq},
+    core_prim::wrappers::UnsafePointer, internals::lock::SpinLock, rseq_core::rseq_offsets::rseq,
 };
 
 #[cfg(not(target_arch = "x86_64"))]
@@ -308,7 +306,11 @@ impl Debug for RSMallocError {
 impl RSMallocError {
     #[inline(never)]
     pub fn log_and_abort(&self, ptr: *mut std::ffi::c_void, extra: &str, errno: Option<i32>) -> ! {
-        let current_cpu = unsafe { get_rseq().cpu_id };
+        #[cfg(feature = "print-cpu-on-double-free")]
+        let current_cpu = unsafe {
+            use crate::rseq_core::rseq_offsets::get_rseq;
+            get_rseq().cpu_id
+        };
 
         if let Some(errno) = errno {
             eprintln!(
@@ -319,6 +321,7 @@ impl RSMallocError {
             eprintln!("[RSMALLOC FATAL] {:?} at ptr={:p} | {}", self, ptr, extra);
         }
 
+        #[cfg(feature = "print-cpu-on-double-free")]
         if *self == Self::DoubleFree {
             eprintln!("[RSMALLOC] Double free on CPU {}", current_cpu)
         }

@@ -117,37 +117,64 @@ The fast path for a small allocation is:
 
 ```mermaid
 flowchart TD
-    A["rs_alloc(size)"] --> B{"match_size_class?"}
-    B -- "no" --> BIG["big_malloc"]
-    B -- "yes" --> C{"size > RSEQ_SMALL_CLASS_BYTES?"}
-    C -- "no" --> S["SLAB_CACHE.pop(class)"]
-    C -- "yes" --> T["transfer-cache scan"]
-    S -- "hit" --> D["mark MAGIC"]
-    T -- "hit" --> D
-    S -- "miss" --> E["fill(class)"]
-    T -- "miss" --> E
-    E --> F{"local transfer hit?"}
-    F -- "yes" --> D
-    F -- "no" --> N["same-node victim scan"]
-    N --> R{"remote scan if NUMA?"}
-    R -- "hit" --> D
-    R -- "miss" --> G["bulk_fill"]
-    G --> P{"thread/local-node pending metadata?"}
-    P -- "hit" --> I["initialize batch"]
-    P -- "miss" --> M["allocate from slab page backend"]
-    M --> I
-    I --> H["push remainder to SLAB_CACHE"]
-    H --> D
-    D --> RET["return payload"]
+    A["rs_alloc(size)"] --> B{"match_size_class(size)?"}
+    B -- "none" --> BIG["big_malloc(size, aligned)"]
+    BIG --> BIGRET["return big payload or null"]
+
+    B -- "class" --> S["SLAB_CACHE.pop(class)"]
+    S --> CACHE_HIT{"RSEQ class-cache hit?"}
+    CACHE_HIT -- "yes" --> OWN["optional check-owned-on-alloc"]
+    CACHE_HIT -- "RSEQ abort retries" --> TSINGLE["transfer_pop_single(current CPU)"]
+    TSINGLE -- "hit" --> OWN
+    TSINGLE -- "empty" --> S
+
+    CACHE_HIT -- "empty" --> FILL["fill(class)"]
+    FILL --> TP["SLAB_CACHE.try_pop(class, predicted batch)"]
+    TP --> LOCAL["local transfer cache"]
+    LOCAL --> LHIT{"local hit?"}
+    LHIT -- "yes" --> TAKE["take one block from batch"]
+    LHIT -- "no" --> RANGE["same-node hinted CPU range"]
+    RANGE --> RHIT{"same-node hit?"}
+    RHIT -- "yes" --> TAKE
+    RHIT -- "no" --> REMOTE{"NUMA enabled?"}
+    REMOTE -- "yes" --> REMOTE_SCAN["remote node hinted ranges"]
+    REMOTE_SCAN --> XHIT{"remote hit?"}
+    XHIT -- "yes" --> TAKE
+    XHIT -- "no" --> REFILL["refill(class, cpu)"]
+    REMOTE -- "no" --> REFILL
+    REFILL --> BULK["bulk_fill(class, cpu, bulk batch)"]
+    BULK --> TLS{"thread-local pending span?"}
+    TLS -- "yes" --> INIT["lazy initialize requested headers"]
+    TLS -- "no" --> PENDING{"local-node pending span?"}
+    PENDING -- "yes" --> INIT
+    PENDING -- "no" --> PAGE["PAGE_ALLOCATOR alloc span from NUMA-preferred arena"]
+    PAGE --> ADVICE{"new arena advice feature?"}
+    ADVICE -- "no-huge only" --> NH["madvise no huge page"]
+    ADVICE -- "huge only" --> HP["madvise huge page"]
+    ADVICE -- "none or both" --> RADIX["RADIX mark allocated span owned"]
+    NH --> RADIX
+    HP --> RADIX
+    RADIX --> INIT
+    INIT --> BOK{"bulk_fill success?"}
+    BOK -- "yes" --> TAKE
+    BOK -- "retry limit hit" --> LAST["final one-block try_pop"]
+    LAST --> OWN
+
+    TAKE --> PUSHREST{"batch count > 1?"}
+    PUSHREST -- "yes" --> PUSH["push remainder to SLAB_CACHE or transfer cache"]
+    PUSHREST -- "no" --> OWN
+    PUSH --> OWN
+    OWN --> MARK["stamp MAGIC and ALLOCATED_FLAG"]
+    MARK --> RET["return payload"]
 ```
 
 Important details:
 
-- The small-class hot path tries `SLAB_CACHE.pop(class)` first.
-- Medium classes route through transfer-cache scans before refill to avoid stranding large blocks in per-CPU `SLAB_CACHE` class caches.
-- RSEQ pop/push uses inline assembly critical sections.
-- If the thread is migrated or preempted inside an RSEQ critical section, the kernel aborts the sequence and control jumps to the abort handler.
-- After a few RSEQ aborts, code falls back to transfer-cache paths rather than spinning forever.
+- The small-allocation path tries `SLAB_CACHE.pop(class)` first for every matched size class.
+- If the per-CPU class cache is empty, `fill(class)` tries transfer-cache reuse before allocating new refill memory.
+- Batch transfer reuse tries the local transfer cache first, then hinted CPUs in the same NUMA range, then remote ranges when NUMA is enabled.
+- RSEQ pop/push uses inline assembly critical sections. If the kernel aborts the sequence repeatedly, the pop path probes the current CPU's transfer cache before retrying.
+- Bulk refill uses thread-local pending metadata, then the per-node pending queue, then `PAGE_ALLOCATOR` arenas. Headers are initialized lazily only for the requested batch.
 - The per-CPU `usage` counter is an approximate pressure signal, not exact accounting. Stale-low drift is preferred over stale-high drift because stale-high pushes too much traffic into transfer caches.
 
 ## Slab Cache Layout

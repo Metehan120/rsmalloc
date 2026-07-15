@@ -2,7 +2,7 @@
 
 # test    alloc   time  rss    user  sys  page-faults page-reclaims
 
-rsmalloc 0.2.0-alpha:
+rsmalloc 0.2.0-alpha (Before SLAB_CACHE overhaul; old allocator. Will be changed):
 # These are consistent across runs
 cfrac       sys   03.20 3840 3.19 0.00 0 743
 espresso    sys   03.02 5440 2.99 0.02 0 1020

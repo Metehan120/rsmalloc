@@ -193,7 +193,7 @@ pub unsafe fn refill(class: usize, cpu_id: usize) -> UnsafePointer<Header> {
                     count
                 };
 
-                BULK_FILL_PREDICTOR[class].update_refill(observed, 1, ITERATIONS[class]);
+                BULK_FILL_PREDICTOR[class].update_refill(observed, ITERATIONS[class]);
                 let result = take_one_from_batch(
                     class,
                     start,
@@ -241,7 +241,7 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
             count
         };
 
-        PREDICTOR[class].update_refill(observed, 1, ITERATIONS[class]);
+        PREDICTOR[class].update_refill(observed, ITERATIONS[class]);
         return take_one_from_batch(
             class,
             start.as_ptr(),

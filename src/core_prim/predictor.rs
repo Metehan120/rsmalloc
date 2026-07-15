@@ -3,6 +3,7 @@ use crate::{internals::once::Once, utility::NUM_SIZE_CLASSES};
 pub const DEFAULT_BATCH: usize = 128;
 pub static mut PREDICTOR_INIT_BATCH: usize = DEFAULT_BATCH;
 pub static mut BULK_FILL_PREDICTOR_INIT_BATCH: usize = 384;
+
 pub struct Predictor {
     batch: usize,
     low_count: u8,
@@ -36,22 +37,24 @@ impl Predictor {
     }
 
     #[inline(always)]
-    pub unsafe fn update_refill(&mut self, demand: usize, min: usize, max: usize) {
+    pub unsafe fn update_refill(&mut self, demand: usize, max: usize) {
         self.update_global_batch_value();
-        let demand = demand.max(1);
 
-        if demand > self.batch {
-            let grow = self.batch.saturating_add(self.batch >> 1).max(demand);
-            self.batch = grow.clamp(min, max);
+        let demand = demand.max(1);
+        let batch = self.batch;
+
+        if demand > batch {
+            let grow = (batch + (batch >> 1)).max(demand);
+            self.batch = grow.min(max);
             self.low_count = 0;
             return;
         }
 
-        if demand.saturating_mul(4) < self.batch {
-            self.low_count = self.low_count.saturating_add(1);
+        if demand * 4 < batch {
+            self.low_count += 1;
 
-            if self.low_count >= 4 {
-                self.batch = (self.batch >> 1).clamp(min, max);
+            if self.low_count == 4 {
+                self.batch = (batch >> 1).max(1);
                 self.low_count = 0;
             }
         } else {

@@ -9,14 +9,12 @@ use std::{
     sync::atomic::Ordering,
 };
 
-use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
-
 use crate::rseq_core::{pending_queue::PENDING_QUEUE, slab_cache::SLAB_CACHE};
 use crate::{CURRENT_STAMP, ZERO_FLAG};
 use crate::{
     Err, FREED_MAGIC, Header, MetaData, add_slab_cached_va,
-    internals::{binder::prefer_node, l3_main_radix::RADIX},
-    record_mmap_call,
+    backend::page_allocator::PAGE_ALLOCATOR,
+    internals::l3_main_radix::RADIX,
     utility::{ITERATIONS, NUM_SIZE_CLASSES, SIZE_CLASSES, align_to},
 };
 
@@ -136,7 +134,7 @@ unsafe fn alloc_metadata(
     block_size: usize,
     cpu_id: usize,
 ) -> Result<*mut MetaData, Err> {
-    let (_, inner) = SLAB_CACHE.get_numa_and_inner();
+    let (numa, inner) = SLAB_CACHE.get_numa_and_inner();
     let node_id = SLAB_CACHE.node_for_cpu(cpu_id, inner);
 
     let pending = PENDING_QUEUE.pop(node_id, class);
@@ -156,17 +154,10 @@ unsafe fn alloc_metadata(
         total = size_of::<MetaData>() + (block_size * num_blocks);
     }
 
-    record_mmap_call(total);
-    let mem = mmap_anonymous(
-        null_mut(),
-        total,
-        ProtFlags::READ | ProtFlags::WRITE,
-        MapFlags::PRIVATE,
-    )
-    .map_err(|_| Err::OutOfMemory)?;
-    if inner.is_numa {
-        prefer_node(mem, total, node_id);
-    }
+    PAGE_ALLOCATOR.init(numa.nranges);
+    let mem = PAGE_ALLOCATOR
+        .alloc(node_id, total)
+        .ok_or(Err::OutOfMemory)?;
 
     add_slab_cached_va(total);
 

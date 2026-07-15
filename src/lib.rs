@@ -214,6 +214,7 @@ pub(crate) const TRIMMED_FLAG: u8 = 3;
 
 #[cfg(feature = "preload")]
 pub(crate) mod abi;
+pub(crate) mod backend;
 pub(crate) mod big_allocations;
 pub(crate) mod core_prim;
 #[cfg(feature = "debug-print")]

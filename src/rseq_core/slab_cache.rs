@@ -12,9 +12,6 @@ use std::{
     },
 };
 
-#[cfg(feature = "rseq-thread-failure-fallback")]
-use std::hint::unlikely;
-
 use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 
 #[cfg(feature = "debug")]
@@ -281,13 +278,6 @@ impl GenericCache for SlabCache {
         let rseq = get_rseq();
 
         let current_cpu = read_volatile(&rseq.cpu_id) as usize;
-
-        #[cfg(feature = "rseq-thread-failure-fallback")]
-        if unlikely(current_cpu >= inner.numa.ncpu) {
-            self.transfer_push_batch(class, header, tail, inner.numa.ncpu, inner);
-            return;
-        }
-
         let list = &mut (*inner.cache.add(current_cpu)).cache[class];
         let usage_ptr = &mut list.usage;
 
@@ -325,13 +315,6 @@ impl GenericCache for SlabCache {
 
         loop {
             let current_cpu = read_volatile(&rseq.cpu_id) as usize;
-
-            #[cfg(feature = "rseq-thread-failure-fallback")]
-            if unlikely(current_cpu >= inner.numa.ncpu) {
-                self.transfer_push_single(class, header, inner.numa.ncpu, inner);
-                return;
-            }
-
             let list = &mut (*inner.cache.add(current_cpu)).cache[class];
             let usage_ptr = &mut list.usage;
 
@@ -365,10 +348,6 @@ impl GenericCache for SlabCache {
 
         loop {
             let current_cpu = read_volatile(&rseq.cpu_id) as usize;
-            #[cfg(feature = "rseq-thread-failure-fallback")]
-            if unlikely(current_cpu >= inner.numa.ncpu) {
-                return self.try_pop_single(class, inner.numa.ncpu);
-            }
             let list = &mut (*inner.cache.add(current_cpu)).cache[class];
             let list_ptr = addr_of!(list.list) as *mut *mut Header;
             let usage_ptr = &list.usage;
@@ -469,33 +448,6 @@ impl SlabCache {
         let inner = &mut *self.inner.get();
         let list = &mut (*inner.cache.add(cpu_id)).mail[class];
         list
-    }
-
-    // Numa-aware steal is impossible
-    #[cfg(feature = "rseq-thread-failure-fallback")]
-    #[inline(never)]
-    pub unsafe fn try_pop_single(&self, class: usize, ncpu: usize) -> UnsafePointer<Header> {
-        let mail = self.transfer_pop_single(class, ncpu);
-        if !mail.is_null() {
-            return mail;
-        }
-
-        for i in 1..ncpu + 1 {
-            let victim = (ncpu + i) % ncpu;
-
-            let mail = self.transfer_pop_single(class, victim);
-            if !mail.is_null() {
-                #[cfg(feature = "transfer-debug")]
-                crate::TOTAL_TRANSFER_STEALS.fetch_add(1, Ordering::Relaxed);
-
-                return mail;
-            }
-        }
-
-        #[cfg(feature = "transfer-debug")]
-        crate::DRY_TRANSFER_STEALS.fetch_add(1, Ordering::Relaxed);
-
-        UnsafePointer::NULL
     }
 
     #[inline(always)]

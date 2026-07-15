@@ -19,7 +19,7 @@ rustix = { version = "1.1.4", features = [
 ] }
 
 [features]
-default = ["rseq-thread-failure-fallback"]
+default = []
 preload = []
 print-cpu-on-double-free = []
 check-owned-on-alloc = []
@@ -33,9 +33,7 @@ transfer-debug = ["debug-exact"]
 transfer-debug-exact = ["transfer-debug"]
 debug-full = ["transfer-debug-exact"]
 debug-full-critic = ["transfer-debug-exact", "debug-predictor-exact"]
-
 extended-header = []
-rseq-thread-failure-fallback = []
 lazy-page-trim = []
 
 [[bench]]

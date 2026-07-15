@@ -193,53 +193,6 @@ pub(crate) unsafe fn print_report() {
         item(&mut report, "spin waits", GLOBAL_SPIN_WAITS.load(Relaxed));
     }
 
-    #[cfg(feature = "transfer-debug")]
-    {
-        section(&mut report, "transfer cache");
-
-        #[cfg(feature = "transfer-debug-exact")]
-        {
-            use crate::{TOTAL_TRANSFER_POP_CALLS, TOTAL_TRANSFER_PUSH_CALLS};
-
-            item(
-                &mut report,
-                "pop calls",
-                TOTAL_TRANSFER_POP_CALLS.load(Relaxed),
-            );
-            item(
-                &mut report,
-                "push calls",
-                TOTAL_TRANSFER_PUSH_CALLS.load(Relaxed),
-            );
-        }
-
-        {
-            use crate::{DRY_TRANSFER_STEALS, TOTAL_TRANSFER_RETRIES, TOTAL_TRANSFER_STEALS};
-
-            item(&mut report, "steals", TOTAL_TRANSFER_STEALS.load(Relaxed));
-            item(&mut report, "dry steals", DRY_TRANSFER_STEALS.load(Relaxed));
-            item(
-                &mut report,
-                "cas retries",
-                TOTAL_TRANSFER_RETRIES.load(Relaxed),
-            );
-        }
-    }
-
-    section(&mut report, "transfer class hints");
-    line(&mut report, "  1 = hinted nonempty, 0 = no nonempty hint");
-    for class in 0..SIZE_CLASSES.len() {
-        line(
-            &mut report,
-            &format!(
-                "  {:>3}  {:<9} {}",
-                class,
-                fmt_bytes_short(SIZE_CLASSES[class]),
-                SLAB_CACHE.transfer_hint_bits(class)
-            ),
-        );
-    }
-
     section(&mut report, "cached virtual memory");
     line(&mut report, "  current");
     byte_item(&mut report, "slab", slab_cached);
@@ -318,6 +271,53 @@ pub(crate) unsafe fn print_report() {
                 fmt_bytes_short(min_cpu),
                 fmt_bytes_short(max_cpu),
                 fmt_bytes_short(avg_cpu)
+            ),
+        );
+    }
+
+    #[cfg(feature = "transfer-debug")]
+    {
+        section(&mut report, "transfer cache");
+
+        #[cfg(feature = "transfer-debug-exact")]
+        {
+            use crate::{TOTAL_TRANSFER_POP_CALLS, TOTAL_TRANSFER_PUSH_CALLS};
+
+            item(
+                &mut report,
+                "pop calls",
+                TOTAL_TRANSFER_POP_CALLS.load(Relaxed),
+            );
+            item(
+                &mut report,
+                "push calls",
+                TOTAL_TRANSFER_PUSH_CALLS.load(Relaxed),
+            );
+        }
+
+        {
+            use crate::{DRY_TRANSFER_STEALS, TOTAL_TRANSFER_RETRIES, TOTAL_TRANSFER_STEALS};
+
+            item(&mut report, "steals", TOTAL_TRANSFER_STEALS.load(Relaxed));
+            item(&mut report, "dry steals", DRY_TRANSFER_STEALS.load(Relaxed));
+            item(
+                &mut report,
+                "cas retries",
+                TOTAL_TRANSFER_RETRIES.load(Relaxed),
+            );
+        }
+    }
+
+    section(&mut report, "transfer class hints");
+    line(&mut report, "  1 = hinted nonempty, 0 = no nonempty hint");
+    for class in 0..SIZE_CLASSES.len() {
+        line(
+            &mut report,
+            &format!(
+                "  {:>3}  {:<9} {}",
+                class,
+                fmt_bytes_short(SIZE_CLASSES[class]),
+                SLAB_CACHE.transfer_hint_bits(class)
             ),
         );
     }

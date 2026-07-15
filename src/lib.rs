@@ -148,6 +148,23 @@ pub(crate) static REFILLS_BY_CLASS: [AtomicUsize; utility::NUM_SIZE_CLASSES] =
     [const { AtomicUsize::new(0) }; utility::NUM_SIZE_CLASSES];
 #[cfg(feature = "debug")]
 pub(crate) static ABORTS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "debug")]
+pub(crate) static TOTAL_MMAP_CALLS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "debug")]
+pub(crate) static TOTAL_MMAP_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+#[inline(always)]
+pub(crate) fn record_mmap_call(bytes: usize) {
+    #[cfg(not(feature = "debug"))]
+    let _ = bytes;
+
+    #[cfg(feature = "debug")]
+    {
+        TOTAL_MMAP_CALLS.fetch_add(1, Ordering::Relaxed);
+        TOTAL_MMAP_BYTES.fetch_add(bytes, Ordering::Relaxed);
+    }
+}
+
 #[cfg(feature = "debug-exact")]
 pub(crate) static GLOBAL_LOCKS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "debug-exact")]

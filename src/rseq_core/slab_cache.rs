@@ -27,6 +27,7 @@ use crate::{
         numa_parser::{NumaTopology, parse_numa_topology},
         once::Once,
     },
+    record_mmap_call,
     rseq_core::{pending_queue::PENDING_QUEUE, rseq_asm::RseqCore, rseq_offsets::get_rseq},
     utility::{CACHE_HIGH_BLOCKS, NUM_SIZE_CLASSES},
 };
@@ -101,9 +102,11 @@ impl SlabCache {
             let inner = &mut *cache;
             let ncpu = get_max_cpu() as usize;
             let alloc_size = ncpu + 1;
+            let cache_bytes = size_of::<MainCache>() * alloc_size;
+            record_mmap_call(cache_bytes);
             let list = mmap_anonymous(
                 null_mut(),
-                size_of::<MainCache>() * alloc_size,
+                cache_bytes,
                 ProtFlags::READ | ProtFlags::WRITE,
                 MapFlags::PRIVATE,
             )
@@ -150,9 +153,11 @@ impl SlabCache {
             let alloc_size = ncpu + 1;
             let bitmap_words = ((alloc_size + 63) / 64).max(1);
 
+            let bitmap_bytes = size_of::<AtomicU64>() * bitmap_words * NUM_SIZE_CLASSES;
+            record_mmap_call(bitmap_bytes);
             let empty_bitmap = mmap_anonymous(
                 null_mut(),
-                size_of::<AtomicU64>() * bitmap_words * NUM_SIZE_CLASSES,
+                bitmap_bytes,
                 ProtFlags::READ | ProtFlags::WRITE,
                 MapFlags::PRIVATE,
             )

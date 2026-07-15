@@ -11,7 +11,7 @@ use std::{
 
 use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 
-use crate::{MetaData, internals::once::Once, utility::NUM_SIZE_CLASSES};
+use crate::{MetaData, internals::once::Once, record_mmap_call, utility::NUM_SIZE_CLASSES};
 
 const PAGE_SIZE: usize = 4096;
 const TAG_MASK: usize = PAGE_SIZE - 1;
@@ -55,7 +55,7 @@ impl ThreadQueue {
         self.once.call_once(|| {
             let node_count = node_count.max(1);
             let bytes = size_of::<[AtomicUsize; NUM_SIZE_CLASSES]>() * node_count;
-
+            record_mmap_call(bytes);
             if let Ok(mem) = mmap_anonymous(
                 null_mut(),
                 bytes,

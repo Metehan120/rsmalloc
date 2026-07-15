@@ -5,7 +5,7 @@
 
 use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous, munmap};
 
-use crate::{BigAllocMeta, RSMallocError, internals::lock::SpinLock};
+use crate::{BigAllocMeta, RSMallocError, internals::lock::SpinLock, record_mmap_call};
 use std::{
     mem::size_of,
     os::raw::c_void,
@@ -229,6 +229,7 @@ impl BigAllocMap {
 
     unsafe fn alloc_raw(&self, cap: usize) -> *mut Entry {
         let size = cap * size_of::<Entry>();
+        record_mmap_call(size);
         let ptr = mmap_anonymous(
             null_mut(),
             size,

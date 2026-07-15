@@ -6,7 +6,7 @@ use crate::{
     ABORTS, AVERAGE_BLOCK_TIMES, BUDDY_AVERAGE_BLOCK_TIMES, CURRENT_STAMP,
     HIGH_WATER_BUDDY_CACHED_VA, HIGH_WATER_SLAB_CACHED_VA, HIGH_WATER_TOTAL_CACHED_VA, NCPU,
     REFILL_OVER_PREDICTS, REFILL_UNDER_PREDICTS, REFILLS_BY_CLASS, START_TIME, TOTAL_CACHED_VA,
-    TOTAL_REFILL_CALLS,
+    TOTAL_MMAP_BYTES, TOTAL_MMAP_CALLS, TOTAL_REFILL_CALLS,
     big_allocations::buddy::{BIG_BUDDY_MIN_ORDER, BUDDY_BACKEND, BUDDY_TOTAL_CACHED_VA},
     internals::l3_main_radix::{CHUNK_SIZE, RADIX},
     rseq_core::slab_cache::SLAB_CACHE,
@@ -192,6 +192,10 @@ pub(crate) unsafe fn print_report() {
         );
         item(&mut report, "spin waits", GLOBAL_SPIN_WAITS.load(Relaxed));
     }
+
+    section(&mut report, "mmap calls");
+    item(&mut report, "calls", TOTAL_MMAP_CALLS.load(Relaxed));
+    byte_item(&mut report, "requested", TOTAL_MMAP_BYTES.load(Relaxed));
 
     section(&mut report, "cached virtual memory");
     line(&mut report, "  current");

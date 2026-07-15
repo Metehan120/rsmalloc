@@ -16,6 +16,7 @@ use crate::{CURRENT_STAMP, ZERO_FLAG};
 use crate::{
     Err, FREED_MAGIC, Header, MetaData, add_slab_cached_va,
     internals::{binder::prefer_node, l3_main_radix::RADIX},
+    record_mmap_call,
     utility::{ITERATIONS, NUM_SIZE_CLASSES, SIZE_CLASSES, align_to},
 };
 
@@ -155,6 +156,7 @@ unsafe fn alloc_metadata(
         total = size_of::<MetaData>() + (block_size * num_blocks);
     }
 
+    record_mmap_call(total);
     let mem = mmap_anonymous(
         null_mut(),
         total,

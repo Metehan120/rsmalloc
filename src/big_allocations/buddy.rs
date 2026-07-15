@@ -19,6 +19,7 @@ use crate::{
         binder::prefer_node, l3_main_radix::RADIX, lock::SpinLock, numa_parser::NumaTopology,
         once::Once,
     },
+    record_mmap_call,
     rseq_core::slab_cache::{SLAB_CACHE, SlabCacheInner},
     utility::align_to,
 };
@@ -160,6 +161,7 @@ impl BuddyAllocator {
         let node_size = Self::align_to_page(size_of::<BuddyRegion>());
 
         for _ in 0..MAX_REFILL_RETRIES {
+            record_mmap_call(node_size);
             if let Ok(region) = mmap_anonymous(
                 null_mut(),
                 node_size,
@@ -183,6 +185,7 @@ impl BuddyAllocator {
         let mut retries = 0;
         let mut base = null_mut();
         while retries < MAX_REFILL_RETRIES {
+            record_mmap_call(normalized_size);
             if let Ok(region) = mmap_anonymous(
                 base,
                 normalized_size,

@@ -5,6 +5,8 @@
 use core::{iter::FusedIterator, mem::size_of, ptr::null_mut};
 use std::os::fd::AsFd;
 
+use crate::record_mmap_call;
+
 use rustix::{
     fs::{Mode, OFlags, openat},
     io::read,
@@ -252,6 +254,7 @@ unsafe fn mmap_array<T>(count: usize) -> Option<*mut T> {
     }
 
     let bytes = count.checked_mul(size_of::<T>())?;
+    record_mmap_call(bytes);
 
     let ptr = mmap_anonymous(
         null_mut(),

@@ -3,7 +3,7 @@
 // observe either the old or new state; the allocator only requires eventual
 // visibility, not a perfectly up-to-date view of the radix.
 
-use crate::{RSMallocError, core_prim::wrappers::UnsafePointer};
+use crate::{RSMallocError, core_prim::wrappers::UnsafePointer, record_mmap_call};
 use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous, munmap};
 use std::{
     hint::{cold_path, unlikely},
@@ -38,6 +38,7 @@ pub struct Radix {
 
 impl Radix {
     unsafe fn map_memory(size: usize) -> *mut u8 {
+        record_mmap_call(size);
         match mmap_anonymous(
             null_mut(),
             size,

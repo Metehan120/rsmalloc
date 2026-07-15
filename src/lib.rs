@@ -52,7 +52,9 @@ use std::{
 };
 
 use crate::{
-    core_prim::wrappers::UnsafePointer, internals::lock::SpinLock, rseq_core::rseq_offsets::rseq,
+    core_prim::wrappers::UnsafePointer,
+    internals::lock::SpinLock,
+    rseq_core::rseq_offsets::{get_rseq, rseq},
 };
 
 #[cfg(not(target_arch = "x86_64"))]
@@ -274,6 +276,7 @@ impl Header {
 }
 
 #[repr(u32)]
+#[derive(PartialEq, Eq)]
 pub(crate) enum RSMallocError {
     DoubleFree = 0x1000,
     MemoryCorruption = 0x1001,
@@ -305,6 +308,8 @@ impl Debug for RSMallocError {
 impl RSMallocError {
     #[inline(never)]
     pub fn log_and_abort(&self, ptr: *mut std::ffi::c_void, extra: &str, errno: Option<i32>) -> ! {
+        let current_cpu = unsafe { get_rseq().cpu_id };
+
         if let Some(errno) = errno {
             eprintln!(
                 "[RSMALLOC FATAL] {:?} at ptr={:p} | {} | errno({})",
@@ -313,6 +318,11 @@ impl RSMallocError {
         } else {
             eprintln!("[RSMALLOC FATAL] {:?} at ptr={:p} | {}", self, ptr, extra);
         }
+
+        if *self == Self::DoubleFree {
+            eprintln!("[RSMALLOC] Double free on CPU {}", current_cpu)
+        }
+
         abort();
     }
 }

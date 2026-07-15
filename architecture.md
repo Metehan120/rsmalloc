@@ -357,19 +357,67 @@ Freeing follows this shape:
 
 ```mermaid
 flowchart TD
-    A["rs_free(ptr)"] --> B{"null?"}
-    B -- "yes" --> RET["return"]
-    B -- "no" --> C{"RADIX owns ptr?"}
-    C -- "no" --> F["foreign pointer handling"]
-    C -- "yes" --> D["find_original_ptr"]
-    D --> E["read Header"]
-    E --> S{"header magic"}
-    S -- "MAGIC" --> P["mark FREED_MAGIC and push"]
-    S -- "BIG_MAGIC" --> Q["big_free"]
-    S -- "FREED_MAGIC / corrupt" --> R["abort unless magic disabled"]
+    A["rs_free(ptr)"] --> NULL{"ptr is null?"}
+    NULL -- "yes" --> RET["return"]
+    NULL -- "no" --> OWN{"RADIX owns ptr?"}
+
+    OWN -- "no" --> PRELOAD{"preload build?"}
+    PRELOAD -- "yes" --> LIBC["free_fallback(ptr)"]
+    PRELOAD -- "no" --> FPOL{"FOREIGN_POINTER_ABORT?"}
+    FPOL -- "yes" --> FABORT["abort: foreign pointer"]
+    FPOL -- "no" --> RET
+
+    OWN -- "yes" --> ORIG["find_original_ptr(ptr)"]
+    ORIG --> TAG{"ALIGN_TAG found before ptr?"}
+    TAG -- "yes" --> RECOVER["read original_ptr slot"]
+    RECOVER --> ROWN{"RADIX owns recovered original?"}
+    ROWN -- "no" --> AABORT["abort: aligned metadata injection"]
+    ROWN -- "yes" --> HEADER["read original Header"]
+    TAG -- "no" --> HEADER
+
+    HEADER --> MAGIC{"header.magic"}
+    MAGIC -- "MAGIC" --> SMALL["small allocation free"]
+    SMALL --> STAMP["life_time = CURRENT_STAMP"]
+    STAMP --> FREED["magic = FREED_MAGIC"]
+    FREED --> PUSH["SLAB_CACHE.push(class, header)"]
+    PUSH --> HIGH{"current CPU cache >= high watermark?"}
+    HIGH -- "yes" --> TPS["transfer_push_single"]
+    HIGH -- "no" --> RPUSH["RSEQ push current CPU class cache"]
+    RPUSH --> ROK{"RSEQ push ok?"}
+    ROK -- "yes" --> RET
+    ROK -- "retry limit" --> TPS
+    TPS --> HINT{"old transfer head was null?"}
+    HINT -- "yes" --> BIT["mark transfer class hint nonempty"]
+    HINT -- "no" --> RET
+    BIT --> RET
+
+    MAGIC -- "BIG_MAGIC" --> BIGFREE["big_free(original payload)"]
+    BIGFREE --> MAP["BIG_MAP.remove(payload)"]
+    MAP --> MISSING{"metadata found?"}
+    MISSING -- "no" --> CORRUPT["abort: missing big metadata"]
+    MISSING -- "yes" --> BUDDY{"BUDDY_INIT and mapping base in buddy pool?"}
+    BUDDY -- "yes" --> BFREE["BUDDY_BACKEND.free(base, order)"]
+    BFREE --> RET
+    BUDDY -- "no" --> ALIGNED{"big allocation was aligned?"}
+    ALIGNED -- "yes" --> CLR_RANGE["RADIX.clear full mapped range"]
+    ALIGNED -- "no" --> CLR_BIG["RADIX.clear direct-big entry"]
+    CLR_RANGE --> UNMAP["munmap(mapping_base, mapped_size)"]
+    CLR_BIG --> UNMAP
+    UNMAP --> RET
+
+    MAGIC -- "FREED_MAGIC" --> DF{"MAGIC_DISABLE?"}
+    DF -- "no" --> DABORT["abort: double free"]
+    DF -- "yes" --> RET
+    MAGIC -- "other/corrupt" --> CF{"MAGIC_DISABLE?"}
+    CF -- "no" --> CABORT["abort: attack or corruption"]
+    CF -- "yes" --> RET
 ```
 
-After the `RADIX` ownership check, `rs_free()` calls `find_original_ptr()` before reading the header. Normal pointers pass through unchanged. Aligned allocations may return an interior aligned pointer, so `find_original_ptr()` checks for the randomized alignment tag stored just before the returned aligned address and recovers the original allocation pointer.
+After the `RADIX` ownership check, `rs_free()` calls `find_original_ptr()` before reading the header. Normal pointers pass through unchanged. Aligned allocations may return an interior aligned pointer, so `find_original_ptr()` checks for the randomized alignment tag stored just before the returned aligned address, recovers the original allocation pointer, and verifies the recovered pointer is also owned by `RADIX` before trusting it.
+
+Small frees stamp the header with the current lifetime and `FREED_MAGIC`, then return the block through `SLAB_CACHE.push(...)`. The push path uses the current CPU's RSEQ class cache while below the class high watermark; if the cache is already high or RSEQ push retries fail, it spills the block to that CPU's transfer cache and marks the relaxed transfer nonempty hint on an empty-to-nonempty transition.
+
+Big frees remove payload metadata from `BIG_MAP` first. Buddy-backed blocks are returned to `BUDDY_BACKEND` and keep region ownership managed by the buddy backend. Direct big mappings clear the appropriate `RADIX` shape (`set_single_big` for normal direct mappings or `set_range` for aligned mappings) and then `munmap` the mapping.
 
 Rust `GlobalAlloc::dealloc` currently delegates to the normal `rs_free` path. Preload `free_sized` and `free_aligned_sized` are compatibility shims over normal `free`.
 

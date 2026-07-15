@@ -1,4 +1,4 @@
-# RSMalloc (rseq/rust slab malloc)
+# RSMalloc (rseq/rust slab memory allocator)
 
 rsmalloc is an experimental Rust memory allocator focused on low-overhead concurrent allocation for real-world application workloads, not benchmark-only allocation patterns. The slab allocation path is built around Linux Restartable Sequences (RSEQ), so cache ownership is CPU-oriented rather than thread-oriented. Larger allocations use a separate big-allocation path with a buddy backend for cached regions.
 

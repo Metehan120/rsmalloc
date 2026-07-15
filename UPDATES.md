@@ -9,6 +9,7 @@ Major themes include memory reclamation, NUMA-aware placement, buddy-backend ove
 - Bumped the crate to `0.2.0-alpha` and updated Cargo metadata/features for the new allocator architecture, including removal of the old `canary`, `legacy-glibc-support`, `cpu-refill-paths`, and `disable-thread-pending` feature paths.
 - Added `syscalls` and expanded `rustix` feature usage for NUMA binding, system memory-pressure sampling, thread CPU lookup, and filesystem/sysfs topology parsing.
 - Removed the allocator canary feature and decoupled `extended-header` from canary-specific metadata/checking.
+- Added `check-owned-on-alloc`, an opt-in semi-hardening diagnostic feature that verifies popped small/big allocation pointers are still owned by `RADIX` before stamping them allocated, helping catch some freelist/metadata-injection style corruption earlier without claiming full pointer-integrity validation.
 - Added small-allocation trimming for size classes equal to or greater than 4096 bytes.
 - Added a background trim worker with `RS_DISABLE_TRIM_THREAD` runtime control.
 - Added `RS_TRIMMER_THRESHOLD`, defaulting to 10 MiB of cached virtual address space, so the background trim worker is not started during fragile early preload/bootstrap paths.
@@ -40,6 +41,7 @@ Major themes include memory reclamation, NUMA-aware placement, buddy-backend ove
 - Updated Rust global-allocator configuration with `TrimThreadSettings`, `TrimThread`, `Bytes`, `ReliefSettings`, `ReliefState`, and `Percentage` for background trim worker and opt-in system-memory-pressure relief control.
 - Replaced the old EMA public tuning names with `RefillPredictorSettings`, and simplified public exports through the non-preload `global_alloc` surface.
 - Updated C alignment APIs toward standard behavior, including `posix_memalign`-style validation, `aligned_alloc` size-multiple checks, checked `pvalloc` page rounding, and `memalign` errno reporting.
+- Routed realloc copy/fallback paths through the shared inner `rs_alloc`/`rs_free` operations so big-block transitions reuse the normal ownership, buddy, metadata-map, and optional semi-hardening checks instead of open-coded unchecked allocation/free handling.
 - Updated calloc zeroing to use allocation zero-state flags correctly while always zeroing under `lazy-page-trim`.
 - Updated preload runtime configuration documentation for `RS_DISABLE_TRIM_THREAD`, `RS_TRIMMER_THRESHOLD`, default-disabled `RS_DISABLE_RELIEF`, buddy relief pressure thresholds, adaptive refill predictor initialization, and buddy-cache sizing behavior.
 - Replaced the old `speed` benchmark with `book_speed` and added the large `rstress` benchmark covering thread churn, allocator edge cases, SIMD-style allocation patterns, teardown behavior, and trim pressure.

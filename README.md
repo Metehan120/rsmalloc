@@ -165,6 +165,7 @@ cargo build --release --features extended-header
 Other optional Cargo features:
 
 - `rseq-thread-failure-fallback` enables the default recovery path for invalid/unregistered RSEQ CPU IDs.
+- `check-owned-on-alloc` enables an opt-in semi-hardening ownership check that verifies popped allocation pointers are still owned by `RADIX` before they are returned to callers. This can catch some corrupted freelist/transfer-cache metadata earlier, but it is not a full integrity proof and adds an ownership-map lookup to allocation paths.
 - `lazy-page-trim` uses lazy page-free advice for small-allocation trim where supported instead of immediate `MADV_DONTNEED`-style advice.
 
 ### Alpha-2 debug modes
@@ -182,7 +183,7 @@ Other optional Cargo features:
 - `debug-full`: convenience feature for broad transfer/debug instrumentation.
 - `debug-full-critic`: enables broad debug instrumentation plus exact predictor diagnostics.
 
-Use the exact/transfer/predictor modes only when diagnosing allocator behavior; they can materially change benchmark results.
+Use semi-hardening and exact/transfer/predictor debug modes only when diagnosing allocator behavior or corruption; they can materially change benchmark results.
 
 ## Runtime Configuration For Preload
 

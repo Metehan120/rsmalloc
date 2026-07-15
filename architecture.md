@@ -366,6 +366,8 @@ The tag is randomized at bootstrap unless randomization is disabled. Free/reallo
 - direct big allocations may try in-place `mremap`,
 - buddy-backed big allocations may try in-place buddy growth before falling back to allocate/copy/free.
 
+Fallback/copy paths route through the shared inner `rs_alloc` and `rs_free` operations. That keeps ownership checks, `BIG_METADATA_MAP` updates, buddy return logic, and optional semi-hardening ownership checks centralized instead of duplicating unchecked big-block allocation/free behavior inside realloc.
+
 ## Big Allocation Path
 
 Requests that do not match a small size class use `big_malloc()`.
@@ -527,6 +529,7 @@ Important architecture-affecting features:
 | --- | --- |
 | `preload` | Builds C ABI / preload support. |
 | `rseq-thread-failure-fallback` | Enables the default overflow-slot recovery path for invalid/unregistered RSEQ CPU IDs. |
+| `check-owned-on-alloc` | Semi-hardening diagnostic mode: verifies popped allocation pointers are still owned by `RADIX` before returning them to callers. |
 | `extended-header` | Uses wider metadata. |
 | `debug` | Enables base stats/debug counters, including RSEQ/refill debug signals. |
 | `debug-print` | Enables `debug` and emits an exit-time allocator report through `.fini_array`/`eprintln!`. |
@@ -540,7 +543,7 @@ Important architecture-affecting features:
 | `debug-full-critic` | Convenience feature for broad instrumentation plus exact predictor diagnostics. |
 | `lazy-page-trim` | Uses lazy page-free advice for trim paths instead of eager `MADV_DONTNEED`-style advice. |
 
-Debug feature tiers are intentionally explicit in alpha-2. `debug-print` is useful for coarse allocator state, while `debug-exact`, `transfer-debug*`, and `debug-predictor-exact` can perturb timing and should be treated as diagnostic modes rather than benchmark-neutral instrumentation.
+Semi-hardening and debug feature tiers are intentionally explicit in alpha-2. `check-owned-on-alloc` is useful when chasing freelist/metadata corruption, while `debug-print` is useful for coarse allocator state. `debug-exact`, `transfer-debug*`, and `debug-predictor-exact` can perturb timing and should be treated as diagnostic modes rather than benchmark-neutral instrumentation.
 
 ## Known Architectural Tradeoffs
 

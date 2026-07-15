@@ -111,61 +111,126 @@ Bootstrap initializes:
 
 In non-preload Rust mode, this is driven through `RSMalloc::init()` from `global_alloc.rs`. In preload mode, C ABI entry points bootstrap on first use.
 
-## Small Allocation Fast Path
+## Allocation Path
 
-The fast path for a small allocation is:
+Allocation follows this shape:
 
 ```mermaid
 flowchart TD
-    A["rs_alloc(size)"] --> B{"match_size_class(size)?"}
-    B -- "none" --> BIG["big_malloc(size, aligned)"]
-    BIG --> BIGRET["return big payload or null"]
+    A["rs_alloc(size, aligned)"] --> PRE{"preload build?"}
+    PRE -- "yes" --> BOOT["bootstrap once"]
+    PRE -- "no" --> MATCH["match_size_class(size)"]
+    BOOT --> MATCH
 
-    B -- "class" --> S["SLAB_CACHE.pop(class)"]
-    S --> CACHE_HIT{"RSEQ class-cache hit?"}
-    CACHE_HIT -- "yes" --> OWN["optional check-owned-on-alloc"]
-    CACHE_HIT -- "RSEQ abort retries" --> TSINGLE["transfer_pop_single(current CPU)"]
-    TSINGLE -- "hit" --> OWN
-    TSINGLE -- "empty" --> S
+    MATCH --> CLASS{"size class found?"}
 
-    CACHE_HIT -- "empty" --> FILL["fill(class)"]
-    FILL --> TP["SLAB_CACHE.try_pop(class, predicted batch)"]
-    TP --> LOCAL["local transfer cache"]
-    LOCAL --> LHIT{"local hit?"}
-    LHIT -- "yes" --> TAKE["take one block from batch"]
-    LHIT -- "no" --> RANGE["same-node hinted CPU range"]
-    RANGE --> RHIT{"same-node hit?"}
-    RHIT -- "yes" --> TAKE
-    RHIT -- "no" --> REMOTE{"NUMA enabled?"}
-    REMOTE -- "yes" --> REMOTE_SCAN["remote node hinted ranges"]
-    REMOTE_SCAN --> XHIT{"remote hit?"}
-    XHIT -- "yes" --> TAKE
-    XHIT -- "no" --> REFILL["refill(class, cpu)"]
-    REMOTE -- "no" --> REFILL
-    REFILL --> BULK["bulk_fill(class, cpu, bulk batch)"]
-    BULK --> TLS{"thread-local pending span?"}
-    TLS -- "yes" --> INIT["lazy initialize requested headers"]
-    TLS -- "no" --> PENDING{"local-node pending span?"}
-    PENDING -- "yes" --> INIT
-    PENDING -- "no" --> PAGE["PAGE_ALLOCATOR alloc span from NUMA-preferred arena"]
-    PAGE --> ADVICE{"new arena advice feature?"}
-    ADVICE -- "no-huge only" --> NH["madvise no huge page"]
-    ADVICE -- "huge only" --> HP["madvise huge page"]
-    ADVICE -- "none or both" --> RADIX["RADIX mark allocated span owned"]
-    NH --> RADIX
-    HP --> RADIX
-    RADIX --> INIT
-    INIT --> BOK{"bulk_fill success?"}
-    BOK -- "yes" --> TAKE
-    BOK -- "retry limit hit" --> LAST["final one-block try_pop"]
-    LAST --> OWN
+    CLASS -- "yes" --> POP["SLAB_CACHE.pop(class)"]
+    POP --> POP_RESULT{"RSEQ pop result"}
+    POP_RESULT -- "class-cache hit" --> SMALL_OWN["optional check-owned-on-alloc"]
+    POP_RESULT -- "RSEQ abort retries" --> POP_SINGLE["transfer_pop_single(current CPU)"]
+    POP_SINGLE -- "hit" --> SMALL_OWN
+    POP_SINGLE -- "empty" --> POP
+    POP_RESULT -- "empty class cache" --> FILL["fill(class)"]
 
-    TAKE --> PUSHREST{"batch count > 1?"}
-    PUSHREST -- "yes" --> PUSH["push remainder to SLAB_CACHE or transfer cache"]
-    PUSHREST -- "no" --> OWN
-    PUSH --> OWN
-    OWN --> MARK["stamp MAGIC and ALLOCATED_FLAG"]
-    MARK --> RET["return payload"]
+    FILL --> PRED["cache predictor chooses batch"]
+    PRED --> TRYPOP["SLAB_CACHE.try_pop(class, batch, cpu)"]
+    TRYPOP --> LOCAL["pop local transfer cache"]
+    LOCAL --> LOCAL_HIT{"local transfer hit?"}
+    LOCAL_HIT -- "yes" --> UPDATE_CACHE["update cache predictor"]
+    LOCAL_HIT -- "no" --> SAME_NODE["scan same-node class hint bitmap"]
+    SAME_NODE --> SAME_HIT{"same-node victim hit?"}
+    SAME_HIT -- "yes" --> STEAL["record transfer steal if debug"]
+    STEAL --> UPDATE_CACHE
+    SAME_HIT -- "no" --> NUMA{"NUMA enabled?"}
+    NUMA -- "yes" --> REMOTE["scan remote node class hint bitmaps"]
+    REMOTE --> REMOTE_HIT{"remote victim hit?"}
+    REMOTE_HIT -- "yes" --> STEAL
+    REMOTE_HIT -- "no" --> DRY["record dry steal if debug"]
+    NUMA -- "no" --> DRY
+    DRY --> REFILL["refill(class, cpu)"]
+
+    REFILL --> RETRY{"under MAX_REFILL_RETRIES?"}
+    RETRY -- "yes" --> BULK_BATCH["bulk-fill predictor chooses batch"]
+    BULK_BATCH --> BULK["bulk_fill(class, cpu, bulk_batch)"]
+    BULK --> TLS["check thread-local pending span"]
+    TLS --> TLS_OK{"remaining blocks?"}
+    TLS_OK -- "yes" --> INIT["lazy initialize requested headers"]
+    TLS_OK -- "no or no span" --> META["alloc_metadata(class, block_size, cpu)"]
+
+    META --> NODE["select node for current CPU"]
+    NODE --> PENDING["PENDING_QUEUE.pop(node, class)"]
+    PENDING --> PENDING_HIT{"pending span found?"}
+    PENDING_HIT -- "yes" --> INIT
+    PENDING_HIT -- "no" --> SIZE["compute page-rounded metadata span"]
+    SIZE --> PAGE_INIT["PAGE_ALLOCATOR.init(numa ranges)"]
+    PAGE_INIT --> PAGE_ALLOC["PAGE_ALLOCATOR.alloc(node, total)"]
+    PAGE_ALLOC --> PAGE_OK{"span allocated?"}
+    PAGE_OK -- "no" --> BULK_ERR["bulk_fill returns OutOfMemory"]
+    PAGE_OK -- "yes" --> ARENA_ADV{"new arena advice feature?"}
+    ARENA_ADV -- "only no-huge" --> NOHUGE["madvise arena no huge page"]
+    ARENA_ADV -- "only huge" --> HUGE["madvise arena huge page"]
+    ARENA_ADV -- "none or both" --> ACCOUNT["add_slab_cached_va(total)"]
+    NOHUGE --> ACCOUNT
+    HUGE --> ACCOUNT
+    ACCOUNT --> MARK_SPAN["RADIX.set_range(span, total, true)"]
+    MARK_SPAN --> WRITE_META["write MetaData"]
+    WRITE_META --> INIT
+
+    INIT --> COUNT{"initialized count > 0?"}
+    COUNT -- "no" --> BULK_ERR
+    COUNT -- "yes" --> LEFT{"span has remaining blocks?"}
+    LEFT -- "yes" --> SAVE_TLS["save span in THREAD_BULK.free[class]"]
+    LEFT -- "no" --> BULK_OK["bulk_fill returns batch"]
+    SAVE_TLS --> BULK_OK
+    BULK_OK --> UPDATE_BULK["update bulk-fill predictor"]
+    UPDATE_BULK --> TAKE["take one block from batch"]
+    BULK_ERR --> RETRY_NEXT{"retry again?"}
+    RETRY_NEXT -- "yes" --> RETRY
+    RETRY_NEXT -- "no" --> FINAL_POP["final one-block SLAB_CACHE.try_pop"]
+    RETRY -- "no" --> FINAL_POP
+    FINAL_POP --> FINAL_HIT{"got block?"}
+    FINAL_HIT -- "yes" --> SMALL_OWN
+    FINAL_HIT -- "no" --> SMALL_NULL["return null; preload sets nomem"]
+
+    UPDATE_CACHE --> TAKE
+    TAKE --> REST{"batch count > 1?"}
+    REST -- "yes" --> PUSH_REST["push remainder via SLAB_CACHE.push_tailed"]
+    REST -- "no" --> SMALL_OWN
+    PUSH_REST --> SPILL_REST{"cache high or RSEQ push_tailed abort?"}
+    SPILL_REST -- "yes" --> TRANSFER_BATCH["transfer_push_batch and mark hint if needed"]
+    SPILL_REST -- "no" --> SMALL_OWN
+    TRANSFER_BATCH --> SMALL_OWN
+    SMALL_OWN --> STAMP["stamp MAGIC and ALLOCATED_FLAG"]
+    STAMP --> SMALL_RET["return small payload"]
+
+    CLASS -- "no" --> BIG["big_malloc(size, aligned)"]
+    BIG --> CHECK_ADD{"size + Header::SIZE ok?"}
+    CHECK_ADD -- "no" --> BIG_NULL["return null"]
+    CHECK_ADD -- "yes" --> ALIGN["estimate and align mapping size"]
+    ALIGN --> BIG_NODE["select current CPU NUMA node"]
+    BIG_NODE --> BUDDY_ELIG{"buddy enabled and size <= 64 MiB?"}
+    BUDDY_ELIG -- "yes" --> BUDDY_ALLOC["BUDDY_BACKEND.alloc(local node first)"]
+    BUDDY_ALLOC --> BUDDY_HIT{"buddy hit?"}
+    BUDDY_HIT -- "yes" --> BUDDY_FLAG["set zero/trim/reuse flag from buddy state"]
+    BUDDY_HIT -- "no" --> DIRECT
+    BUDDY_ELIG -- "no" --> DIRECT["direct mmap"]
+    DIRECT --> MMAP_OK{"mmap ok?"}
+    MMAP_OK -- "no" --> BIG_NULL
+    MMAP_OK -- "yes" --> PREFER["prefer current NUMA node if NUMA"]
+    PREFER --> ZERO_FLAG["flag = ZERO_FLAG"]
+    ZERO_FLAG --> BIG_THP{"eligible for direct THP request?"}
+    BIG_THP -- "yes" --> BIG_HUGE["madvise huge page"]
+    BIG_THP -- "no" --> BIG_HEADER
+    BIG_HUGE --> BIG_HEADER
+    BUDDY_FLAG --> BIG_HEADER["write BIG_MAGIC header"]
+    BIG_HEADER --> BIG_RADIX{"buddy backed?"}
+    BIG_RADIX -- "yes" --> BIG_MAP["BIG_MAP.insert(payload metadata)"]
+    BIG_RADIX -- "no, normal direct" --> BIG_SINGLE["RADIX.set_single_big"]
+    BIG_RADIX -- "no, aligned direct" --> BIG_RANGE["RADIX.set_range(full mapping)"]
+    BIG_SINGLE --> BIG_MAP
+    BIG_RANGE --> BIG_MAP
+    BIG_MAP --> BIG_OWN["optional check-owned-on-alloc"]
+    BIG_OWN --> BIG_RET["return big payload"]
 ```
 
 Important details:

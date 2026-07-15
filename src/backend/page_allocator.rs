@@ -5,7 +5,16 @@ use std::{
     ptr::{null_mut, write},
 };
 
-#[cfg(feature = "page-backend-no-huge-page")]
+#[cfg(any(
+    all(
+        feature = "page-backend-no-huge-page",
+        not(feature = "page-backend-huge-page")
+    ),
+    all(
+        feature = "page-backend-huge-page",
+        not(feature = "page-backend-no-huge-page")
+    )
+))]
 use rustix::mm::{Advice, madvise};
 use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 
@@ -139,8 +148,17 @@ impl PageAllocator {
         )
         .ok()?;
 
-        #[cfg(feature = "page-backend-no-huge-page")]
+        #[cfg(all(
+            feature = "page-backend-no-huge-page",
+            not(feature = "page-backend-huge-page")
+        ))]
         let _ = madvise(mem, map_size, Advice::LinuxNoHugepage);
+
+        #[cfg(all(
+            feature = "page-backend-huge-page",
+            not(feature = "page-backend-no-huge-page")
+        ))]
+        let _ = madvise(mem, map_size, Advice::LinuxHugepage);
 
         prefer_node(mem, map_size, arena.node_id);
 

@@ -14,7 +14,7 @@ Major themes include memory reclamation, NUMA-aware placement, buddy-backend ove
 - Added a background trim worker with `RS_DISABLE_TRIM_THREAD` runtime control.
 - Added `RS_TRIMMER_THRESHOLD`, defaulting to 10 MiB of cached virtual address space, so the background trim worker is not started during fragile early preload/bootstrap paths.
 - Added `lazy-page-trim` to use lazy page-free advice for eligible small-allocation and buddy trim paths.
-- Added `page-backend-no-huge-page`, an opt-in slab page-backend feature that applies no-huge-page advice to page arenas for systems that aggressively promote transparent huge pages. This can reduce RSS substantially on those systems at the cost of higher TLB pressure.
+- Added `page-backend-no-huge-page`, an opt-in slab page-backend feature that applies no-huge-page advice to page arenas for systems that aggressively promote transparent huge pages. This can reduce RSS substantially on those systems at the cost of higher TLB pressure. Also added the opposite experimental `page-backend-huge-page` advice knob for TLB-sensitive experiments.
 - Updated `malloc_trim(...)` and Rust-facing trim support to combine buddy-cache trimming with eligible small-allocation cache trimming.
 - Added `should_trim` and lifetime tracking to allocation headers so trimmed blocks are not repeatedly advised without reuse.
 - Added buddy free-block lifetime/trim state tracking and background old-block trimming for buddy cached blocks, with successful trim accounting based on `madvise` success.
@@ -93,7 +93,7 @@ Debug mode behavior is a major part of `0.2.0-alpha` because several allocator s
 ### Slab cache, transfer cache, page backend, and pending metadata
 
 - Added a slab page backend for bulk-fill/refill memory so small allocation refill spans are served from larger NUMA-preferred arenas instead of direct per-refill mappings.
-- Added `page-backend-no-huge-page` for users seeing inflated RSS from aggressive transparent huge-page promotion of slab page-backend arenas. The feature asks Linux not to use huge pages for those arenas; it is an RSS/TLB tradeoff, not a correctness workaround.
+- Added `page-backend-no-huge-page` for users seeing inflated RSS from aggressive transparent huge-page promotion of slab page-backend arenas. The feature asks Linux not to use huge pages for those arenas; it is an RSS/TLB tradeoff, not a correctness workaround. `page-backend-huge-page` requests the opposite policy when explicitly enabled alone.
 - Added transfer-cache-first handling for medium slab classes so blocks larger than `SMALL_CLASS_BYTES` are reused from transfer caches before allocating/refilling more memory.
 - Added transfer-cache nonempty hints for batch stealing. Hints are deliberately relaxed/approximate metadata: correctness is still provided by the ABA-tagged transfer-list CAS path, while the bitmap only narrows victim selection.
 - Added a lock-free global pending metadata queue for abandoned thread-local refill metadata, indexed by NUMA node and size class.

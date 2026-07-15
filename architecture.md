@@ -210,7 +210,7 @@ Blocks are initialized lazily in batches. `bulk_fill()` writes headers only for 
 
 The slab page backend serves fresh bulk-fill metadata spans from larger NUMA-preferred arenas instead of issuing a direct mapping for every refill span. This reduces VMA/mmap churn and gives the allocator a central place to manage slab backing memory. `RADIX` ownership and cached-VA accounting are still applied to the allocated metadata span rather than treating every byte of arena slack as live allocation ownership.
 
-The optional Cargo feature `page-backend-no-huge-page` applies Linux no-huge-page advice to these page-backend arenas. It is intended for systems that aggressively promote transparent huge pages, where slab arena slack can make RSS look much larger than expected. Enabling it can reduce RSS substantially, but may increase TLB pressure because the arenas are backed by normal pages.
+The optional Cargo feature `page-backend-no-huge-page` applies Linux no-huge-page advice to these page-backend arenas. It is intended for systems that aggressively promote transparent huge pages, where slab arena slack can make RSS look much larger than expected. Enabling it can reduce RSS substantially, but may increase TLB pressure because the arenas are backed by normal pages. The opposite `page-backend-huge-page` feature requests huge-page advice for TLB-sensitive experiments when `page-backend-no-huge-page` is not also enabled; enabling both advice features intentionally results in no explicit page-backend THP advice.
 
 ### Thread-Local Pending Metadata
 
@@ -431,7 +431,7 @@ NUMA policy is applied at mapping time using `prefer_node(ptr, len, node_id)`, c
 Current NUMA-aware paths:
 
 - Transfer-cache victim stealing prefers same-node CPUs before remote node ranges.
-- Small refill `mmap` calls prefer the current CPU's node.
+- Slab page-backend arenas prefer the current CPU's node when mapped.
 - Pending metadata queues are per-node/per-class and only pop local-node metadata.
 - Buddy regions are tagged with node id, prefer-node bound when mapped, and allocated local-node first.
 - Direct big allocation fallback prefers the current CPU's node.
@@ -538,7 +538,8 @@ Important architecture-affecting features:
 | Feature | Effect |
 | --- | --- |
 | `preload` | Builds C ABI / preload support. |
-| `page-backend-no-huge-page` | Applies no-huge-page advice to slab page-backend arenas to reduce RSS on systems with aggressive transparent huge-page promotion, trading that for higher TLB pressure. |
+| `page-backend-no-huge-page` | Applies no-huge-page advice to slab page-backend arenas to reduce RSS on systems with aggressive transparent huge-page promotion, trading that for higher TLB pressure. Ignored if `page-backend-huge-page` is also enabled. |
+| `page-backend-huge-page` | Applies huge-page advice to slab page-backend arenas when `page-backend-no-huge-page` is not enabled. This can reduce TLB pressure but may increase RSS on aggressive THP systems. |
 | `check-owned-on-alloc` | Semi-hardening diagnostic mode: verifies popped allocation pointers are still owned by `RADIX` before returning them to callers. |
 | `extended-header` | Uses wider metadata. |
 | `debug` | Enables base stats/debug counters, including RSEQ/refill debug signals. |
@@ -571,46 +572,131 @@ Semi-hardening and debug feature tiers are intentionally explicit in alpha-2. `c
 ```mermaid
 sequenceDiagram
     participant User
-    participant Inner as inner::*
+    participant Inner as inner allocation ops
     participant Slab as SLAB_CACHE
     participant Transfer as TransferCache
-    participant NUMA as NUMA topology
-    participant Pending as PENDING_QUEUE
     participant Refill as bulk_fill
-    participant Big as big_malloc/BUDDY_BACKEND
+    participant Pending as PENDING_QUEUE
+    participant Page as PAGE_ALLOCATOR
+    participant Big as big allocation path
+    participant Map as BIG_METADATA_MAP
     participant Radix as RADIX
 
     User->>Inner: malloc / GlobalAlloc::alloc
+    Inner->>Inner: bootstrap or RSMalloc init as needed
     Inner->>Inner: match_size_class
-    alt small allocation
-        Inner->>Slab: pop class
-        alt cache hit
-            Slab-->>Inner: Header
-        else miss
-            Transfer->>NUMA: find local node/ranges
-            Inner->>Transfer: try_pop local transfer and node-local victims
-            alt transfer or victim hit
-                Transfer-->>Inner: batch
-            else refill
-                Inner->>Refill: bulk_fill class
-                Refill->>NUMA: current CPU node
-                Refill->>Pending: pop local-node metadata
-                alt pending miss
-                    Refill->>Refill: mmap and prefer node
-                    Refill->>Radix: mark slab owned
+
+    alt small/slab allocation
+        Inner->>Slab: pop current CPU class cache with RSEQ
+        alt class-cache hit
+            Slab-->>Inner: one Header
+        else RSEQ abort retry path
+            Slab->>Transfer: try one local transfer block
+            Transfer-->>Inner: Header or continue retry
+        else class-cache miss
+            Inner->>Transfer: try local transfer cache batch
+            Transfer->>Transfer: try same-node hinted CPUs
+            Transfer->>Transfer: try remote NUMA ranges if needed
+            alt transfer/victim hit
+                Transfer-->>Inner: initialized batch
+                Inner->>Slab: push batch remainder
+            else refill miss
+                Inner->>Refill: bulk_fill(class, cpu, batch)
+                Refill->>Refill: use thread-local pending span if present
+                alt no thread-local span
+                    Refill->>Pending: pop local-node pending span
                 end
-                Refill-->>Inner: initialized batch
-                Inner->>Slab: push remainder
+                alt no pending span
+                    Refill->>Page: allocate span from NUMA-preferred arena
+                    opt new arena and only page-backend-no-huge-page
+                        Page->>Page: advise arena no huge pages
+                    end
+                    opt new arena and only page-backend-huge-page
+                        Page->>Page: advise arena huge pages
+                    end
+                    Refill->>Radix: mark allocated span owned
+                end
+                alt bulk_fill succeeds
+                    Refill->>Refill: lazily initialize requested headers
+                    Refill-->>Inner: initialized batch
+                    Inner->>Slab: push batch remainder
+                else refill retries exhausted
+                    Inner->>Transfer: final one-block transfer retry
+                end
             end
         end
+        opt check-owned-on-alloc
+            Inner->>Radix: verify returned pointer is owned
+        end
+        Inner->>Inner: stamp MAGIC and ALLOCATED_FLAG
         Inner-->>User: payload
+
     else big allocation
-        Inner->>NUMA: current CPU node
-        Inner->>Big: big_malloc
-        Big->>Big: try local buddy then remote fallback
-        Big->>Radix: mark mapping/region owned
+        Inner->>Big: big_malloc(size, aligned)
+        Big->>Big: try local-node buddy block if eligible
+        alt buddy hit
+            Big-->>Inner: buddy-backed payload
+        else direct mmap
+            Big->>Big: mmap and prefer current NUMA node
+            opt THP enabled and mapping shape allows
+                Big->>Big: request huge page backing
+            end
+            Big->>Radix: mark direct or aligned mapping owned
+        end
+        Big->>Map: insert payload metadata
         Big-->>Inner: payload
+        opt check-owned-on-alloc
+            Inner->>Radix: verify returned pointer is owned
+        end
         Inner-->>User: payload
+    end
+
+    User->>Inner: free(ptr)
+    Inner->>Radix: ownership gate
+    alt foreign pointer
+        Inner->>Inner: preload fallback or non-preload policy
+    else owned pointer
+        Inner->>Inner: recover aligned original pointer if needed
+        alt small MAGIC
+            Inner->>Slab: stamp FREED_MAGIC and push
+            Slab->>Transfer: spill if cache high or RSEQ push retries fail
+        else BIG_MAGIC
+            Inner->>Map: remove payload metadata
+            alt buddy-backed
+                Inner->>Big: return block to buddy backend
+            else direct mapping
+                Inner->>Radix: clear direct or aligned ownership
+                Inner->>Big: munmap direct mapping
+            end
+        else bad magic
+            Inner->>Inner: double-free or corruption handling
+        end
+    end
+
+    User->>Inner: realloc(ptr, new_size)
+    alt null or zero-size request
+        Inner->>Inner: allocate for null, free for zero
+    else non-null request
+        Inner->>Radix: ownership gate
+        alt foreign pointer
+            Inner->>Inner: preload fallback or non-preload policy
+        else owned pointer
+            Inner->>Inner: recover aligned original pointer if needed
+            alt aligned pointer needs growth
+                Inner->>Inner: aligned alloc, copy, free old
+            else BIG_MAGIC
+                Inner->>Big: try direct mremap or buddy in-place growth
+                alt cannot grow in place or crosses to slab
+                    Inner->>Inner: rs_alloc new block, copy, rs_free old
+                end
+            else small allocation
+                Inner->>Inner: return in place if class still fits
+                alt class changes or grows out of slab classes
+                    Inner->>Inner: optional large-slab mremap attempt
+                    Inner->>Inner: otherwise rs_alloc, copy, rs_free old
+                end
+            end
+        end
     end
 ```
 

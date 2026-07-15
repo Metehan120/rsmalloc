@@ -38,6 +38,7 @@ lazy-page-trim = []
 # Useful on systems (e.g. CachyOS) that aggressively promote transparent huge pages.
 # Can significantly reduce RSS at the cost of higher TLB pressure.
 page-backend-no-huge-page = []
+page-backend-huge-page = []
 
 [[bench]]
 name = "book_speed"

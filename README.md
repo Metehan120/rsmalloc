@@ -164,7 +164,8 @@ cargo build --release --features extended-header
 
 Other optional Cargo features:
 
-- `page-backend-no-huge-page` applies `MADV_NOHUGEPAGE`/`Advice::LinuxNoHugepage` to slab page-backend arenas. This is useful on systems such as CachyOS or other kernels/configurations that aggressively promote transparent huge pages for allocator arenas: it can significantly reduce apparent RSS, at the cost of higher TLB pressure.
+- `page-backend-no-huge-page` applies `MADV_NOHUGEPAGE`/`Advice::LinuxNoHugepage` to slab page-backend arenas. This is useful on systems such as CachyOS or other kernels/configurations that aggressively promote transparent huge pages for allocator arenas: it can significantly reduce apparent RSS, at the cost of higher TLB pressure. If both slab page-backend THP advice features are enabled, no explicit page-backend THP advice is applied.
+- `page-backend-huge-page` applies huge-page advice to slab page-backend arenas when `page-backend-no-huge-page` is not enabled. This is an experimental TLB/RSS tradeoff knob; do not enable it on systems where THP promotion already inflates RSS.
 - `check-owned-on-alloc` enables an opt-in semi-hardening ownership check that verifies popped allocation pointers are still owned by `RADIX` before they are returned to callers. This can catch some corrupted freelist/transfer-cache metadata earlier, but it is not a full integrity proof and adds an ownership-map lookup to allocation paths.
 - `lazy-page-trim` uses lazy page-free advice for small-allocation trim where supported instead of immediate `MADV_DONTNEED`-style advice.
 

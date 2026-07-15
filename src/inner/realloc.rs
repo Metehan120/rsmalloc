@@ -10,7 +10,7 @@ use rustix::mm::{MremapFlags, mremap};
 use crate::{
     BIG_MAGIC, BigAllocMeta, Header, MetaData,
     big_allocations::{
-        big_allocation::{big_free, big_malloc, estimate_and_align_2mb},
+        big_allocation::estimate_and_align_2mb,
         buddy::{BIG_BUDDY_MAX_ORDER, BUDDY_BACKEND},
     },
     core_prim::wrappers::{SafePointer, UnsafePointer},
@@ -38,7 +38,7 @@ unsafe fn small_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePoin
     let new_class = match match_size_class(new_size) {
         Some(class) => class,
         None => {
-            let new = big_malloc(new_size, false);
+            let new = rs_alloc(new_size, false);
             if new.is_null() {
                 return UnsafePointer::NULL;
             }
@@ -128,7 +128,7 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
             new_alloc.cast_as_ptr(),
             old_meta.size.min(new_size),
         );
-        big_free(old_ptr);
+        rs_free(UnsafePointer::from(old_ptr as *mut Header));
 
         return new_alloc;
     }
@@ -200,7 +200,7 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
         }
     }
 
-    let new_alloc = big_malloc(new_size, false);
+    let new_alloc = rs_alloc(new_size, false);
     if new_alloc.is_null() {
         return UnsafePointer::NULL;
     }
@@ -210,7 +210,7 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
         new_alloc.cast_as_ptr(),
         old_meta.size.min(new_size),
     );
-    big_free(old_ptr);
+    rs_free(UnsafePointer::from(old_ptr as *mut Header));
 
     new_alloc.cast()
 }

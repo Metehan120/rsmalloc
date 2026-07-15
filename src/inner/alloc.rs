@@ -259,6 +259,21 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
     refill(class, cpu_id)
 }
 
+macro_rules! is_owned {
+    ($ptr:expr) => {
+        #[cfg(feature = "check-owned-on-alloc")]
+        {
+            if !RADIX.is_owned($ptr.cast_usize()) {
+                RSMallocError::AttackOrCorruption.log_and_abort(
+                    $ptr.cast_as_ptr(),
+                    "CRITICAL: possible metadata injection: popped pointer is not owned by rsmalloc",
+                    None,
+                );
+            }
+        }
+    };
+}
+
 #[inline(always)]
 pub unsafe fn rs_alloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
     #[cfg(feature = "preload")]
@@ -283,6 +298,8 @@ pub unsafe fn rs_alloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
             cache
         };
 
+        is_owned!(cache);
+
         let mut safe = cache.apply_safe();
         safe.magic = MAGIC;
         safe.flags = ALLOCATED_FLAG;
@@ -291,6 +308,9 @@ pub unsafe fn rs_alloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
     }
 
     let cache = big_malloc(size, aligned);
+
+    is_owned!(cache);
+
     cache.cast()
 }
 

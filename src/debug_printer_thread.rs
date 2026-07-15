@@ -9,12 +9,12 @@ static STARTED: AtomicBool = AtomicBool::new(false);
 
 fn thread_inner() {
     let sleep = env::var("RS_PRINTER_SLEEP")
-        .unwrap_or("1".to_string())
+        .unwrap_or("1000".to_string())
         .parse()
-        .unwrap_or(1);
+        .unwrap_or(1000);
 
     loop {
-        thread::sleep(Duration::from_secs(sleep));
+        thread::sleep(Duration::from_millis(sleep));
         unsafe {
             crate::debug_exit_printer::print_report();
         }

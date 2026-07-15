@@ -14,6 +14,7 @@ Major themes include memory reclamation, NUMA-aware placement, buddy-backend ove
 - Added a background trim worker with `RS_DISABLE_TRIM_THREAD` runtime control.
 - Added `RS_TRIMMER_THRESHOLD`, defaulting to 10 MiB of cached virtual address space, so the background trim worker is not started during fragile early preload/bootstrap paths.
 - Added `lazy-page-trim` to use lazy page-free advice for eligible small-allocation and buddy trim paths.
+- Added `page-backend-no-huge-page`, an opt-in slab page-backend feature that applies no-huge-page advice to page arenas for systems that aggressively promote transparent huge pages. This can reduce RSS substantially on those systems at the cost of higher TLB pressure.
 - Updated `malloc_trim(...)` and Rust-facing trim support to combine buddy-cache trimming with eligible small-allocation cache trimming.
 - Added `should_trim` and lifetime tracking to allocation headers so trimmed blocks are not repeatedly advised without reuse.
 - Added buddy free-block lifetime/trim state tracking and background old-block trimming for buddy cached blocks, with successful trim accounting based on `madvise` success.
@@ -46,7 +47,7 @@ Major themes include memory reclamation, NUMA-aware placement, buddy-backend ove
 - Updated preload runtime configuration documentation for `RS_DISABLE_TRIM_THREAD`, `RS_TRIMMER_THRESHOLD`, default-disabled `RS_DISABLE_RELIEF`, buddy relief pressure thresholds, adaptive refill predictor initialization, and buddy-cache sizing behavior.
 - Replaced the old `speed` benchmark with `book_speed` and added the large `rstress` benchmark covering thread churn, allocator edge cases, SIMD-style allocation patterns, teardown behavior, and trim pressure.
 - Added checked-in benchmark notes/results for the updated benchmark suite.
-- Updated README, TODO, and architecture documentation for current trim capabilities, NUMA-aware subsystems, transfer-cache behavior, pending metadata queue behavior, internal component naming, and feature flags.
+- Updated README, TODO, and architecture documentation for current trim capabilities, NUMA-aware subsystems, slab page-backend behavior, transfer-cache behavior, pending metadata queue behavior, internal component naming, and feature flags.
 
 ### Debug modes, reporting, and telemetry
 
@@ -79,6 +80,7 @@ Debug mode behavior is a major part of `0.2.0-alpha` because several allocator s
 - Added `node_id` to small refill `MetaData` so abandoned pending metadata returns to the correct NUMA queue.
 - Added per-node/per-class global pending metadata queues so thread-exit drained refill metadata is reused by local-node threads instead of being globally mixed.
 - Added bootstrap allocation for the pending queue's node/class head table using the parsed NUMA range count, with non-NUMA systems using node slot `0`.
+- Removed the old RSEQ thread-failure fallback path; current `0.2.0-alpha` treats working per-thread RSEQ state as required instead of silently redirecting invalid CPU IDs through a fallback slot.
 
 ### Buddy backend overhaul
 
@@ -88,8 +90,10 @@ Debug mode behavior is a major part of `0.2.0-alpha` because several allocator s
 - Replaced the single per-region buddy free-list lock with `order_locks: [SpinLock; NUM_ORDERS]`.
 - Updated buddy allocation, free/coalescing, in-place growth, trim, and fork-child lock reset paths to use per-order locks.
 
-### Slab cache, transfer cache, and pending metadata
+### Slab cache, transfer cache, page backend, and pending metadata
 
+- Added a slab page backend for bulk-fill/refill memory so small allocation refill spans are served from larger NUMA-preferred arenas instead of direct per-refill mappings.
+- Added `page-backend-no-huge-page` for users seeing inflated RSS from aggressive transparent huge-page promotion of slab page-backend arenas. The feature asks Linux not to use huge pages for those arenas; it is an RSS/TLB tradeoff, not a correctness workaround.
 - Added transfer-cache-first handling for medium slab classes so blocks larger than `SMALL_CLASS_BYTES` are reused from transfer caches before allocating/refilling more memory.
 - Added transfer-cache nonempty hints for batch stealing. Hints are deliberately relaxed/approximate metadata: correctness is still provided by the ABA-tagged transfer-list CAS path, while the bitmap only narrows victim selection.
 - Added a lock-free global pending metadata queue for abandoned thread-local refill metadata, indexed by NUMA node and size class.

@@ -24,6 +24,7 @@ flowchart TD
     RSEQ[SLAB_CACHE per-CPU caches]
     TRANSFER[transfer caches]
     REFILL[Adaptive bulk refill]
+    PAGE[slab page backend]
     PENDING[per-node pending metadata queue]
     TLS[thread-local pending metadata]
     NUMA[NUMA topology and preferred node policy]
@@ -42,13 +43,16 @@ flowchart TD
     SMALL --> TRANSFER
     SMALL --> REFILL
     REFILL --> TLS
+    REFILL --> PAGE
     TLS --> REFILL
     TLS --> PENDING
     PENDING --> REFILL
     REFILL --> RSEQ
+    PAGE --> RADIX
     NUMA --> RSEQ
     NUMA --> TRANSFER
     NUMA --> REFILL
+    NUMA --> PAGE
     NUMA --> PENDING
     NUMA --> BUDDY
     NUMA --> BIG
@@ -66,6 +70,7 @@ Main source areas:
 | `src/global_alloc.rs` | Rust `GlobalAlloc` integration, Rust-facing configuration, capabilities, stats, and direct helper methods. |
 | `src/inner` | Shared allocation operations: alloc, free, realloc, calloc, alignment, fallback/free handling. |
 | `src/rseq_core` | `SLAB_CACHE` layout, transfer caches, nonempty transfer hints, inline assembly critical sections, bulk refill metadata, pending queue, RSEQ TLS access. |
+| `src/backend` | Slab page backend arenas used by bulk refill metadata allocation. |
 | `src/big_allocations` | Big allocation path and NUMA-aware `BUDDY_BACKEND`, including cached-region reuse, trimming, and relief integration. |
 | `src/internals` | `RADIX` ownership map, `BIG_METADATA_MAP`, NUMA parsing/binding helpers, locks, once primitives, env parsing. |
 | `src/core_prim` | Bootstrap, fork handling, predictor state, pointer wrappers. |
@@ -129,7 +134,7 @@ flowchart TD
     R -- "miss" --> G["bulk_fill"]
     G --> P{"thread/local-node pending metadata?"}
     P -- "hit" --> I["initialize batch"]
-    P -- "miss" --> M["mmap and prefer current node"]
+    P -- "miss" --> M["allocate from slab page backend"]
     M --> I
     I --> H["push remainder to SLAB_CACHE"]
     H --> D
@@ -147,7 +152,7 @@ Important details:
 
 ## Slab Cache Layout
 
-`SLAB_CACHE` owns an mmap-backed array of per-CPU cache state, one per configured CPU plus one extra overflow/fallback slot. With the default `rseq-thread-failure-fallback` feature, invalid or unregistered RSEQ CPU IDs use that extra slot instead of indexing CPU-local state directly.
+`SLAB_CACHE` owns an mmap-backed array of per-CPU cache state, one per configured CPU plus one extra spare slot. Current `0.2.0-alpha` treats working per-thread RSEQ state as required; invalid or unregistered RSEQ CPU IDs are not silently redirected through an allocation fallback path.
 
 ```rust
 #[repr(C, align(4096))]
@@ -173,8 +178,7 @@ The 4096-byte alignment is intentional. It keeps each CPU's cache structure page
 - used when a per-CPU cache is over pressure limits,
 - used when RSEQ retry count is exceeded,
 - used by victim stealing when the local CPU has no cached block,
-- used by medium-size classes before refill to avoid per-CPU cache bloat,
-- used by the default RSEQ thread-failure fallback when the kernel/libc reports an invalid CPU ID.
+- used by medium-size classes before refill to avoid per-CPU cache bloat.
 
 The transfer list uses an ABA-tagged pointer word. It is still a fallback/pressure path for tiny/small hot allocations, but medium classes intentionally use transfer-cache scanning before refill. Victim scans are NUMA-aware: local CPU transfer cache is tried first, then CPUs in the same node range, then remote node ranges when NUMA is active.
 
@@ -186,7 +190,7 @@ Batch victim stealing is guided by a per-class nonempty bitmap. Each bitmap word
 
 When `SLAB_CACHE` and transfer-cache/victim stealing cannot satisfy an allocation, `fill()` calls `refill()`, which calls `bulk_fill()`.
 
-`bulk_fill()` maps a slab-like chunk:
+`bulk_fill()` obtains a slab-like chunk from the slab page backend:
 
 ```text
 [ MetaData ][ Header + payload ][ Header + payload ] ...
@@ -200,7 +204,13 @@ When `SLAB_CACHE` and transfer-cache/victim stealing cannot satisfy an allocatio
 - next uninitialized block position,
 - NUMA node id for the mapping.
 
-Blocks are initialized lazily in batches. `bulk_fill()` writes headers only for the current adaptive `max_init` batch; any remaining address range in the mapped metadata is left uninitialized and tracked by `MetaData::next` for later refills. The initialized batch is returned to allocation code, one block is used immediately, and the remainder is pushed into `SLAB_CACHE`.
+Blocks are initialized lazily in batches. `bulk_fill()` writes headers only for the current adaptive `max_init` batch; any remaining address range in the metadata span is left uninitialized and tracked by `MetaData::next` for later refills. The initialized batch is returned to allocation code, one block is used immediately, and the remainder is pushed into `SLAB_CACHE`.
+
+### Slab Page Backend
+
+The slab page backend serves fresh bulk-fill metadata spans from larger NUMA-preferred arenas instead of issuing a direct mapping for every refill span. This reduces VMA/mmap churn and gives the allocator a central place to manage slab backing memory. `RADIX` ownership and cached-VA accounting are still applied to the allocated metadata span rather than treating every byte of arena slack as live allocation ownership.
+
+The optional Cargo feature `page-backend-no-huge-page` applies Linux no-huge-page advice to these page-backend arenas. It is intended for systems that aggressively promote transparent huge pages, where slab arena slack can make RSS look much larger than expected. Enabling it can reduce RSS substantially, but may increase TLB pressure because the arenas are backed by normal pages.
 
 ### Thread-Local Pending Metadata
 
@@ -528,7 +538,7 @@ Important architecture-affecting features:
 | Feature | Effect |
 | --- | --- |
 | `preload` | Builds C ABI / preload support. |
-| `rseq-thread-failure-fallback` | Enables the default overflow-slot recovery path for invalid/unregistered RSEQ CPU IDs. |
+| `page-backend-no-huge-page` | Applies no-huge-page advice to slab page-backend arenas to reduce RSS on systems with aggressive transparent huge-page promotion, trading that for higher TLB pressure. |
 | `check-owned-on-alloc` | Semi-hardening diagnostic mode: verifies popped allocation pointers are still owned by `RADIX` before returning them to callers. |
 | `extended-header` | Uses wider metadata. |
 | `debug` | Enables base stats/debug counters, including RSEQ/refill debug signals. |
@@ -549,8 +559,8 @@ Semi-hardening and debug feature tiers are intentionally explicit in alpha-2. `c
 
 - The small allocation fast path is optimized around CPU-locality and RSEQ, not thread ownership.
 - Victim stealing currently scans CPU transfer caches and is intentionally simple, with NUMA-local ranges preferred before remote ranges.
-- The extra `SLAB_CACHE` slot is reserved for fallback/overflow handling, not normal CPU-local traffic.
-- `TransferCache` is a relief valve, fallback path, and medium-class reuse layer; too much tiny/small traffic there usually means refill/capacity pressure should be inspected.
+- The extra `SLAB_CACHE` slot is reserved space and is not normal CPU-local traffic.
+- `TransferCache` is a relief valve and medium-class reuse layer; too much tiny/small traffic there usually means refill/capacity pressure should be inspected.
 - Thread-local pending refill metadata avoids shared refill locks but can temporarily strand pending slabs until reuse or thread-exit drain. Drained metadata enters the per-node global pending queue, not transfer caches.
 - `BIG_METADATA_MAP` is an internal hashmap and is planned for future replacement.
 - Buddy trimming uses `madvise`, not `munmap`, so it returns physical pressure to the kernel while keeping the virtual region structure.

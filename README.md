@@ -26,11 +26,11 @@ The current codebase supports two intended modes:
 
 ## Current Capabilities
 
-- Small allocations are served from size classes backed by `SLAB_CACHE` per-CPU RSEQ caches, transfer caches, adaptive refill, and pending refill metadata reuse.
+- Small allocations are served from size classes backed by `SLAB_CACHE` per-CPU RSEQ caches, transfer caches, adaptive refill, a slab page backend, and pending refill metadata reuse.
 - RSEQ fast paths use inline assembly critical sections for push/pop operations.
 - Overflow and zero-size handling exists for calloc/realloc paths.
 - Big allocations are tracked separately in `BIG_METADATA_MAP` and can use the NUMA-aware 4 MiB to 64 MiB `BUDDY_BACKEND` cache with old-block trimming and optional memory-pressure relief.
-- Transparent huge page attempts are configurable for big allocation regions.
+- Transparent huge page attempts are configurable for big allocation regions, and the slab page backend has an opt-in `page-backend-no-huge-page` feature for systems that aggressively promote THP and inflate RSS.
 - Preload builds provide C ABI allocation entry points including `malloc`, `calloc`, `realloc`, `reallocarray`, `recallocarray`, `free`, sized-free compatibility shims, usable-size queries, alignment APIs, and opt-in `malloc_trim(...)` support.
 - Trimming supports buddy-cache blocks and small-allocation/background trim scanning for size classes equal to or greater than 4096 bytes.
 - Non-preload builds expose `RSMalloc`, `RSMallocConfig`, and `GlobalAlloc` integration.
@@ -39,7 +39,7 @@ The current codebase supports two intended modes:
 - In the default thread-local refill path, pending refill metadata is drained on thread exit into a lock-free per-node global pending queue to reduce stranded per-thread pending slabs.
 - Optional `extended-header` Cargo feature provides wider allocator metadata for experiments and stress testing.
 - Non-preload builds expose a small capability snapshot with allocator version, configured THP state, and current public NUMA support status.
-- Internal allocation paths are NUMA-aware where topology is available: transfer-cache victim stealing, small refill mappings, pending metadata reuse, buddy backend regions, and direct big mappings prefer the current CPU's node.
+- Internal allocation paths are NUMA-aware where topology is available: transfer-cache victim stealing, slab page-backend arenas, pending metadata reuse, buddy backend regions, and direct big mappings prefer the current CPU's node.
 - Batch transfer-cache stealing uses relaxed per-class nonempty CPU hints to narrow victim selection before falling back to the actual ABA-tagged transfer-list pop path.
 
 ## Adaptive Refill Prediction
@@ -164,7 +164,7 @@ cargo build --release --features extended-header
 
 Other optional Cargo features:
 
-- `rseq-thread-failure-fallback` enables the default recovery path for invalid/unregistered RSEQ CPU IDs.
+- `page-backend-no-huge-page` applies `MADV_NOHUGEPAGE`/`Advice::LinuxNoHugepage` to slab page-backend arenas. This is useful on systems such as CachyOS or other kernels/configurations that aggressively promote transparent huge pages for allocator arenas: it can significantly reduce apparent RSS, at the cost of higher TLB pressure.
 - `check-owned-on-alloc` enables an opt-in semi-hardening ownership check that verifies popped allocation pointers are still owned by `RADIX` before they are returned to callers. This can catch some corrupted freelist/transfer-cache metadata earlier, but it is not a full integrity proof and adds an ownership-map lookup to allocation paths.
 - `lazy-page-trim` uses lazy page-free advice for small-allocation trim where supported instead of immediate `MADV_DONTNEED`-style advice.
 
@@ -220,6 +220,18 @@ The allocator is organized into a few main areas:
 rsmalloc treats the small allocation fast path as a per-CPU cache problem. RSEQ lets the allocator update CPU-local linked lists without normal lock overhead when the current CPU remains stable through the critical section. If the kernel preempts or migrates the thread during that critical section, the operation is aborted and retried or moved to a fallback path.
 
 Big allocations do not use the same slab path. They are tracked separately in `BIG_METADATA_MAP`, can be mapped directly, and can be served from the NUMA-aware `BUDDY_BACKEND` cache for eligible sizes.
+
+### Slab page backend and RSS on aggressive THP systems
+
+`0.2.0-alpha` uses a slab page backend for refill memory instead of mapping each refill span independently. This reduces mapping/VMA churn and keeps refill memory NUMA-local, but some systems aggressively promote these arenas to transparent huge pages. On those systems, RSS can look much higher than expected even when most of the arena is allocator-reserved slack rather than live application payload.
+
+If that happens, build with:
+
+```sh
+cargo build --release --features page-backend-no-huge-page
+```
+
+This asks Linux not to back slab page-backend arenas with huge pages. It can significantly reduce RSS on THP-aggressive systems, at the cost of higher TLB pressure. If your workload is TLB-sensitive and RSS is fine, leave it disabled.
 
 ## Contributing
 

@@ -35,6 +35,9 @@ debug-full = ["transfer-debug-exact"]
 debug-full-critic = ["transfer-debug-exact", "debug-predictor-exact"]
 extended-header = []
 lazy-page-trim = []
+# Useful on systems (e.g. CachyOS) that aggressively promote transparent huge pages.
+# Can significantly reduce RSS at the cost of higher TLB pressure.
+page-backend-no-huge-page = []
 
 [[bench]]
 name = "book_speed"

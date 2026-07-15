@@ -5,6 +5,8 @@ use std::{
     ptr::{null_mut, write},
 };
 
+#[cfg(feature = "page-backend-no-huge-page")]
+use rustix::mm::{Advice, madvise};
 use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 
 use crate::{
@@ -136,6 +138,9 @@ impl PageAllocator {
             MapFlags::PRIVATE,
         )
         .ok()?;
+
+        #[cfg(feature = "page-backend-no-huge-page")]
+        let _ = madvise(mem, map_size, Advice::LinuxNoHugepage);
 
         prefer_node(mem, map_size, arena.node_id);
 

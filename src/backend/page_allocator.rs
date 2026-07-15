@@ -8,7 +8,7 @@ use std::{
 use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 
 use crate::{
-    internals::{binder::bind_node, lock::SpinLock, once::Once},
+    internals::{binder::prefer_node, lock::SpinLock, once::Once},
     record_mmap_call,
     utility::align_to,
 };
@@ -137,7 +137,7 @@ impl PageAllocator {
         )
         .ok()?;
 
-        bind_node(mem, map_size, arena.node_id);
+        prefer_node(mem, map_size, arena.node_id);
 
         arena.current = mem as usize;
         arena.end = arena.current.checked_add(map_size)?;

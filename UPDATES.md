@@ -2,117 +2,152 @@
 
 ## v0.2.0-alpha
 
-v0.2.0-alpha is a broad allocator overhaul rather than a narrow feature release. Compared with the `main` branch's `0.1.0-alpha` line, it reworks the slab/RSEQ path, transfer-cache reuse, refill metadata ownership, NUMA placement, buddy backend, trimming, preload ABI behavior, debug reporting, benchmarks, and public Rust configuration surface.
+v0.2.0-alpha is a full allocator overhaul relative to the `main` branch's `0.1.0-alpha` line. It reworks the RSEQ/slab path, transfer-cache reuse, refill metadata ownership, NUMA placement, buddy backend, trimming and relief, preload ABI behavior, debug reporting, benchmarks, and the public Rust configuration surface.
 
-Major themes include memory reclamation, NUMA-aware placement, buddy-backend overhaul, transfer-cache balancing, adaptive refill behavior, and preload robustness. It adds small-allocation trimming, buddy-cache old-block trimming, NUMA-aware slab/transfer/buddy/big refill behavior, transfer-cache nonempty hints, a lock-free pending metadata queue, background trim worker support, opt-in memory-pressure relief, lazy page trim support, and several fork/errno/alignment fixes.
+Major themes are: fewer mapping/VMA slow paths, NUMA-aware locality, lower refill overhead, bounded cache pressure, stronger diagnostics, and making alpha debug modes explicit enough that benchmark/debug behavior is not confused with normal allocator behavior.
 
-- Bumped the crate to `0.2.0-alpha` and updated Cargo metadata/features for the new allocator architecture, including removal of the old `canary`, `legacy-glibc-support`, `cpu-refill-paths`, and `disable-thread-pending` feature paths.
-- Added `syscalls` and expanded `rustix` feature usage for NUMA binding, system memory-pressure sampling, thread CPU lookup, and filesystem/sysfs topology parsing.
+### Release layout and breaking alpha changes
+
+- Bumped the crate to `0.2.0-alpha` and updated Cargo metadata/features for the new allocator architecture.
+- Removed old feature paths that no longer match the allocator design, including `canary`, `legacy-glibc-support`, `cpu-refill-paths`, and `disable-thread-pending`.
 - Removed the allocator canary feature and decoupled `extended-header` from canary-specific metadata/checking.
-- Added `check-owned-on-alloc`, an opt-in semi-hardening diagnostic feature that verifies popped small/big allocation pointers are still owned by `RADIX` before stamping them allocated, helping catch some freelist/metadata-injection style corruption earlier without claiming full pointer-integrity validation.
-- Added small-allocation trimming for size classes equal to or greater than 4096 bytes.
-- Added a background trim worker with `RS_DISABLE_TRIM_THREAD` runtime control.
-- Added `RS_TRIMMER_THRESHOLD`, defaulting to 10 MiB of cached virtual address space, so the background trim worker is not started during fragile early preload/bootstrap paths.
-- Added `lazy-page-trim` to use lazy page-free advice for eligible small-allocation and buddy trim paths.
-- Added `page-backend-no-huge-page`, an opt-in slab page-backend feature that applies no-huge-page advice to page arenas for systems that aggressively promote transparent huge pages. This can reduce RSS substantially on those systems at the cost of higher TLB pressure. Also added the opposite experimental `page-backend-huge-page` advice knob for TLB-sensitive experiments.
-- Updated `malloc_trim(...)` and Rust-facing trim support to combine buddy-cache trimming with eligible small-allocation cache trimming.
-- Added `should_trim` and lifetime tracking to allocation headers so trimmed blocks are not repeatedly advised without reuse.
-- Added buddy free-block lifetime/trim state tracking and background old-block trimming for buddy cached blocks, with successful trim accounting based on `madvise` success.
-- Added a global non-blocking trim lock so manual trim, background trim, small trim, and buddy trim do not overlap.
-- Added per-transfer trim locks and ABA-tagged transfer-cache support for safely detaching and restoring trim-scanned transfer lists.
-- Added fork-child reset handling for trim locks, buddy backend locks, `BIG_METADATA_MAP` locks, and background trim state.
-- Added `SerialLock::try_lock()` and fork-reset helpers for allocator-internal locks.
-- Updated fallback symbol initialization to use resettable once-lock state after fork.
-- Added preload errno helpers and improved C ABI errno behavior for calloc overflow/failure and alignment API failures.
-- Added NUMA topology parsing from sysfs with CPU-to-node mapping, direct `cpu_ranges[node_id]` lookup, malformed-list handling, overflow checks, CPU clipping, and fallback to node `0` for missing/invalid CPU entries.
-- Added `internals::binder` for NUMA placement helpers, including preferred binding (`MPOL_PREFERRED`) and strict node binding (`MPOL_BIND`).
-- Moved small refill, transfer stealing, buddy allocation, and direct big mappings toward current-CPU node locality, and bulk-bound contiguous per-CPU slab/transfer cache ranges to their NUMA node when topology is available.
-- Added NUMA preferred-placement support through `prefer_node(...)`, currently using the `syscalls` crate's `mbind` wrapper with `MPOL_PREFERRED | MPOL_F_STATIC_NODES`.
-- Reworked RSEQ assembly into `src/rseq_core/rseq_asm.rs` and removed the old `rseq_core.rs` module.
-- Renamed `BIG_BUDDY_ALLOCATOR` to `BUDDY_BACKEND`.
-- Renamed `L3_RADIX` to `RADIX`.
-- Renamed the big-allocation metadata map references toward `BIG_METADATA_MAP` / `BIG_MAP` terminology.
-- Renamed `RSEQ_CACHE` to `SLAB_CACHE`, `RseqInner` to `SlabCacheInner`, and `SelfMail` to `TransferCache`.
-- Renamed transfer-cache APIs from `mail_*` to `transfer_*`, including `transfer_push_batch`, `transfer_push_single`, `transfer_pop`, and `transfer_pop_single`.
-- Updated the medium/large slab allocation path to favor transfer-cache reuse instead of filling the hot per-CPU RSEQ class cache with larger blocks.
+- Removed the old RSEQ thread-failure fallback path. Current `0.2.0-alpha` treats working per-thread RSEQ state as an allocator invariant instead of silently redirecting invalid CPU IDs through a fallback slot.
+- Renamed major internals around the new architecture:
+  - `RSEQ_CACHE` -> `SLAB_CACHE`
+  - `RseqInner` -> `SlabCacheInner`
+  - `SelfMail` -> `TransferCache`
+  - `mail_*` APIs -> `transfer_*`
+  - `BIG_BUDDY_ALLOCATOR` -> `BUDDY_BACKEND`
+  - `L3_RADIX` -> `RADIX`
+  - big-allocation metadata naming toward `BIG_METADATA_MAP` / `BIG_MAP`
+- Added `syscalls` and expanded `rustix` feature usage for NUMA binding, system memory-pressure sampling, thread CPU lookup, filesystem/sysfs topology parsing, and memory advice paths.
+
+### Slab/RSEQ allocation path
+
+- Kept `try_pop_single(...)` as a direct current-CPU transfer-cache probe after repeated RSEQ pop aborts.
 - Renamed `RSEQ_MAX_BLOCKS` to `CACHE_HIGH_BLOCKS` and split cache byte targets into `SMALL_CLASS_BYTES`, `MEDIUM_CLASS_BYTES`, and `BIG_CLASS_BYTES`.
 - Added `CACHE_LOW_BLOCKS` as a derived half-watermark table for future cache pressure policy.
-- Added global `NCPU` initialized during `SLAB_CACHE.ensure_cache()` and reused by medium allocation and trim scanning.
+- Added global `NCPU` initialized during `SLAB_CACHE.ensure_cache()` and reused by trim/debug paths.
 - Added `get_size_4096_class()` and cached lookup support for selecting trim-eligible size classes.
-- Updated Rust global-allocator configuration with `TrimThreadSettings`, `TrimThread`, `Bytes`, `ReliefSettings`, `ReliefState`, and `Percentage` for background trim worker and opt-in system-memory-pressure relief control.
-- Replaced the old EMA public tuning names with `RefillPredictorSettings`, and simplified public exports through the non-preload `global_alloc` surface.
-- Updated C alignment APIs toward standard behavior, including `posix_memalign`-style validation, `aligned_alloc` size-multiple checks, checked `pvalloc` page rounding, and `memalign` errno reporting.
-- Routed realloc copy/fallback paths through the shared inner `rs_alloc`/`rs_free` operations so big-block transitions reuse the normal ownership, buddy, metadata-map, and optional semi-hardening checks instead of open-coded unchecked allocation/free handling.
-- Updated calloc zeroing to use allocation zero-state flags correctly while always zeroing under `lazy-page-trim`.
-- Updated preload runtime configuration documentation for `RS_DISABLE_TRIM_THREAD`, `RS_TRIMMER_THRESHOLD`, default-disabled `RS_DISABLE_RELIEF`, buddy relief pressure thresholds, adaptive refill predictor initialization, and buddy-cache sizing behavior.
-- Replaced the old `speed` benchmark with `book_speed` and added the large `rstress` benchmark covering thread churn, allocator edge cases, SIMD-style allocation patterns, teardown behavior, and trim pressure.
-- Added checked-in benchmark notes/results for the updated benchmark suite.
-- Updated README, TODO, and architecture documentation for current trim capabilities, NUMA-aware subsystems, slab page-backend behavior, transfer-cache behavior, pending metadata queue behavior, internal component naming, and feature flags.
+- Updated larger slab/cache pressure behavior so oversized batches spill through transfer caches instead of overfilling CPU-local class caches.
 
-### Debug modes, reporting, and telemetry
+### Transfer cache balancing
 
-Debug mode behavior is a major part of `0.2.0-alpha` because several allocator subsystems now have separate low-overhead, exact, and high-overhead diagnostic modes:
+- Added NUMA-aware transfer-cache victim stealing for batch `try_pop(...)`: local CPU transfer cache first, same-node CPU ranges next, then remote node ranges when NUMA is active.
+- Added relaxed per-class transfer-cache nonempty CPU hints, stored as CPU-word bitmaps, so batch stealing can skip ranges that have no nonempty hint for the requested class.
+- Updated hint maintenance to mark a class/CPU bit only on transfer-cache empty-to-nonempty transitions, and to clear/recheck the hint when a pop observes an empty transfer list.
+- Kept the hint bitmap deliberately approximate: correctness remains in the ABA-tagged transfer-list CAS path.
+- Added per-transfer trim locks and ABA-tagged transfer-cache support for safely detaching/restoring trim-scanned transfer lists.
 
-- Added `debug` as the base instrumentation mode for refill/RSEQ counters such as abort and predictor-miss tracking.
-- Added `debug-print`, which enables `debug` and prints an exit-time internal report through a plain `.fini_array` path using `eprintln!`, with no terminal control or overwrite behavior.
-- Added `debug-printer-thread`, which enables `debug-print` and starts a simple once-only background thread that repeatedly prints the same internal report for live debugging.
-- Added `debug-exact`, which enables `debug-print` and records higher-overhead lock telemetry: lock calls, retries, try-lock calls/misses, and spin waits.
-- Added `debug-predictor-exact`, which enables `debug-print` and uses a more intrusive refill-prediction accounting path that can probe transfer caches to distinguish real over/under prediction more accurately.
-- Added `predictor-debug`, which logs per-class predictor batch decisions directly from the predictor path with `eprintln!`.
-- Added `transfer-debug`, which enables `debug-exact` and tracks transfer-cache steals, dry steals, and CAS retries.
-- Added `transfer-debug-exact`, which enables `transfer-debug` and additionally counts transfer push/pop calls.
-- Added convenience feature groups `debug-full` and `debug-full-critic` for broad allocator instrumentation; `debug-full-critic` also enables exact predictor diagnostics.
-- Added human-readable byte formatting for report fields, including raw byte counts alongside KiB/MiB/GiB-style units.
-- Added report sections for process state, NUMA topology, RSEQ refill counters, lock counters under `debug-exact`, transfer-cache counters under transfer debug modes, cached virtual address usage, trim/relief state, buddy backend state, and radix ownership metadata.
-- Added per-CPU RSEQ cache usage reporting in bytes, including total/min/max/non-empty CPU summaries.
-- Added per-size-class refill telemetry through `REFILLS_BY_CLASS` and report output for every size class, including payload size, refill count, total cached bytes, active CPU count, and per-active-CPU min/max/average cached bytes.
-- Added detailed buddy backend report fields for per-order free-block state breakdowns: never allocated, reused, and trimmed blocks.
-- Expanded buddy report output with used/free bytes, used/free percentages, free block totals, state-specific byte totals, and a per-order free-list breakdown.
-- Expanded radix reporting with chunk size, owned bytes, metadata bytes, and metadata-per-owned-chunk estimates.
+### Hybrid slab page backend and pending metadata
 
-### NUMA-aware allocation
+- Added `src/backend/page_allocator.rs`, a hybrid page backend for bulk-fill/refill memory so small allocation refill spans are served from larger NUMA-preferred arenas instead of direct per-refill mappings.
+- The page backend allocation order is bump allocation from the current node arena first, bitmap-tracked reusable page runs second, and mapping a new arena only when needed.
+- Page-backend arenas store `PageArena` metadata and a bitmap at the front of the mapping, then expose a page-aligned data region for refill spans.
+- Bump allocations also mark bitmap bits, so future bitmap reuse and release logic share one page-run ownership model.
+- Added `PAGE_ALLOCATOR.release(...)` as future span-reclaim scaffolding. It is not part of normal slab free yet; safe use still requires future span live-count/reclaim policy.
+- `bulk_fill()` still initializes headers lazily for only the requested adaptive batch and leaves remaining span space tracked by thread-local or pending `MetaData`.
+- `RADIX` ownership and cached-VA accounting still apply to the allocated metadata span, not to every byte of page-backend arena slack.
+- Added a lock-free per-node/per-class global pending metadata queue so thread-exit drained refill metadata can be reused by local-node threads.
+- Added thread-exit draining of thread-local pending refill metadata into the per-node global pending queue.
+- Added low-level TLS destructor registration for `ThreadBulk` cleanup and a regression test proving pending metadata is drained on thread exit.
+- Added page-backend THP advice knobs:
+  - `page-backend-no-huge-page` asks Linux not to use huge pages for page-backend arenas, useful on THP-aggressive systems where arena slack inflates RSS.
+  - `page-backend-huge-page` requests huge-page advice for TLB-sensitive experiments when `page-backend-no-huge-page` is not also enabled.
+  - enabling both page-backend advice features intentionally results in no explicit page-backend THP advice.
 
-- Added NUMA-aware transfer-cache victim stealing for batch `try_pop(...)`: allocation first tries local CPU transfer cache, then CPUs in the same node range, then remote node ranges when NUMA is active.
-- Added a per-class transfer-cache nonempty bitmap, indexed by CPU word, so batch victim stealing can skip CPU ranges that do not currently have a nonempty transfer hint for the requested class.
-- Updated transfer-cache hint maintenance to mark a class/CPU bit only when a transfer push observes an empty-to-nonempty transition, and to clear/recheck the hint when a pop observes an empty transfer list.
-- Kept `try_pop_single(...)` as a direct single-block transfer-cache scan used by medium allocation/fallback paths.
-- Added NUMA node selection for small refill mappings, direct big mappings, and buddy regions based on current CPU id.
+### Adaptive refill batcher
+
+- Replaced the old EMA refill predictor with a small integer adaptive batcher for per-thread/per-class refill sizing.
+- Split normal refill prediction from bulk-fill prediction so cache-pop/steal behavior does not force page/list initialization into tiny batches.
+- The batcher grows quickly when a refill fully satisfies the requested batch, then shrinks only after repeated low-demand observations.
+- Growth uses the larger of observed demand and roughly 1.5x the current batch, while sustained low demand halves the batch after several samples.
+- Kept the implementation integer-only: no floating point and no EMA alpha knob.
+- Renamed the Rust configuration API from `EMASettings`/`with_ema_settings` to `RefillPredictorSettings`/`with_refill_predictor_settings`.
+- Preload builds keep `RS_PREDICTOR_INIT_BATCH` as the initial batch-size knob.
+
+### NUMA-aware allocation and binding
+
+- Added NUMA topology parsing from sysfs with CPU-to-node mapping, direct `cpu_ranges[node_id]` lookup, malformed-list handling, overflow checks, CPU clipping, and fallback to node `0` for missing/invalid CPU entries.
+- Added `internals::binder` for NUMA placement helpers:
+  - `prefer_node(...)` using `MPOL_PREFERRED`
+  - `bind_node(...)` using `MPOL_BIND`
+- Moved transfer-cache stealing, slab page-backend arenas, buddy allocation, and direct big mappings toward current-CPU node locality.
+- Bulk-bound contiguous per-CPU `SLAB_CACHE` / transfer-cache ranges to their NUMA node when topology is available, instead of issuing per-CPU binding calls.
+- Added preferred NUMA placement through `prefer_node(...)`, currently using the `syscalls` crate's `mbind` wrapper with `MPOL_PREFERRED | MPOL_F_STATIC_NODES`.
 - Added `node_id` to small refill `MetaData` so abandoned pending metadata returns to the correct NUMA queue.
-- Added per-node/per-class global pending metadata queues so thread-exit drained refill metadata is reused by local-node threads instead of being globally mixed.
-- Added bootstrap allocation for the pending queue's node/class head table using the parsed NUMA range count, with non-NUMA systems using node slot `0`.
-- Removed the old RSEQ thread-failure fallback path; current `0.2.0-alpha` treats working per-thread RSEQ state as required instead of silently redirecting invalid CPU IDs through a fallback slot.
+- Added bootstrap allocation for the pending queue's node/class head table using parsed NUMA range count, with non-NUMA systems using node slot `0`.
 
-### Buddy backend overhaul
+### Buddy backend and big allocations
 
 - Added NUMA-aware buddy region tagging, local-node-first allocation, local-node growth, and remote-node fallback scanning.
 - Added preferred NUMA placement for buddy regions and direct big mapping fallback.
 - Changed buddy region `nonempty_mask` from a plain `u8` to `AtomicU8`.
 - Replaced the single per-region buddy free-list lock with `order_locks: [SpinLock; NUM_ORDERS]`.
 - Updated buddy allocation, free/coalescing, in-place growth, trim, and fork-child lock reset paths to use per-order locks.
+- Added buddy free-block lifetime/trim state tracking and background old-block trimming for buddy cached blocks, with successful trim accounting based on `madvise` success.
+- Routed realloc copy/fallback paths through shared inner `rs_alloc`/`rs_free` operations so big-block transitions reuse normal ownership, buddy, metadata-map, and optional semi-hardening checks.
+- Updated direct/aligned big allocation ownership tracking so `RADIX` uses the correct direct-big or full-range shape.
 
-### Slab cache, transfer cache, page backend, and pending metadata
+### Trim, relief, calloc, and memory advice
 
-- Added a hybrid slab page backend for bulk-fill/refill memory so small allocation refill spans are served from larger NUMA-preferred arenas instead of direct per-refill mappings. The backend tries bump allocation from the current node arena first, bitmap-tracked reusable page runs second, and maps a new arena only when needed, reducing `mmap`/VMA churn while preserving lazy header initialization.
-- Added `page-backend-no-huge-page` for users seeing inflated RSS from aggressive transparent huge-page promotion of slab page-backend arenas. The feature asks Linux not to use huge pages for those arenas; it is an RSS/TLB tradeoff, not a correctness workaround. `page-backend-huge-page` requests the opposite policy when explicitly enabled alone.
-- Added bitmap state and a future `PAGE_ALLOCATOR.release(...)` hook for page-backend spans. Span release is not part of normal slab free yet; safe use requires future span live-count/reclaim policy.
-- Added transfer-cache-first handling for medium slab classes so blocks larger than `SMALL_CLASS_BYTES` are reused from transfer caches before allocating/refilling more memory.
-- Added transfer-cache nonempty hints for batch stealing. Hints are deliberately relaxed/approximate metadata: correctness is still provided by the ABA-tagged transfer-list CAS path, while the bitmap only narrows victim selection.
-- Added a lock-free global pending metadata queue for abandoned thread-local refill metadata, indexed by NUMA node and size class.
-- Added thread-exit draining of thread-local pending refill metadata into the per-node global pending queue to reduce stranded pending slabs.
-- Added low-level TLS destructor registration for `ThreadBulk` cleanup and a regression test proving pending metadata is drained on thread exit.
+- Added small-allocation trimming for size classes equal to or greater than 4096 bytes.
+- Updated `malloc_trim(...)` and Rust-facing trim support to combine buddy-cache trimming with eligible small-allocation cache trimming.
+- Added `should_trim` and lifetime tracking to allocation headers so trimmed blocks are not repeatedly advised without reuse.
+- Added a background trim worker with `RS_DISABLE_TRIM_THREAD` runtime control.
+- Added `RS_TRIMMER_THRESHOLD`, defaulting to 10 MiB of cached virtual address space, so the background trim worker is not started during fragile early preload/bootstrap paths.
+- Added `lazy-page-trim` to use lazy page-free advice for eligible small-allocation and buddy trim paths.
+- Added a global non-blocking trim lock so manual trim, background trim, small trim, and buddy trim do not overlap.
+- Updated calloc zeroing to use allocation zero-state flags correctly while always zeroing under `lazy-page-trim`.
+- Updated Rust global-allocator configuration with `TrimThreadSettings`, `TrimThread`, `Bytes`, `ReliefSettings`, `ReliefState`, and `Percentage` for background trim worker and opt-in system-memory-pressure relief control.
 
-### Adaptive refill batcher
+### Semi-hardening and safety diagnostics
 
-- Replaced the old EMA refill predictor with a small integer adaptive batcher for per-thread/per-class refill sizing.
-- The batcher is inspired by allocator pressure-control and AIMD-style feedback loops: grow quickly when a refill fully satisfies the requested batch, then shrink only after repeated low-demand observations.
-- Growth uses the larger of observed demand and roughly 1.5x the current batch, while sustained low demand halves the batch after several samples. This avoids floating-point work, reacts faster to refill pressure than EMA, and avoids aggressive doubling.
-- Kept bulk-fill initialization lazy: `bulk_fill()` only writes headers for the requested adaptive batch and leaves the remaining uninitialized space tracked by thread-local or pending `MetaData` for later refills.
-- Renamed the Rust configuration API from `EMASettings`/`with_ema_settings` to `RefillPredictorSettings`/`with_refill_predictor_settings`. Preload builds keep `RS_PREDICTOR_INIT_BATCH` as the initial batch-size knob and no longer use an EMA alpha knob.
+- Added `check-owned-on-alloc`, an opt-in semi-hardening diagnostic feature that verifies popped small/big allocation pointers are still owned by `RADIX` before stamping them allocated.
+- The ownership check is intended to catch some freelist/transfer-cache metadata-injection style corruption earlier; it is not a full pointer-integrity or class/header validation proof.
+- Strengthened aligned-pointer recovery by checking that recovered original pointers are owned by `RADIX` before trusting aligned metadata.
+- Kept weakened magic-value modes behind explicit unsafe acknowledgement in the Rust configuration surface.
 
-### Testing
+### Preload, C ABI, fork, and runtime configuration
 
+- Added preload errno helpers and improved C ABI errno behavior for calloc overflow/failure and alignment API failures.
+- Updated C alignment APIs toward standard behavior, including `posix_memalign` validation, `aligned_alloc` size-multiple checks, checked `pvalloc` page rounding, and `memalign` errno reporting.
+- Added fork-child reset handling for trim locks, buddy backend locks, `BIG_METADATA_MAP` locks, fallback symbol initialization, and background trim state.
+- Added `SerialLock::try_lock()` and fork-reset helpers for allocator-internal locks.
+- Updated preload runtime configuration documentation for `RS_DISABLE_TRIM_THREAD`, `RS_TRIMMER_THRESHOLD`, default-disabled `RS_DISABLE_RELIEF`, buddy relief pressure thresholds, adaptive refill predictor initialization, and buddy-cache sizing behavior.
+
+### Debug modes, reporting, and telemetry
+
+Debug mode behavior is a major part of `0.2.0-alpha` because several allocator subsystems now have separate low-overhead, exact, and high-overhead diagnostic modes:
+
+- Added `debug` as the base instrumentation mode for refill/RSEQ counters such as abort and predictor-miss tracking.
+- Added `debug-print`, which enables `debug` and prints an exit-time internal report through a plain `.fini_array` path using `eprintln!`.
+- Added `debug-printer-thread`, which enables `debug-print` and starts a simple once-only background thread for repeated live allocator reports.
+- Added `debug-exact`, which enables `debug-print` and records higher-overhead lock telemetry: lock calls, retries, try-lock calls/misses, and spin waits.
+- Added `debug-predictor-exact`, which enables `debug-print` and uses more intrusive refill-prediction accounting that can probe transfer caches to distinguish over/under prediction more accurately.
+- Added `predictor-debug`, which logs per-class predictor batch decisions directly from the predictor path with `eprintln!`.
+- Added `transfer-debug`, which enables `debug-exact` and tracks transfer-cache steals, dry steals, and CAS retries.
+- Added `transfer-debug-exact`, which enables `transfer-debug` and additionally counts transfer push/pop calls.
+- Added convenience feature groups `debug-full` and `debug-full-critic` for broad allocator instrumentation; `debug-full-critic` also enables exact predictor diagnostics.
+- Added debug mmap telemetry: total allocator `mmap` calls and requested bytes.
+- Added transfer class hint dumps, printing per-class CPU hint strings where `1 = hinted nonempty` and `0 = no nonempty hint`.
+- Added trim/relief report fields for trim calls, trimmed VA, small trimmed block counts under `debug-exact`, and average small `madvise` cycles under `debug-exact`.
+- Added human-readable byte formatting for report fields, including raw byte counts alongside KiB/MiB/GiB-style units.
+- Added report sections for process state, NUMA topology, RSEQ refill counters, lock counters, transfer-cache counters, cached virtual address usage, trim/relief state, buddy backend state, radix ownership metadata, mmap counters, and transfer class hints.
+- Added per-CPU RSEQ cache usage reporting in bytes, including total/min/max/non-empty CPU summaries.
+- Added per-size-class refill telemetry through `REFILLS_BY_CLASS` and report output for every size class, including payload size, refill count, total cached bytes, active CPU count, and per-active-CPU min/max/average cached bytes.
+- Added detailed buddy backend report fields for per-order free-block state breakdowns: never allocated, reused, and trimmed blocks.
+- Expanded buddy report output with used/free bytes, used/free percentages, free block totals, state-specific byte totals, and a per-order free-list breakdown.
+- Expanded radix reporting with chunk size, owned bytes, metadata bytes, and metadata-per-owned-chunk estimates.
+
+### Benchmarks, tests, and documentation
+
+- Replaced the old `speed` benchmark with `book_speed`.
+- Added the large `rstress` benchmark covering thread churn, allocator edge cases, SIMD-style allocation patterns, teardown behavior, and trim pressure.
+- Added checked-in benchmark notes/results for the updated benchmark suite.
 - Added NUMA parser tests for range parsing, whitespace, malformed lists, overflow rejection, CPU clipping, sparse `cpu_ranges[node_id]` behavior, and missing/invalid CPU fallback.
-- Added a thread-exit pending metadata drain regression test for the refill `ThreadBulk` cleanup path.
+- Added a thread-exit pending metadata drain regression test for refill `ThreadBulk` cleanup.
+- Updated README, TODO, and architecture documentation for current trim capabilities, NUMA-aware subsystems, hybrid slab page-backend behavior, transfer-cache behavior, pending metadata queue behavior, internal component naming, feature flags, and detailed allocation/free lifecycle diagrams.
 
 ## v0.1.0-alpha
 

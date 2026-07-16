@@ -92,8 +92,9 @@ Debug mode behavior is a major part of `0.2.0-alpha` because several allocator s
 
 ### Slab cache, transfer cache, page backend, and pending metadata
 
-- Added a slab page backend for bulk-fill/refill memory so small allocation refill spans are served from larger NUMA-preferred arenas instead of direct per-refill mappings.
+- Added a hybrid slab page backend for bulk-fill/refill memory so small allocation refill spans are served from larger NUMA-preferred arenas instead of direct per-refill mappings. The backend tries bump allocation from the current node arena first, bitmap-tracked reusable page runs second, and maps a new arena only when needed, reducing `mmap`/VMA churn while preserving lazy header initialization.
 - Added `page-backend-no-huge-page` for users seeing inflated RSS from aggressive transparent huge-page promotion of slab page-backend arenas. The feature asks Linux not to use huge pages for those arenas; it is an RSS/TLB tradeoff, not a correctness workaround. `page-backend-huge-page` requests the opposite policy when explicitly enabled alone.
+- Added bitmap state and a future `PAGE_ALLOCATOR.release(...)` hook for page-backend spans. Span release is not part of normal slab free yet; safe use requires future span live-count/reclaim policy.
 - Added transfer-cache-first handling for medium slab classes so blocks larger than `SMALL_CLASS_BYTES` are reused from transfer caches before allocating/refilling more memory.
 - Added transfer-cache nonempty hints for batch stealing. Hints are deliberately relaxed/approximate metadata: correctness is still provided by the ABA-tagged transfer-list CAS path, while the bitmap only narrows victim selection.
 - Added a lock-free global pending metadata queue for abandoned thread-local refill metadata, indexed by NUMA node and size class.

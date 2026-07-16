@@ -163,7 +163,7 @@ flowchart TD
     PENDING_HIT -- "yes" --> INIT
     PENDING_HIT -- "no" --> SIZE["compute page-rounded metadata span"]
     SIZE --> PAGE_INIT["PAGE_ALLOCATOR.init(numa ranges)"]
-    PAGE_INIT --> PAGE_ALLOC["PAGE_ALLOCATOR.alloc(node, total)"]
+    PAGE_INIT --> PAGE_ALLOC["PAGE_ALLOCATOR.allocate: bump, bitmap, or new arena"]
     PAGE_ALLOC --> PAGE_OK{"span allocated?"}
     PAGE_OK -- "no" --> BULK_ERR["bulk_fill returns OutOfMemory"]
     PAGE_OK -- "yes" --> ARENA_ADV{"new arena advice feature?"}
@@ -300,7 +300,17 @@ Blocks are initialized lazily in batches. `bulk_fill()` writes headers only for 
 
 ### Slab Page Backend
 
-The slab page backend serves fresh bulk-fill metadata spans from larger NUMA-preferred arenas instead of issuing a direct mapping for every refill span. This reduces VMA/mmap churn and gives the allocator a central place to manage slab backing memory. `RADIX` ownership and cached-VA accounting are still applied to the allocated metadata span rather than treating every byte of arena slack as live allocation ownership.
+The slab page backend serves fresh bulk-fill metadata spans from larger NUMA-preferred arenas instead of issuing a direct mapping for every refill span. It is a hybrid allocator: it tries cheap bump allocation from the current node arena first, then scans arena bitmaps for reusable free page runs, then maps a new arena if needed. This reduces `mmap` call count, VMA churn, and scattered refill mappings while giving the allocator a central place to manage slab backing memory.
+
+Each page-backend arena stores its `PageArena` metadata and bitmap at the front of the mapping, then exposes a page-aligned data region for refill spans:
+
+```text
+[ PageArena ][ bitmap ][ padding ][ page-aligned refill span memory ... ]
+```
+
+The bitmap is protected by the per-node page-backend lock and is intentionally not atomic. Bump allocations mark bitmap bits too, so future bitmap reuse and release logic share one page-run ownership model. The current `release(...)` API is scaffolding for future span reclaim; it is not part of normal slab free yet because safe reclaim needs span live-count policy.
+
+`RADIX` ownership and cached-VA accounting are still applied to the allocated metadata span rather than treating every byte of arena slack as live allocation ownership. This means the backend may reserve larger virtual arenas while physical RSS remains driven by lazily initialized/touched refill pages.
 
 The optional Cargo feature `page-backend-no-huge-page` applies Linux no-huge-page advice to these page-backend arenas. It is intended for systems that aggressively promote transparent huge pages, where slab arena slack can make RSS look much larger than expected. Enabling it can reduce RSS substantially, but may increase TLB pressure because the arenas are backed by normal pages. The opposite `page-backend-huge-page` feature requests huge-page advice for TLB-sensitive experiments when `page-backend-no-huge-page` is not also enabled; enabling both advice features intentionally results in no explicit page-backend THP advice.
 

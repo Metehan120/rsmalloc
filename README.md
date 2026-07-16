@@ -26,7 +26,7 @@ The current codebase supports two intended modes:
 
 ## Current Capabilities
 
-- Small allocations are served from size classes backed by `SLAB_CACHE` per-CPU RSEQ caches, transfer caches, adaptive refill, a slab page backend, and pending refill metadata reuse.
+- Small allocations are served from size classes backed by `SLAB_CACHE` per-CPU RSEQ caches, transfer caches, adaptive refill, a hybrid slab page backend, and pending refill metadata reuse.
 - RSEQ fast paths use inline assembly critical sections for push/pop operations.
 - Overflow and zero-size handling exists for calloc/realloc paths.
 - Big allocations are tracked separately in `BIG_METADATA_MAP` and can use the NUMA-aware 4 MiB to 64 MiB `BUDDY_BACKEND` cache with old-block trimming and optional memory-pressure relief.
@@ -224,7 +224,9 @@ Big allocations do not use the same slab path. They are tracked separately in `B
 
 ### Slab page backend and RSS on aggressive THP systems
 
-`0.2.0-alpha` uses a slab page backend for refill memory instead of mapping each refill span independently. This reduces mapping/VMA churn and keeps refill memory NUMA-local, but some systems aggressively promote these arenas to transparent huge pages. On those systems, RSS can look much higher than expected even when most of the arena is allocator-reserved slack rather than live application payload.
+`0.2.0-alpha` uses a hybrid slab page backend for refill memory instead of mapping each refill span independently. Each NUMA node gets larger page arenas; allocation tries cheap bump allocation first, then bitmap-tracked reusable page runs, then maps a new arena only when needed. This reduces `mmap` call count, VMA churn, and scattered refill mappings while keeping refill memory NUMA-local.
+
+The backend reserves virtual arena space, but `bulk_fill()` still initializes headers lazily and `RADIX` marks only the allocated metadata span, not the whole arena. In practice this can reduce RSS even when cached/reserved virtual address space increases. Some systems aggressively promote these arenas to transparent huge pages, though; on those systems, RSS can look much higher than expected when arena slack is backed by huge pages rather than remaining cheap virtual space.
 
 If that happens, build with:
 
@@ -232,7 +234,7 @@ If that happens, build with:
 cargo build --release --features page-backend-no-huge-page
 ```
 
-This asks Linux not to back slab page-backend arenas with huge pages. It can significantly reduce RSS on THP-aggressive systems, at the cost of higher TLB pressure. If your workload is TLB-sensitive and RSS is fine, leave it disabled.
+This asks Linux not to back slab page-backend arenas with huge pages. It can significantly reduce RSS on THP-aggressive systems, at the cost of higher TLB pressure. If your workload is TLB-sensitive and RSS is fine, leave it disabled. The opposite experimental `page-backend-huge-page` feature requests huge-page advice for page-backend arenas when `page-backend-no-huge-page` is not also enabled.
 
 ## Contributing
 

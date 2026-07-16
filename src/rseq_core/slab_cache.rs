@@ -385,7 +385,7 @@ pub fn pack(ptr: *mut Header, old_tag: usize) -> usize {
 
 #[inline(always)]
 pub fn unpack_ptr(word: usize) -> (*mut Header, usize) {
-    ((word & PTR_MASK) as *mut Header, word & TAG_MASK)
+    ((word & PTR_MASK) as *mut Header, word)
 }
 
 impl SlabCache {

@@ -630,7 +630,7 @@ impl SlabCache {
                 }
 
                 self.clear_class_hint(inner, class, cpu_id);
-                if !unpack_ptr(list_ptr.load(Ordering::Acquire)).0.is_null()
+                if !unpack_ptr(normal_ptr.load(Ordering::Acquire)).0.is_null()
                     || !unpack_ptr(trimmed_ptr.load(Ordering::Acquire)).0.is_null()
                 {
                     self.mark_class_nonempty(inner, class, cpu_id);
@@ -683,7 +683,7 @@ impl SlabCache {
                 }
 
                 self.clear_class_hint(inner, class, cpu_id);
-                if !unpack_ptr(list_ptr.load(Ordering::Acquire)).0.is_null()
+                if !unpack_ptr(normal_ptr.load(Ordering::Acquire)).0.is_null()
                     || !unpack_ptr(trimmed_ptr.load(Ordering::Acquire)).0.is_null()
                 {
                     self.mark_class_nonempty(inner, class, cpu_id);

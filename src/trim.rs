@@ -210,6 +210,7 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
                 #[cfg(feature = "debug-exact")]
                 TOTAL_TRIMMED_BLOCKS.fetch_add(1, Relaxed);
                 let next = (*trim_list).next;
+                let mut did_trim = false;
                 if requested_size == 0 || total_trimmed < requested_size {
                     #[cfg(feature = "debug-exact")]
                     let mut aux = 0;
@@ -222,6 +223,7 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
                         TOTAL_TRIMMED_VA.fetch_add(SIZE_CLASSES[class], Relaxed);
                         (*trim_list).flags = TRIMMED_FLAG;
                         total_trimmed += SIZE_CLASSES[class];
+                        did_trim = true;
                     }
 
                     #[cfg(feature = "debug-exact")]
@@ -233,7 +235,11 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
                     TOTAL_TRIMMED_TIME.fetch_add(elapsed as usize, Relaxed);
                 }
                 (*trim_list).life_time = stamp;
-                SLAB_CACHE.transfer_push_single(class, trim_list, cpu, inner);
+                if did_trim {
+                    SLAB_CACHE.transfer_push_single_trimmed(class, trim_list, cpu, inner);
+                } else {
+                    SLAB_CACHE.transfer_push_single(class, trim_list, cpu, inner);
+                }
                 trim_list = next;
             }
         }

@@ -5,7 +5,7 @@ use std::{
     arch::x86_64::{_MM_HINT_T0, _mm_prefetch},
     cell::UnsafeCell,
     hint::{likely, spin_loop},
-    ptr::{addr_of, null_mut, read_volatile},
+    ptr::{addr_of, eq, null_mut, read_volatile},
     sync::atomic::{
         AtomicU64, AtomicUsize,
         Ordering::{self},
@@ -36,6 +36,7 @@ pub struct RseqCache {
 
 pub struct TransferCache {
     pub list: AtomicUsize,
+    pub trimmed: AtomicUsize,
 }
 
 // NOTE: Use 4096-byte alignment to avoid false sharing between cache lines and NUMA node balancing.
@@ -548,8 +549,9 @@ impl SlabCache {
     }
 
     #[inline(always)]
-    pub unsafe fn transfer_push_single(
+    pub unsafe fn transfer_push_single_to(
         &self,
+        list_ptr: &AtomicUsize,
         class: usize,
         header: *mut Header,
         cpu_id: usize,
@@ -557,9 +559,6 @@ impl SlabCache {
     ) {
         #[cfg(feature = "transfer-debug-exact")]
         crate::TOTAL_TRANSFER_PUSH_CALLS.fetch_add(1, Ordering::Relaxed);
-
-        let list = &mut (*inner.cache.add(cpu_id)).mail[class];
-        let list_ptr = &list.list;
 
         loop {
             let old = list_ptr.load(Ordering::Relaxed);
@@ -583,6 +582,32 @@ impl SlabCache {
         }
     }
 
+    pub unsafe fn transfer_push_single(
+        &self,
+        class: usize,
+        header: *mut Header,
+        cpu_id: usize,
+        inner: &mut SlabCacheInner,
+    ) {
+        let list = &mut (*inner.cache.add(cpu_id)).mail[class];
+        let list_ptr = &list.list;
+
+        self.transfer_push_single_to(list_ptr, class, header, cpu_id, inner);
+    }
+
+    pub unsafe fn transfer_push_single_trimmed(
+        &self,
+        class: usize,
+        header: *mut Header,
+        cpu_id: usize,
+        inner: &mut SlabCacheInner,
+    ) {
+        let list = &mut (*inner.cache.add(cpu_id)).mail[class];
+        let list_ptr = &list.trimmed;
+
+        self.transfer_push_single_to(list_ptr, class, header, cpu_id, inner);
+    }
+
     #[inline(always)]
     pub unsafe fn transfer_pop_single(&self, class: usize, cpu_id: usize) -> UnsafePointer<Header> {
         #[cfg(feature = "transfer-debug-exact")]
@@ -590,15 +615,24 @@ impl SlabCache {
 
         let inner = &mut *self.inner.get();
         let list = &mut (*inner.cache.add(cpu_id)).mail[class];
-        let list_ptr = &list.list;
+        let normal_ptr = &list.list;
+        let trimmed_ptr = &list.trimmed;
+        let mut list_ptr = normal_ptr;
 
         loop {
             let old = list_ptr.load(Ordering::Acquire);
             let (head, tag) = unpack_ptr(old);
 
             if head.is_null() {
+                if eq(list_ptr, normal_ptr) {
+                    list_ptr = &trimmed_ptr;
+                    continue;
+                }
+
                 self.clear_class_hint(inner, class, cpu_id);
-                if !unpack_ptr(list_ptr.load(Ordering::Acquire)).0.is_null() {
+                if !unpack_ptr(list_ptr.load(Ordering::Acquire)).0.is_null()
+                    || !unpack_ptr(trimmed_ptr.load(Ordering::Acquire)).0.is_null()
+                {
                     self.mark_class_nonempty(inner, class, cpu_id);
                 }
                 return UnsafePointer::NULL;
@@ -634,15 +668,24 @@ impl SlabCache {
 
         let inner = &mut *self.inner.get();
         let list = &mut (*inner.cache.add(cpu_id)).mail[class];
-        let list_ptr = &list.list;
+        let normal_ptr = &list.list;
+        let trimmed_ptr = &list.trimmed;
+        let mut list_ptr = normal_ptr;
 
         loop {
             let old = list_ptr.load(Ordering::Acquire);
             let (head, tag) = unpack_ptr(old);
 
             if head.is_null() {
+                if eq(list_ptr, normal_ptr) {
+                    list_ptr = &trimmed_ptr;
+                    continue;
+                }
+
                 self.clear_class_hint(inner, class, cpu_id);
-                if !unpack_ptr(list_ptr.load(Ordering::Acquire)).0.is_null() {
+                if !unpack_ptr(list_ptr.load(Ordering::Acquire)).0.is_null()
+                    || !unpack_ptr(trimmed_ptr.load(Ordering::Acquire)).0.is_null()
+                {
                     self.mark_class_nonempty(inner, class, cpu_id);
                 }
                 return None;

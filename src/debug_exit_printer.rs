@@ -333,15 +333,15 @@ pub(crate) unsafe fn print_report() {
     byte_item(&mut report, "trimmed", TOTAL_TRIMMED_VA.load(Relaxed));
 
     #[cfg(feature = "debug-exact")]
-    let trimmed_blocks = TOTAL_TRIMMED_BLOCKS.load(Relaxed).max(1);
+    let trimmed_blocks = TOTAL_TRIMMED_BLOCKS.load(Relaxed);
     #[cfg(feature = "debug-exact")]
-    let trimmed_time = TOTAL_TRIMMED_TIME.load(Relaxed) / trimmed_blocks;
+    let trimmed_time = TOTAL_TRIMMED_TIME.load(Relaxed) / trimmed_blocks.max(1);
     #[cfg(feature = "debug-exact")]
     item(&mut report, "trimmed blocks (small)", trimmed_blocks);
     #[cfg(feature = "debug-exact")]
     item(
         &mut report,
-        "avarage madvise cycles (small)",
+        "average madvise cycles (small)",
         format!("{}", trimmed_time),
     );
     item(

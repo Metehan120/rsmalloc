@@ -50,6 +50,8 @@ pub static UNDER_AFTER: AtomicUsize = AtomicUsize::new(0);
 pub static TOTAL_TRIM_CALLS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "debug")]
 pub static TOTAL_TRIMMED_VA: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "debug-exact")]
+pub static TOTAL_TRIMMED_BLOCKS: AtomicUsize = AtomicUsize::new(0);
 
 pub unsafe fn relief_paths() {
     let pressure = check_memory_pressure();
@@ -201,6 +203,8 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
             }
 
             while !trim_list.is_null() {
+                #[cfg(feature = "debug-exact")]
+                TOTAL_TRIMMED_BLOCKS.fetch_add(1, Relaxed);
                 let next = (*trim_list).next;
                 if requested_size == 0 || total_trimmed < requested_size {
                     let is_ok = release_memory(trim_list, SIZE_CLASSES[class]);

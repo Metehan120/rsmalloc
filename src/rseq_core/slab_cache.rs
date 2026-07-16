@@ -410,7 +410,7 @@ impl SlabCache {
         total_usage
     }
 
-    #[cfg(feature = "debug")]
+    #[cfg(feature = "debug-print")]
     pub unsafe fn transfer_hint_bits(&self, class: usize) -> String {
         let inner = &*self.inner.get();
         let ncpu = inner.numa.ncpu;

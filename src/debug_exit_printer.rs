@@ -337,11 +337,11 @@ pub(crate) unsafe fn print_report() {
     #[cfg(feature = "debug-exact")]
     let trimmed_time = TOTAL_TRIMMED_TIME.load(Relaxed) / trimmed_blocks;
     #[cfg(feature = "debug-exact")]
-    item(&mut report, "trimmed blocks", trimmed_blocks);
+    item(&mut report, "trimmed blocks (small)", trimmed_blocks);
     #[cfg(feature = "debug-exact")]
     item(
         &mut report,
-        "avarage madvise cycles",
+        "avarage madvise cycles (small)",
         format!("{}", trimmed_time),
     );
     item(

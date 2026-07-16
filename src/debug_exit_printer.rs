@@ -3,7 +3,7 @@
 use std::sync::atomic::Ordering::Relaxed;
 
 #[cfg(feature = "debug-exact")]
-use crate::trim::TOTAL_TRIMMED_BLOCKS;
+use crate::trim::{TOTAL_TRIMMED_BLOCKS, TOTAL_TRIMMED_TIME};
 use crate::{
     ABORTS, AVERAGE_BLOCK_TIMES, BUDDY_AVERAGE_BLOCK_TIMES, CURRENT_STAMP,
     HIGH_WATER_BUDDY_CACHED_VA, HIGH_WATER_SLAB_CACHED_VA, HIGH_WATER_TOTAL_CACHED_VA, NCPU,
@@ -331,11 +331,18 @@ pub(crate) unsafe fn print_report() {
     section(&mut report, "trim and relief");
     item(&mut report, "trim calls", TOTAL_TRIM_CALLS.load(Relaxed));
     byte_item(&mut report, "trimmed", TOTAL_TRIMMED_VA.load(Relaxed));
+
+    #[cfg(feature = "debug-exact")]
+    let trimmed_blocks = TOTAL_TRIMMED_BLOCKS.load(Relaxed).max(1);
+    #[cfg(feature = "debug-exact")]
+    let trimmed_time = TOTAL_TRIMMED_TIME.load(Relaxed) / trimmed_blocks;
+    #[cfg(feature = "debug-exact")]
+    item(&mut report, "trimmed blocks", trimmed_blocks);
     #[cfg(feature = "debug-exact")]
     item(
         &mut report,
-        "trimmed blocks",
-        TOTAL_TRIMMED_BLOCKS.load(Relaxed),
+        "avarage madvise cycles",
+        format!("{}", trimmed_time),
     );
     item(
         &mut report,

@@ -1,3 +1,5 @@
+#[cfg(feature = "debug-exact")]
+use std::arch::x86_64::__rdtscp;
 use std::{
     ffi::c_void,
     ptr::null_mut,
@@ -52,6 +54,8 @@ pub static TOTAL_TRIM_CALLS: AtomicUsize = AtomicUsize::new(0);
 pub static TOTAL_TRIMMED_VA: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "debug-exact")]
 pub static TOTAL_TRIMMED_BLOCKS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "debug-exact")]
+pub static TOTAL_TRIMMED_TIME: AtomicUsize = AtomicUsize::new(0);
 
 pub unsafe fn relief_paths() {
     let pressure = check_memory_pressure();
@@ -207,6 +211,11 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
                 TOTAL_TRIMMED_BLOCKS.fetch_add(1, Relaxed);
                 let next = (*trim_list).next;
                 if requested_size == 0 || total_trimmed < requested_size {
+                    #[cfg(feature = "debug-exact")]
+                    let mut aux = 0;
+                    #[cfg(feature = "debug-exact")]
+                    let start_of = __rdtscp(&mut aux);
+
                     let is_ok = release_memory(trim_list, SIZE_CLASSES[class]);
                     if is_ok {
                         #[cfg(feature = "debug")]
@@ -214,6 +223,14 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
                         (*trim_list).flags = TRIMMED_FLAG;
                         total_trimmed += SIZE_CLASSES[class];
                     }
+
+                    #[cfg(feature = "debug-exact")]
+                    let current = __rdtscp(&mut aux);
+                    #[cfg(feature = "debug-exact")]
+                    let elapsed = current - start_of;
+
+                    #[cfg(feature = "debug-exact")]
+                    TOTAL_TRIMMED_TIME.fetch_add(elapsed as usize, Relaxed);
                 }
                 (*trim_list).life_time = stamp;
                 SLAB_CACHE.transfer_push_single(class, trim_list, cpu, inner);

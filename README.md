@@ -1,6 +1,6 @@
 # RSMalloc (rseq/rust slab memory allocator)
 
-rsmalloc is an experimental Rust memory allocator focused on low-overhead concurrent allocation for real-world application workloads, not benchmark-only allocation patterns. The slab allocation path is built around Linux Restartable Sequences (RSEQ), so cache ownership is CPU-oriented rather than thread-oriented. Larger allocations use a separate big-allocation path with a buddy backend for cached regions.
+rsmalloc is a Rust memory allocator focused on low-overhead concurrent allocation for real-world application workloads, not benchmark-only allocation patterns. The slab allocation path is built around Linux Restartable Sequences (RSEQ), so cache ownership is CPU-oriented rather than thread-oriented. Larger allocations use a separate big-allocation path with a buddy backend for cached regions.
 
 Current release line: `0.2.0-alpha`.
 
@@ -50,12 +50,12 @@ The initial predictor batch is configurable through `RefillPredictorSettings`/`w
 
 ## Current Limitations
 
-- **This is alpha-quality experimental software with limited test coverage.**
+- **This is alpha-quality allocator software with limited test coverage.**
 - The crate currently requires nightly Rust features and `rustc 1.96.0` or higher.
 - The preload path and the Rust `GlobalAlloc` path are still being separated and stabilized.
 - Big allocation metadata still uses an internal hashmap, which is planned for replacement.
 - Runtime behavior under every libc, loader, and fork/preload combination has not been fully audited.
-- Optional extended-header metadata is experimental and not a replacement for memory-safety tooling or a high-security sandbox.
+- Optional extended-header metadata is a debugging/diagnostic aid, not a replacement for memory-safety tooling or a high-security sandbox.
 - Documentation inside the allocator internals is incomplete.
 - Benchmarks are used as development signals, but they are not the design target and are not yet authoritative enough to make stable performance claims.
 - The public Rust API is still subject to change before a stable release.
@@ -97,7 +97,7 @@ const CONFIG: RSMallocConfig = RSMallocConfig::DEFAULT
 static GLOBAL: RSMalloc = RSMalloc::new_with_config(CONFIG);
 ```
 
-`RSMallocConfig` groups allocator tuning into THP settings, adaptive refill-predictor settings, magic-value safety behavior, foreign-pointer behavior, buddy-cache sizing, memory-pressure relief behavior, refill retry limits, and experimental feature flags. The default configuration keeps randomized magic values enabled, aborts on foreign pointers in Rust global-allocator mode, enables general THP support, leaves buddy THP forcing disabled, uses the default buddy cache limit, leaves memory-pressure relief disabled by default, and starts the refill predictor with allocator defaults.
+`RSMallocConfig` groups allocator tuning into THP settings, adaptive refill-predictor settings, magic-value safety behavior, foreign-pointer behavior, buddy-cache sizing, memory-pressure relief behavior, refill retry limits, and alpha feature flags. The default configuration keeps randomized magic values enabled, aborts on foreign pointers in Rust global-allocator mode, enables general THP support, leaves buddy THP forcing disabled, uses the default buddy cache limit, leaves memory-pressure relief disabled by default, and starts the refill predictor with allocator defaults.
 
 `THPSettings` uses explicit enums instead of raw booleans: `THP::Enabled` or `THP::Disabled` for general THP behavior, and `BuddyTHP::Disabled` or `BuddyTHP::Force` for buddy-region huge-page requests.
 
@@ -165,7 +165,7 @@ cargo build --release --features extended-header
 Other optional Cargo features:
 
 - `page-backend-no-huge-page` applies `MADV_NOHUGEPAGE`/`Advice::LinuxNoHugepage` to slab page-backend arenas. This is useful on systems such as CachyOS or other kernels/configurations that aggressively promote transparent huge pages for allocator arenas: it can significantly reduce apparent RSS, at the cost of higher TLB pressure. If both slab page-backend THP advice features are enabled, no explicit page-backend THP advice is applied.
-- `page-backend-huge-page` applies huge-page advice to slab page-backend arenas when `page-backend-no-huge-page` is not enabled. This is an experimental TLB/RSS tradeoff knob; do not enable it on systems where THP promotion already inflates RSS.
+- `page-backend-huge-page` applies huge-page advice to slab page-backend arenas when `page-backend-no-huge-page` is not enabled. This is a TLB/RSS tradeoff knob; do not enable it on systems where THP promotion already inflates RSS.
 - `check-owned-on-alloc` enables an opt-in semi-hardening ownership check that verifies popped allocation pointers are still owned by `RADIX` before they are returned to callers. This can catch some corrupted freelist/transfer-cache metadata earlier, but it is not a full integrity proof and adds an ownership-map lookup to allocation paths.
 - `lazy-page-trim` uses lazy page-free advice for small-allocation trim where supported instead of immediate `MADV_DONTNEED`-style advice.
 - `print-cpu-on-double-free` includes the current RSEQ CPU id in fatal double-free/corruption reports when available.
@@ -235,7 +235,7 @@ If that happens, build with:
 cargo build --release --features page-backend-no-huge-page
 ```
 
-This asks Linux not to back slab page-backend arenas with huge pages. It can significantly reduce RSS on THP-aggressive systems, at the cost of higher TLB pressure. If your workload is TLB-sensitive and RSS is fine, leave it disabled. The opposite experimental `page-backend-huge-page` feature requests huge-page advice for page-backend arenas when `page-backend-no-huge-page` is not also enabled.
+This asks Linux not to back slab page-backend arenas with huge pages. It can significantly reduce RSS on THP-aggressive systems, at the cost of higher TLB pressure. If your workload is TLB-sensitive and RSS is fine, leave it disabled. The opposite `page-backend-huge-page` feature requests huge-page advice for page-backend arenas when `page-backend-no-huge-page` is not also enabled.
 
 ## Contributing
 

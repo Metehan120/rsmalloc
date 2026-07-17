@@ -1,6 +1,6 @@
 [package]
 name = "rsmalloc"
-description = "An experimental RSEQ-based general-purpose memory allocator written in Rust"
+description = "An RSEQ-based general-purpose memory allocator written in Rust"
 license = "MIT"
 version = "0.2.0-alpha"
 readme = "README.md"

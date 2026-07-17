@@ -2,7 +2,7 @@
 
 Thanks for your interest in contributing to rsmalloc.
 
-rsmalloc is an experimental allocator, so changes should be small, focused, and easy to reason about. Prefer correctness and debuggability over cleverness unless the performance win is measured and clearly justified.
+rsmalloc is an alpha-stage allocator, so changes should be small, focused, and easy to reason about. Prefer correctness and debuggability over cleverness unless the performance win is measured and clearly justified.
 
 ## Before opening a PR
 

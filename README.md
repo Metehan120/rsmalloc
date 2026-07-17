@@ -34,7 +34,7 @@ The current codebase supports two intended modes:
 - Preload builds provide C ABI allocation entry points including `malloc`, `calloc`, `realloc`, `reallocarray`, `recallocarray`, `free`, sized-free compatibility shims, usable-size queries, alignment APIs, and opt-in `malloc_trim(...)` support.
 - Trimming supports buddy-cache blocks and small-allocation/background trim scanning for size classes equal to or greater than 4096 bytes.
 - Non-preload builds expose `RSMalloc`, `RSMallocConfig`, and `GlobalAlloc` integration.
-- Runtime tuning is available for refill behavior, predictor behavior, THP behavior, buddy cache sizing, trim-thread behavior, memory-pressure relief, opt-in experimental buddy trimming, magic-value behavior, and foreign-pointer handling in global-allocator mode.
+- Runtime tuning is available for refill behavior, predictor behavior, THP behavior, buddy cache sizing, trim-thread behavior, memory-pressure relief, trimming, magic-value behavior, and foreign-pointer handling in global-allocator mode.
 - Small-allocation refill sizing uses a fast integer adaptive predictor, with a separate bulk-fill predictor so cache-pop/steal behavior does not force page/list initialization into tiny batches.
 - In the default thread-local refill path, pending refill metadata is drained on thread exit into a lock-free per-node global pending queue to reduce stranded per-thread pending slabs.
 - Optional `extended-header` Cargo feature provides wider allocator metadata for experiments and stress testing.

@@ -857,7 +857,7 @@ sequenceDiagram
             else small allocation
                 Inner->>Inner: return in place if class still fits
                 alt class changes or grows out of slab classes
-                    Inner->>Inner: optional large-slab mremap attempt
+                    Inner->>PageBackend: optional in-place grow for single-block slab span
                     Inner->>Inner: otherwise rs_alloc, copy, rs_free old
                 end
             end
@@ -871,5 +871,5 @@ This draft intentionally leaves a few review points explicit:
 
 - whether the current low-level TLS destructor registration for pending refill drain is final,
 - whether the current size class set and refill byte targets are final enough to document as stable,
-- whether buddy trim should be documented as API-stable or explicitly experimental,
+- whether the Rust trim API should stay in its current alpha shape or gain more status variants/policy controls,
 - whether future small-class page/span metadata is needed for reclaim below 4096 bytes.

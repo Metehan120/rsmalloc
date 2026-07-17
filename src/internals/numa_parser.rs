@@ -1,7 +1,3 @@
-// TODO: I am not a parser guy, written by AI check correctness before Alpha-2 release
-//
-// Seems like its working for now, check correctness before the release
-
 use core::{iter::FusedIterator, mem::size_of, ptr::null_mut};
 use std::os::fd::AsFd;
 
@@ -309,7 +305,7 @@ unsafe fn populate_cpu_ranges(
         let range = &mut *cpu_ranges.add(node);
 
         if range.start_cpu == usize::MAX {
-            range.start_cpu = 0;
+            range.start_cpu = 1;
             range.end_cpu = 0;
         }
     }

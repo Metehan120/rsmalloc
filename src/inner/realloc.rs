@@ -8,7 +8,8 @@ use std::{os::raw::c_void, ptr::copy_nonoverlapping};
 use rustix::mm::{MremapFlags, mremap};
 
 use crate::{
-    BIG_MAGIC, BigAllocMeta, Header, MetaData,
+    BIG_MAGIC, BigAllocMeta, Header, MetaData, add_slab_cached_va,
+    backend::page_allocator::PAGE_ALLOCATOR,
     big_allocations::{
         big_allocation::estimate_and_align_2mb,
         buddy::{BIG_BUDDY_MAX_ORDER, BUDDY_BACKEND},
@@ -20,7 +21,7 @@ use crate::{
         free::{find_original_ptr, rs_free},
     },
     internals::{hashmap::BIG_META_MAP, l3_main_radix::RADIX},
-    utility::{SIZE_CLASSES, align_to, match_size_class},
+    utility::{ITERATIONS, SIZE_CLASSES, align_to, match_size_class},
 };
 
 // TODO: Check for safety logic bugs
@@ -58,23 +59,33 @@ unsafe fn small_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePoin
         return payload_ptr.apply_unsafe();
     }
 
-    if old_payload_size >= 1024 * 256 && SIZE_CLASSES[new_class] >= 1024 * 256 {
+    if ITERATIONS[old_class] == 1 && ITERATIONS[new_class] == 1 {
         let metadata_size = size_of::<MetaData>();
-        let mapping_base = header_ptr.cast_usize() - metadata_size;
+        let block_size = align_to(old_payload_size + Header::SIZE, 16);
+        let new_block_size = align_to(SIZE_CLASSES[new_class] + Header::SIZE, 16);
+        let mapping_base = header_ptr.cast_usize().wrapping_sub(metadata_size);
+        let metadata = mapping_base as *mut MetaData;
 
-        if (mapping_base & 4095) == 0 {
-            let old_total = align_to(metadata_size + old_payload_size + Header::SIZE, 4096);
-            let new_total = align_to(metadata_size + SIZE_CLASSES[new_class] + Header::SIZE, 4096);
+        if mapping_base & 4095 == 0
+            && (*metadata).start == mapping_base
+            && (*metadata).node_id != u16::MAX
+            && header_ptr.cast_usize() == mapping_base + metadata_size
+        {
+            let old_total = metadata_size + block_size;
+            let new_logical_total = metadata_size + new_block_size;
+            let old_page_total = align_to(old_total, 4096);
+            let new_page_total = align_to(new_logical_total, 4096);
 
-            let map = mremap(
+            if PAGE_ALLOCATOR.try_grow_inplace(
+                (*metadata).node_id,
                 mapping_base as *mut c_void,
-                old_total,
-                new_total,
-                MremapFlags::empty(),
-            );
-
-            if map.is_ok() {
-                RADIX.set_range(mapping_base, new_total, true);
+                old_page_total,
+                new_page_total,
+            ) {
+                (*metadata).end = mapping_base + new_logical_total;
+                (*metadata).next = (*metadata).end;
+                RADIX.set_range(mapping_base, new_page_total, true);
+                add_slab_cached_va(new_page_total.saturating_sub(old_page_total));
 
                 let mut new_header_ptr = header_ptr;
                 new_header_ptr.class = new_class as u8;
@@ -83,6 +94,7 @@ unsafe fn small_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePoin
             }
         }
     }
+
     let new_ptr = rs_alloc(new_size, false);
     if new_ptr.is_null() {
         return UnsafePointer::NULL;

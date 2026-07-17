@@ -268,6 +268,91 @@ impl PageAllocator {
         None
     }
 
+    pub unsafe fn try_grow_inplace(
+        &self,
+        node_id: u16,
+        ptr: *mut c_void,
+        old_size: usize,
+        new_size: usize,
+    ) -> bool {
+        if ptr.is_null() || new_size <= old_size {
+            return false;
+        }
+
+        let old_size = align_to(old_size.max(1), PAGE_SIZE);
+        let new_size = align_to(new_size.max(1), PAGE_SIZE);
+        if new_size <= old_size {
+            return true;
+        }
+
+        let old_pages = old_size / PAGE_SIZE;
+        let new_pages = new_size / PAGE_SIZE;
+        let inner = &mut *self.inner.get();
+
+        if old_pages == 0
+            || new_pages <= old_pages
+            || inner.arenas.is_null()
+            || inner.node_count == 0
+        {
+            return false;
+        }
+
+        let node = if node_id as usize >= inner.node_count {
+            0
+        } else {
+            node_id as usize
+        };
+        let node = &mut *inner.arenas.add(node);
+        let _guard = node.lock.lock();
+        let addr = ptr as usize;
+        let mut arena = node.arenas;
+
+        while !arena.is_null() {
+            let arena_ref = &mut *arena;
+            if addr >= arena_ref.base && addr < arena_ref.end {
+                if (addr - arena_ref.base) & (PAGE_SIZE - 1) != 0 {
+                    return false;
+                }
+
+                let start_page = (addr - arena_ref.base) / PAGE_SIZE;
+                let Some(old_end) = start_page.checked_add(old_pages) else {
+                    return false;
+                };
+                let Some(new_end) = start_page.checked_add(new_pages) else {
+                    return false;
+                };
+
+                if new_end > arena_ref.page_count {
+                    return false;
+                }
+
+                for page in start_page..old_end {
+                    if !arena_ref.is_used(page) {
+                        return false;
+                    }
+                }
+
+                for page in old_end..new_end {
+                    if arena_ref.is_used(page) {
+                        return false;
+                    }
+                }
+
+                arena_ref.mark_range(old_end, new_end - old_end);
+                let new_current = arena_ref.base + new_end * PAGE_SIZE;
+                if new_current > arena_ref.current {
+                    arena_ref.current = new_current;
+                }
+                arena_ref.search_hint = new_end.min(arena_ref.page_count);
+                return true;
+            }
+
+            arena = arena_ref.next;
+        }
+
+        false
+    }
+
     #[allow(dead_code)]
     pub unsafe fn release(&self, node_id: u16, ptr: *mut c_void, size: usize) -> bool {
         if ptr.is_null() {

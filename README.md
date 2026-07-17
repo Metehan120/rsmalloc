@@ -90,7 +90,7 @@ const CONFIG: RSMallocConfig = RSMallocConfig::DEFAULT
         Percentage::new(85),
         Percentage::new(80),
     ))
-    .with_experimental_features(ExperimentalFeatures::DEFAULT.with_buddy_trim())
+    .with_experimental_features(ExperimentalFeatures::DEFAULT)
     .with_foreign_pointer(ForeignPointerSettings::DEFAULT);
 
 #[global_allocator]
@@ -105,7 +105,7 @@ The buddy cache limit is configured with `PerCacheLimit`. `PerCacheLimit::Defaul
 
 Memory-pressure relief is configured with `ReliefSettings` and is disabled by default. When enabled, the background worker periodically samples system-wide memory pressure. If usage rises above the configured disable threshold, the buddy backend is temporarily disabled and future large allocations are served directly with `mmap`/`munmap` instead of being cached. Once memory pressure remains below the configured re-enable threshold for repeated samples, the buddy backend is re-enabled. This can significantly increase allocation overhead, but may prevent allocator-side caching from worsening OOM-prone workloads. It is intended for memory-constrained or burst-heavy applications rather than maximum-throughput runs.
 
-Rust-mode buddy trimming is experimental and disabled by default. Enable it with `ExperimentalFeatures::DEFAULT.with_buddy_trim()`, then call `RSMalloc::rs_trim_buddy(...)` with `RSMallocTrim::Request(bytes)` or `RSMallocTrim::All`. The method returns `RSTrimStatus::Disabled`, `RSTrimStatus::NothingToTrim`, or `RSTrimStatus::Trimmed(bytes)`; helper methods include `get_trim_size()`, `succeeded()`, and `disabled()`.
+Rust-mode trimming is experimental. Call `RSMalloc::rs_trim(...)` with `RSMallocTrim::Request(bytes)` or `RSMallocTrim::All` to ask the buddy backend and eligible small-allocation caches to return cold pages to the kernel. The method returns `RSTrimStatus::Trimmed(bytes)` today; the `Disabled` and `NothingToTrim` variants are reserved for API compatibility as the trim policy evolves. Helper methods include `get_trim_size()`, `succeeded()`, and `disabled()`.
 
 Magic-value behavior can be weakened for debugging, reproducible tests, security research, or allocator experiments. These modes require explicit unsafe acknowledgement:
 
@@ -130,7 +130,7 @@ const DISABLE_MAGIC_CHECKS: RSMallocConfig = RSMallocConfig::DEFAULT.with_magic_
 static GLOBAL: RSMalloc = RSMalloc::new_with_config(FIXED_MAGIC);
 ```
 
-`RSMalloc` also exposes Rust-facing low-level helper methods such as `rs_malloc`, `rs_calloc`, `rs_memalign`, `rs_realloc`, `rs_trim_buddy`, `rs_free`, and `rs_usable_size` in non-preload builds. These helpers should only be used with pointers returned by `RSMalloc` where pointer ownership applies.
+`RSMalloc` also exposes Rust-facing low-level helper methods such as `rs_malloc`, `rs_calloc`, `rs_memalign`, `rs_realloc`, `rs_trim`, `rs_free`, and `rs_usable_size` in non-preload builds. These helpers should only be used with pointers returned by `RSMalloc` where pointer ownership applies.
 
 Capability information is available without allocation:
 
@@ -138,7 +138,7 @@ Capability information is available without allocation:
 let caps = GLOBAL.get_capabilities();
 ```
 
-The capability snapshot reports the allocator version, whether THP is enabled by the current config, and whether NUMA support is exposed through the public capability surface. The capability field currently remains `false` even though internal allocation paths use NUMA-aware placement when topology is available.
+The capability snapshot reports the allocator version, whether THP is enabled by the current config, and NUMA support status. In `0.2.0-alpha`, NUMA support is reported as `NumaSupport::Partial`: internal allocation paths use NUMA-aware placement when topology is available, but the public capability surface does not yet promise full NUMA policy control.
 
 ## Building For Preload
 
@@ -168,6 +168,7 @@ Other optional Cargo features:
 - `page-backend-huge-page` applies huge-page advice to slab page-backend arenas when `page-backend-no-huge-page` is not enabled. This is an experimental TLB/RSS tradeoff knob; do not enable it on systems where THP promotion already inflates RSS.
 - `check-owned-on-alloc` enables an opt-in semi-hardening ownership check that verifies popped allocation pointers are still owned by `RADIX` before they are returned to callers. This can catch some corrupted freelist/transfer-cache metadata earlier, but it is not a full integrity proof and adds an ownership-map lookup to allocation paths.
 - `lazy-page-trim` uses lazy page-free advice for small-allocation trim where supported instead of immediate `MADV_DONTNEED`-style advice.
+- `print-cpu-on-double-free` includes the current RSEQ CPU id in fatal double-free/corruption reports when available.
 
 ### Alpha-2 debug modes
 
@@ -195,7 +196,7 @@ Use semi-hardening and exact/transfer/predictor debug modes only when diagnosing
 - `RS_BUDDY_ATTEMPT_HUGEPAGE`: Set to `1` to request transparent huge pages for buddy backend regions.
 - `RS_DISABLE_TRIM_THREAD`: Set to nonzero to disable the background trim worker. Manual `malloc_trim(...)` remains available.
 - `RS_TRIMMER_THRESHOLD`: Minimum cached virtual address space before starting the background trim worker. Defaults to `10485760` bytes.
-- `RS_DISABLE_RELIEF`: Controls system-memory-pressure relief behavior. Relief is disabled by default; set this to `0` to enable it.
+- `RS_ENABLE_RELIEF`: Controls system-memory-pressure relief behavior in the current alpha preload path. Relief is disabled by default; set this to `0` to enable it.
 - `RS_BUDDY_RELIEF_DISABLE_PERCENTAGE`: System memory usage percentage at or above which the buddy backend is disabled and buddy trim is forced when relief is enabled. Defaults to `85`.
 - `RS_BUDDY_RELIEF_ENABLE_PERCENTAGE`: System memory usage percentage at or below which the buddy backend may be re-enabled after repeated low-pressure samples. Defaults to `80` and is clamped to the disable percentage.
 - `RS_DISABLE_THP`: Set to `1` to disable transparent huge page attempts.

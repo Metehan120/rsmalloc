@@ -37,7 +37,7 @@ Major themes are: fewer mapping/VMA slow paths, NUMA-aware locality, lower refil
 - Added relaxed per-class transfer-cache nonempty CPU hints, stored as CPU-word bitmaps, so batch stealing can skip ranges that have no nonempty hint for the requested class.
 - Updated hint maintenance to mark a class/CPU bit only on transfer-cache empty-to-nonempty transitions, and to clear/recheck the hint when a pop observes an empty transfer list.
 - Kept the hint bitmap deliberately approximate: correctness remains in the ABA-tagged transfer-list CAS path.
-- Added per-transfer trim locks and ABA-tagged transfer-cache support for safely detaching/restoring trim-scanned transfer lists.
+- Added a cold `trimmed` transfer-cache list beside the normal transfer list. Normal transfer blocks are preferred; successfully madvised small blocks are returned through the trimmed list as a cold fallback. Transfer class hints deliberately prioritize the hot normal list and remain approximate.
 
 ### Hybrid slab page backend and pending metadata
 
@@ -46,6 +46,7 @@ Major themes are: fewer mapping/VMA slow paths, NUMA-aware locality, lower refil
 - Page-backend arenas store `PageArena` metadata and a bitmap at the front of the mapping, then expose a page-aligned data region for refill spans.
 - Bump allocations also mark bitmap bits, so future bitmap reuse and release logic share one page-run ownership model.
 - Added `PAGE_ALLOCATOR.release(...)` as future span-reclaim scaffolding. It is not part of normal slab free yet; safe use still requires future span live-count/reclaim policy.
+- Added page-backend in-place growth support for single-block slab refill spans, replacing the old direct `mremap` shortcut for large small-class realloc growth under the new page-backend model.
 - `bulk_fill()` still initializes headers lazily for only the requested adaptive batch and leaves remaining span space tracked by thread-local or pending `MetaData`.
 - `RADIX` ownership and cached-VA accounting still apply to the allocated metadata span, not to every byte of page-backend arena slack.
 - Added a lock-free per-node/per-class global pending metadata queue so thread-exit drained refill metadata can be reused by local-node threads.
@@ -98,12 +99,12 @@ Major themes are: fewer mapping/VMA slow paths, NUMA-aware locality, lower refil
 - Added `RS_TRIMMER_THRESHOLD`, defaulting to 10 MiB of cached virtual address space, so the background trim worker is not started during fragile early preload/bootstrap paths.
 - Added `lazy-page-trim` to use lazy page-free advice for eligible small-allocation and buddy trim paths.
 - Added a global non-blocking trim lock so manual trim, background trim, small trim, and buddy trim do not overlap.
-- Updated calloc zeroing to use allocation zero-state flags correctly while always zeroing under `lazy-page-trim`.
+- Updated calloc zeroing to distinguish full zero-state from trimmed/cold state. `TRIMMED_FLAG` means the block went through trim/cold handling, not that the entire user payload is guaranteed zero, so calloc still zeroes as needed.
 - Updated Rust global-allocator configuration with `TrimThreadSettings`, `TrimThread`, `Bytes`, `ReliefSettings`, `ReliefState`, and `Percentage` for background trim worker and opt-in system-memory-pressure relief control.
 
 ### Semi-hardening and safety diagnostics
 
-- Added `check-owned-on-alloc`, an opt-in semi-hardening diagnostic feature that verifies popped small/big allocation pointers are still owned by `RADIX` before stamping them allocated.
+- Added `check-owned-on-alloc`, an opt-in semi-hardening diagnostic feature that verifies non-null popped small/big allocation pointers are still owned by `RADIX` before stamping them allocated.
 - The ownership check is intended to catch some freelist/transfer-cache metadata-injection style corruption earlier; it is not a full pointer-integrity or class/header validation proof.
 - Strengthened aligned-pointer recovery by checking that recovered original pointers are owned by `RADIX` before trusting aligned metadata.
 - Kept weakened magic-value modes behind explicit unsafe acknowledgement in the Rust configuration surface.
@@ -114,7 +115,7 @@ Major themes are: fewer mapping/VMA slow paths, NUMA-aware locality, lower refil
 - Updated C alignment APIs toward standard behavior, including `posix_memalign` validation, `aligned_alloc` size-multiple checks, checked `pvalloc` page rounding, and `memalign` errno reporting.
 - Added fork-child reset handling for trim locks, buddy backend locks, `BIG_METADATA_MAP` locks, fallback symbol initialization, and background trim state.
 - Added `SerialLock::try_lock()` and fork-reset helpers for allocator-internal locks.
-- Updated preload runtime configuration documentation for `RS_DISABLE_TRIM_THREAD`, `RS_TRIMMER_THRESHOLD`, default-disabled `RS_DISABLE_RELIEF`, buddy relief pressure thresholds, adaptive refill predictor initialization, and buddy-cache sizing behavior.
+- Updated preload runtime configuration documentation for `RS_DISABLE_TRIM_THREAD`, `RS_TRIMMER_THRESHOLD`, default-disabled `RS_ENABLE_RELIEF` where `0` enables relief in the current alpha preload path, buddy relief pressure thresholds, adaptive refill predictor initialization, and buddy-cache sizing behavior.
 
 ### Debug modes, reporting, and telemetry
 

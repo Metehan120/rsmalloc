@@ -248,35 +248,47 @@ Important details:
 
 ```rust
 #[repr(C, align(4096))]
-pub struct CpuCache {
-    cache: [ClassCache; NUM_SIZE_CLASSES],
-    transfer: [TransferCache; NUM_SIZE_CLASSES],
+pub struct MainCache {
+    cache: [RseqCache; NUM_SIZE_CLASSES],
+    mail: [TransferCache; NUM_SIZE_CLASSES],
 }
 ```
 
 The 4096-byte alignment is intentional. It keeps each CPU's cache structure page-separated, which reduces false-sharing risk and leaves room for future NUMA-aware policy.
 
-### `ClassCache`
+### `RseqCache`
 
-`ClassCache` is the primary per-CPU freelist for one size class:
+`RseqCache` is the primary per-CPU freelist for one size class:
 
 - `list`: RSEQ-managed linked list of free `Header`s.
 - `usage`: approximate pressure counter.
 
 ### `TransferCache`
 
-`TransferCache` is the overflow, fallback, and medium-class reuse queue for one CPU/class pair:
+`TransferCache` is the overflow, fallback, cold-list, and medium-class reuse queue for one CPU/class pair:
 
 - used when a per-CPU cache is over pressure limits,
 - used when RSEQ retry count is exceeded,
 - used by victim stealing when the local CPU has no cached block,
-- used by medium-size classes before refill to avoid per-CPU cache bloat.
+- used by medium-size classes before refill to avoid per-CPU cache bloat,
+- used as a cold fallback for successfully trimmed small blocks.
 
-The transfer list uses an ABA-tagged pointer word. It is still a fallback/pressure path for tiny/small hot allocations, but medium classes intentionally use transfer-cache scanning before refill. Victim scans are NUMA-aware: local CPU transfer cache is tried first, then CPUs in the same node range, then remote node ranges when NUMA is active.
+Current layout:
 
-Batch victim stealing is guided by a per-class nonempty bitmap. Each bitmap word tracks up to 64 CPUs for one size class. Transfer pushes set the hint only when the push observes an empty-to-nonempty transition. Transfer pops clear the hint when they observe an empty list, then recheck the list head to avoid leaving a stale false-negative if a push raced with the clear. These bits are relaxed hints only; the ABA-tagged transfer list remains the source of correctness.
+```rust
+pub struct TransferCache {
+    pub list: AtomicUsize,
+    pub trimmed: AtomicUsize,
+}
+```
 
-`TransferCache` is expected to remain fast enough for overflow, fallback, medium-class reuse, and occasional cross-CPU recovery. Normal tiny/small traffic should mostly hit the RSEQ-managed class cache, while medium traffic prefers transfer-cache reuse to avoid RSS growth from stranded per-CPU blocks.
+The normal transfer list is preferred. The `trimmed` list is checked only after the normal list is empty, so the common normal-transfer hit does not touch trimmed state. Trimmed blocks are cold/opportunistic reuse: local pops can recover them, while remote victim stealing is allowed to miss trimmed-only CPUs until a later push refreshes the approximate class hint.
+
+The transfer lists use ABA-tagged pointer words. They are still fallback/pressure paths for tiny/small hot allocations, but medium classes intentionally use transfer-cache scanning before refill. Victim scans are NUMA-aware: local CPU transfer cache is tried first, then CPUs in the same node range, then remote node ranges when NUMA is active.
+
+Batch victim stealing is guided by a per-class nonempty bitmap. Each bitmap word tracks up to 64 CPUs for one size class. Transfer pushes set the hint only when the push observes an empty-to-nonempty transition. Transfer pops clear the hint when they observe empty transfer lists, then cheaply recheck the normal list to avoid the most important stale false-negative race on hot blocks. These bits are relaxed hints only; the ABA-tagged transfer list remains the source of correctness.
+
+`TransferCache` is expected to remain fast enough for overflow, fallback, medium-class reuse, occasional cross-CPU recovery, and cold trimmed reuse. Normal tiny/small traffic should mostly hit the RSEQ-managed class cache, while medium traffic prefers transfer-cache reuse to avoid RSS growth from stranded per-CPU blocks.
 
 ## Refill Path
 
@@ -308,7 +320,9 @@ Each page-backend arena stores its `PageArena` metadata and bitmap at the front 
 [ PageArena ][ bitmap ][ padding ][ page-aligned refill span memory ... ]
 ```
 
-The bitmap is protected by the per-node page-backend lock and is intentionally not atomic. Bump allocations mark bitmap bits too, so future bitmap reuse and release logic share one page-run ownership model. The current `release(...)` API is scaffolding for future span reclaim; it is not part of normal slab free yet because safe reclaim needs span live-count policy.
+The bitmap is protected by the per-node page-backend lock and is intentionally not atomic. Bump allocations mark bitmap bits too, so bitmap reuse, in-place growth, and future release logic share one page-run ownership model. The current `release(...)` API is scaffolding for future span reclaim; it is not part of normal slab free yet because safe reclaim needs span live-count policy.
+
+`try_grow_inplace(...)` can extend a page-backed refill span when the following pages in the same arena are still free. `small_realloc` uses this only for single-block slab refill spans; normal shrink keeps the existing block, and failed growth falls back to allocate/copy/free.
 
 `RADIX` ownership and cached-VA accounting are still applied to the allocated metadata span rather than treating every byte of arena slack as live allocation ownership. This means the backend may reserve larger virtual arenas while physical RSS remains driven by lazily initialized/touched refill pages.
 
@@ -690,7 +704,7 @@ Important architecture-affecting features:
 | `preload` | Builds C ABI / preload support. |
 | `page-backend-no-huge-page` | Applies no-huge-page advice to slab page-backend arenas to reduce RSS on systems with aggressive transparent huge-page promotion, trading that for higher TLB pressure. Ignored if `page-backend-huge-page` is also enabled. |
 | `page-backend-huge-page` | Applies huge-page advice to slab page-backend arenas when `page-backend-no-huge-page` is not enabled. This can reduce TLB pressure but may increase RSS on aggressive THP systems. |
-| `check-owned-on-alloc` | Semi-hardening diagnostic mode: verifies popped allocation pointers are still owned by `RADIX` before returning them to callers. |
+| `check-owned-on-alloc` | Semi-hardening diagnostic mode: verifies non-null popped allocation pointers are still owned by `RADIX` before returning them to callers. |
 | `extended-header` | Uses wider metadata. |
 | `debug` | Enables base stats/debug counters, including RSEQ/refill debug signals. |
 | `debug-print` | Enables `debug` and emits an exit-time allocator report through `.fini_array`/`eprintln!`. |
@@ -703,6 +717,7 @@ Important architecture-affecting features:
 | `debug-full` | Convenience feature for broad transfer/debug instrumentation. |
 | `debug-full-critic` | Convenience feature for broad instrumentation plus exact predictor diagnostics. |
 | `lazy-page-trim` | Uses lazy page-free advice for trim paths instead of eager `MADV_DONTNEED`-style advice. |
+| `print-cpu-on-double-free` | Adds current RSEQ CPU id to fatal double-free/corruption reports when available. |
 
 Semi-hardening and debug feature tiers are intentionally explicit in alpha-2. `check-owned-on-alloc` is useful when chasing freelist/metadata corruption, while `debug-print` is useful for coarse allocator state. `debug-exact`, `transfer-debug*`, and `debug-predictor-exact` can perturb timing and should be treated as diagnostic modes rather than benchmark-neutral instrumentation.
 

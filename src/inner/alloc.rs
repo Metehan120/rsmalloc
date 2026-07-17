@@ -309,7 +309,9 @@ pub unsafe fn rs_alloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
 
     let cache = big_malloc(size, aligned);
 
-    is_owned!(cache);
+    if !cache.is_null() && cfg!(feature = "check-owned-on-alloc") {
+        is_owned!(cache)
+    };
 
     cache.cast()
 }

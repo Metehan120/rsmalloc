@@ -1,9 +1,6 @@
 use std::{alloc::Layout, hint::unlikely, os::raw::c_void};
 
-#[cfg(not(feature = "lazy-page-trim"))]
-use crate::ALLOCATED_FLAG;
-#[cfg(feature = "lazy-page-trim")]
-use crate::TRIMMED_FLAG;
+use crate::{ALLOCATED_FLAG, TRIMMED_FLAG};
 
 #[cfg(feature = "preload")]
 use crate::inner::libc_int::set_nomem;
@@ -17,20 +14,8 @@ use crate::{
 
 macro_rules! calloc_zero {
     ($header:expr, $ptr:expr, $actual_size:expr, $effective_size:expr) => {
-        #[cfg(feature = "lazy-page-trim")]
         let flags = (*$header.as_ptr()).flags;
-
-        #[cfg(not(feature = "lazy-page-trim"))]
-        if (*$header.as_ptr()).flags == ALLOCATED_FLAG {
-            std::ptr::write_bytes(
-                $ptr.cast_as_ptr() as *mut u8,
-                0,
-                $actual_size.min($effective_size),
-            );
-        }
-
-        #[cfg(feature = "lazy-page-trim")]
-        if flags == crate::ALLOCATED_FLAG || flags == TRIMMED_FLAG {
+        if flags == ALLOCATED_FLAG || flags == TRIMMED_FLAG {
             std::ptr::write_bytes(
                 $ptr.cast_as_ptr() as *mut u8,
                 0,

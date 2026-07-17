@@ -707,7 +707,6 @@ impl SlabCache {
                 if !next.is_null() {
                     _mm_prefetch(next as *const i8, _MM_HINT_T0);
                 }
-                (*tail).next = null_mut();
                 return Some((head, tail, count));
             }
 

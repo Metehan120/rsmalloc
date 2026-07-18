@@ -11,6 +11,10 @@ See [benchmarks/benchmarks.md](benchmarks/benchmarks.md) for benchmark results.
 
 > **Note:** Linux kernel `7.0.10` appears to trigger `SIGBUS` in some workloads when using rsmalloc. If you hit unexplained `SIGBUS` crashes, try updating or downgrading your kernel before assuming allocator corruption.
 
+### Alpha-2 status
+
+Alpha-2 is almost ready. Release is delayed a little while final audit/cleanup finishes — and while I recover from being sunburnt to hell.
+
 ## Current Status
 
 rsmalloc is under active development. It is intended to become a practical allocator for normal applications with messy, mixed allocation behavior, not a microbenchmark-specialized allocator. It is useful for allocator experiments, preload testing, and early integration work, but **it is not production-ready.**

@@ -49,7 +49,7 @@ impl RseqCoreTrait for RseqCore {
 
             "2:",
             "mov qword ptr [{cs_ptr}], 0",
-            "add qword ptr [{usage}], {batch_total}",
+            "lock add qword ptr [{usage}], {batch_total}",
             "mov {res}, 1",
             "jmp 5f",
 
@@ -116,7 +116,7 @@ impl RseqCoreTrait for RseqCore {
 
             "2:",
             "mov qword ptr [{cs_ptr}], 0",
-            "inc qword ptr [{usage}]",
+            "lock inc qword ptr [{usage}]",
             "mov {res}, 1",
             "jmp 5f",
 
@@ -189,7 +189,7 @@ impl RseqCoreTrait for RseqCore {
 
             "2:",
             "mov qword ptr [{cs_ptr}], 0",
-            "dec qword ptr [{usage}]",
+            "lock dec qword ptr [{usage}]",
             "mov {res}, {tmp}",
             "jmp 5f",
 

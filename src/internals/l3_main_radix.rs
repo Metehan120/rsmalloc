@@ -145,6 +145,59 @@ impl Radix {
     }
 
     #[inline(always)]
+    unsafe fn set_range(&self, start_idx: usize, end_idx: usize, val: bool) {
+        let mut chunk_idx = start_idx;
+        loop {
+            let (i0, i1, i2, i3) = Self::split(chunk_idx);
+            let l1 = Self::get_or_alloc(self.l0.as_ptr(), i0, L1_SIZE);
+            let l2 = Self::get_or_alloc(l1, i1, L2_SIZE);
+            let l3 = Self::get_or_alloc_l3(l2, i2);
+
+            let chunks_left_in_leaf = L3_SIZE - i3;
+            let chunks_left_in_range = end_idx - chunk_idx + 1;
+            let chunks_in_leaf = chunks_left_in_leaf.min(chunks_left_in_range);
+            let leaf_end = i3 + chunks_in_leaf - 1;
+
+            let first_word = i3 / L3_WORD_BITS;
+            let last_word = leaf_end / L3_WORD_BITS;
+
+            for word_idx in first_word..=last_word {
+                let first_bit = if word_idx == first_word {
+                    i3 % L3_WORD_BITS
+                } else {
+                    0
+                };
+
+                let last_bit = if word_idx == last_word {
+                    leaf_end % L3_WORD_BITS
+                } else {
+                    L3_WORD_BITS - 1
+                };
+
+                let low_mask = u64::MAX << first_bit;
+                let high_mask = if last_bit == L3_WORD_BITS - 1 {
+                    u64::MAX
+                } else {
+                    (1u64 << (last_bit + 1)) - 1
+                };
+                let mask = low_mask & high_mask;
+                let word = l3.add(word_idx);
+
+                if val {
+                    (*word).fetch_or(mask, Release);
+                } else {
+                    (*word).fetch_and(!mask, Release);
+                }
+            }
+
+            if chunks_in_leaf == chunks_left_in_range {
+                break;
+            }
+            chunk_idx += chunks_in_leaf;
+        }
+    }
+
+    #[inline(always)]
     pub unsafe fn get(&self, chunk_idx: usize) -> bool {
         if unlikely(chunk_idx >= RADIX_MAX_CHUNKS) {
             return false;
@@ -227,10 +280,7 @@ impl RadixTree {
 
         let start_idx = addr / CHUNK_SIZE;
         let end_idx = end_addr / CHUNK_SIZE;
-
-        for i in start_idx..=end_idx {
-            self.nodes.set(i, val);
-        }
+        self.nodes.set_range(start_idx, end_idx, val);
     }
 
     #[inline(always)]
@@ -308,3 +358,79 @@ impl RadixTree {
 }
 
 pub static mut RADIX: RadixTree = unsafe { RadixTree::new_const() };
+
+#[cfg(test)]
+mod tests {
+    use super::{CHUNK_SIZE, L3_SIZE, RadixTree};
+
+    unsafe fn new_tree() -> RadixTree {
+        unsafe { RadixTree::new() }
+    }
+
+    #[test]
+    fn set_range_batches_across_bitmap_words() {
+        unsafe {
+            let tree = new_tree();
+            let start_chunk = 62;
+            let chunks = 5;
+
+            tree.set_range(start_chunk * CHUNK_SIZE, chunks * CHUNK_SIZE, true);
+
+            assert!(!tree.is_owned((start_chunk - 1) * CHUNK_SIZE));
+            for chunk in start_chunk..start_chunk + chunks {
+                assert!(tree.is_owned(chunk * CHUNK_SIZE));
+            }
+            assert!(!tree.is_owned((start_chunk + chunks) * CHUNK_SIZE));
+        }
+    }
+
+    #[test]
+    fn set_range_batches_across_l3_leaves() {
+        unsafe {
+            let tree = new_tree();
+            let start_chunk = L3_SIZE - 2;
+            let chunks = 5;
+
+            tree.set_range(start_chunk * CHUNK_SIZE, chunks * CHUNK_SIZE, true);
+
+            assert!(!tree.is_owned((start_chunk - 1) * CHUNK_SIZE));
+            for chunk in start_chunk..start_chunk + chunks {
+                assert!(tree.is_owned(chunk * CHUNK_SIZE));
+            }
+            assert!(!tree.is_owned((start_chunk + chunks) * CHUNK_SIZE));
+        }
+    }
+
+    #[test]
+    fn clear_range_preserves_neighboring_bits() {
+        unsafe {
+            let tree = new_tree();
+            let start_chunk = 60;
+            let chunks = 10;
+
+            tree.set_range(start_chunk * CHUNK_SIZE, chunks * CHUNK_SIZE, true);
+            tree.set_range((start_chunk + 2) * CHUNK_SIZE, 6 * CHUNK_SIZE, false);
+
+            assert!(tree.is_owned(start_chunk * CHUNK_SIZE));
+            assert!(tree.is_owned((start_chunk + 1) * CHUNK_SIZE));
+            for chunk in start_chunk + 2..start_chunk + 8 {
+                assert!(!tree.is_owned(chunk * CHUNK_SIZE));
+            }
+            assert!(tree.is_owned((start_chunk + 8) * CHUNK_SIZE));
+            assert!(tree.is_owned((start_chunk + 9) * CHUNK_SIZE));
+        }
+    }
+
+    #[test]
+    fn unaligned_range_marks_both_intersected_chunks() {
+        unsafe {
+            let tree = new_tree();
+
+            tree.set_range(CHUNK_SIZE - 1, 2, true);
+
+            assert!(tree.is_owned(0));
+            assert!(tree.is_owned(CHUNK_SIZE));
+            assert!(!tree.is_owned(CHUNK_SIZE * 2));
+        }
+    }
+}

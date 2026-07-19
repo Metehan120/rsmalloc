@@ -107,6 +107,7 @@ Major themes are: fewer mapping/VMA slow paths, NUMA-aware locality, lower refil
 - Added `check-owned-on-alloc`, an opt-in semi-hardening diagnostic feature that verifies non-null popped small/big allocation pointers are still owned by `RADIX` before stamping them allocated.
 - The ownership check is intended to catch some freelist/transfer-cache metadata-injection style corruption earlier; it is not a full pointer-integrity or class/header validation proof.
 - Strengthened aligned-pointer recovery by checking that recovered original pointers are owned by `RADIX` before trusting aligned metadata.
+- Batched `RADIX` ownership range updates by 64-bit bitmap word and L3 leaf. Contiguous registration and removal now resolve the radix hierarchy once per 16 MiB leaf and update up to 64 adjacent 4 KiB ownership chunks with one Release atomic RMW, while masked boundary words preserve unrelated ownership bits.
 - Kept weakened magic-value modes behind explicit unsafe acknowledgement in the Rust configuration surface.
 
 ### Preload, C ABI, fork, and runtime configuration
@@ -148,6 +149,7 @@ Debug mode behavior is a major part of `0.2.0-alpha` because several allocator s
 - Added checked-in benchmark notes/results for the updated benchmark suite.
 - Added NUMA parser tests for range parsing, whitespace, malformed lists, overflow rejection, CPU clipping, sparse `cpu_ranges[node_id]` behavior, and missing/invalid CPU fallback.
 - Added a thread-exit pending metadata drain regression test for refill `ThreadBulk` cleanup.
+- Added radix range batching tests covering bitmap-word boundaries, L3-leaf boundaries, masked clearing, and unaligned byte ranges.
 - Updated README, TODO, and architecture documentation for current trim capabilities, NUMA-aware subsystems, hybrid slab page-backend behavior, transfer-cache behavior, pending metadata queue behavior, internal component naming, feature flags, and detailed allocation/free lifecycle diagrams.
 
 ## v0.1.0-alpha

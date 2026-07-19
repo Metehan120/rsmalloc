@@ -303,6 +303,7 @@ pub(crate) enum RSMallocError {
     RSEQRegFailed = 0x100D,
     #[cfg(not(feature = "preload"))]
     ForeignPointer = 0x100E,
+    InvalidPointer = 0x100F,
 }
 
 impl Debug for RSMallocError {
@@ -317,6 +318,7 @@ impl Debug for RSMallocError {
             Self::RSEQRegFailed => write!(f, "RSEQRegFailed (0x100D)"),
             #[cfg(not(feature = "preload"))]
             Self::ForeignPointer => write!(f, "ForeignPointer (0x100E)"),
+            Self::InvalidPointer => write!(f, "InvalidPointer (0x100F)"),
         }
     }
 }

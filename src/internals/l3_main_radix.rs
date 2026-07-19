@@ -355,6 +355,11 @@ impl RadixTree {
     const fn valid_user_addr(addr: usize) -> bool {
         addr < MAX_ADDR
     }
+
+    #[inline(always)]
+    pub const fn is_valid_user_addr(&self, addr: usize) -> bool {
+        addr < MAX_ADDR
+    }
 }
 
 pub static mut RADIX: RadixTree = unsafe { RadixTree::new_const() };

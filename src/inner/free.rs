@@ -40,7 +40,7 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
         if unlikely(!RADIX.is_valid_user_addr(ptr.cast_usize())) {
             RSMallocError::InvalidPointer.log_and_abort(
                 ptr.as_ptr() as *mut c_void,
-                "invalid pointer adress",
+                "invalid pointer address",
                 None,
             );
         }

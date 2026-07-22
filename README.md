@@ -193,7 +193,6 @@ Use semi-hardening and exact/transfer/predictor debug modes only when diagnosing
 
 - `RS_ARENA_SIZE`: Minimum slab page-backend arena data size in bytes. Defaults to `268435456` (256 MiB). Actual arenas are page-aligned and may be larger when required by a refill request; the reservation does not imply that the entire arena is resident.
 - `RS_PREDICTOR_INIT_BATCH`: Initial per-size-class predictor batch value for small allocation refills. Defaults to `128`.
-
 - `RS_MAX_REFILL_RETRIES`: Maximum number of refill retries. Defaults to `3`.
 - `RS_BUDDY_PER_CACHE_SIZE`: Initial buddy backend region size for big allocations. Defaults to `268435456` bytes, is clamped to at least `268435456`, and is rounded up to a power of two.
 - `RS_BUDDY_ATTEMPT_HUGEPAGE`: Set to `1` to request transparent huge pages for buddy backend regions.

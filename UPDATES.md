@@ -37,6 +37,9 @@ Major themes are: fewer mapping/VMA slow paths, NUMA-aware locality, lower refil
 - Added relaxed per-class transfer-cache nonempty CPU hints, stored as CPU-word bitmaps, so batch stealing can skip ranges that have no nonempty hint for the requested class.
 - Updated hint maintenance to mark a class/CPU bit only on transfer-cache empty-to-nonempty transitions, and to clear/recheck the hint when a pop observes an empty transfer list.
 - Kept the hint bitmap deliberately approximate: correctness remains in the ABA-tagged transfer-list CAS path.
+- Expanded the transfer-list head generation to eight bits in the unused high byte of the allocator's 56-bit user-address representation. The pointer and generation remain in one 64-bit atomic word, preserving the existing CAS width and low pointer bits.
+- Each successful update advances the generation, rejecting a stale CAS across 1–255 intervening successful updates to the same CPU/class shard. The packed value can repeat after 256 updates; alpha-2 explicitly treats this as a bounded-tag limitation rather than claiming an unbounded ABA proof.
+- CPU/class sharding keeps ordinary mutations local. Reaching the wrap schedule requires exceptional cross-CPU activity such as stealing or trim handling, plus reuse of the same head pointer with a changed successor while an operation is stalled. This substantially reduces practical exposure without making the schedule formally impossible.
 - Added a cold `trimmed` transfer-cache list beside the normal transfer list. Normal transfer blocks are preferred; successfully madvised small blocks are returned through the trimmed list as a cold fallback. Transfer class hints deliberately prioritize the hot normal list and remain approximate.
 
 ### Hybrid slab page backend and pending metadata

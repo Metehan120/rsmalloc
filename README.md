@@ -42,6 +42,12 @@ The current codebase supports two intended modes:
 - Internal allocation paths are NUMA-aware where topology is available: transfer-cache victim stealing, slab page-backend arenas, pending metadata reuse, buddy backend regions, and direct big mappings prefer the current CPU's node.
 - Batch transfer-cache stealing uses relaxed per-class nonempty CPU hints to narrow victim selection before falling back to the actual ABA-tagged transfer-list pop path.
 
+### Transfer-cache ABA boundary
+
+Transfer-cache heads are sharded by CPU and size class and stored as one 64-bit atomic word. Bits 0–55 hold the allocator pointer and bits 56–63 hold an eight-bit generation counter. Every successful head update advances the generation, so a stale compare-and-swap cannot match after 1–255 intervening successful updates to that exact shard. The packed head can repeat after 256 updates; this is an explicit bounded-tag limitation, not an unbounded ABA-proof guarantee.
+
+Ordinary transfer traffic remains CPU-local. Mutating another CPU's shard requires exceptional cross-CPU activity such as stealing or trim handling, and an actual ABA failure additionally requires the same pointer to return as the head with a different successor while the original operation is stalled. CPU/class sharding therefore makes tag wrap materially less likely in normal operation, but it does not make the 256-update schedule formally impossible.
+
 ## Adaptive Refill Prediction
 
 Small-allocation cache refills use a fast integer adaptive predictor to estimate current per-size-class refill demand. When a refill returns exactly the requested batch and the class still has headroom, observed demand is slightly uplifted (+25%, clamped) so the next refill can grow quickly under pressure. Sustained low-demand samples shrink the predicted batch gradually to avoid oscillating on one-off dips.

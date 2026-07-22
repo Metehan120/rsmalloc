@@ -375,13 +375,14 @@ impl GenericCache for SlabCache {
     }
 }
 
-const PTR_ALIGN: usize = align_of::<Header>();
-const TAG_MASK: usize = PTR_ALIGN - 1;
+const TAG_SHIFT: u32 = 56;
+const TAG_STEP: usize = 1usize << TAG_SHIFT;
+const TAG_MASK: usize = 0xffusize << TAG_SHIFT;
 const PTR_MASK: usize = !TAG_MASK;
 
 #[inline(always)]
 pub fn pack(ptr: *mut Header, old_tag: usize) -> usize {
-    ((ptr as usize) & PTR_MASK) | old_tag.wrapping_add(1) & TAG_MASK
+    ((ptr as usize) & PTR_MASK) | (old_tag.wrapping_add(TAG_STEP) & TAG_MASK)
 }
 
 #[inline(always)]
@@ -747,5 +748,33 @@ mod tests {
             eprintln!("{}", cache.is_null());
             assert!(!cache.is_null())
         }
+    }
+
+    #[test]
+    fn packed_transfer_pointer_preserves_low_address_bits() {
+        let addr = 0x00ab_cdef_1234_5670usize;
+        let ptr = addr as *mut Header;
+        let packed = pack(ptr, 0);
+        let (unpacked, _) = unpack_ptr(packed);
+
+        assert_eq!(unpacked as usize, addr);
+        assert_eq!(packed >> TAG_SHIFT, 1);
+    }
+
+    #[test]
+    fn packed_transfer_tag_wraps_after_256_updates() {
+        let addr = 0x00ab_cdef_1234_5670usize;
+        let ptr = addr as *mut Header;
+        let mut packed = 0;
+
+        for expected in 1..=u8::MAX {
+            packed = pack(ptr, packed);
+            assert_eq!((packed >> TAG_SHIFT) as u8, expected);
+            assert_eq!(unpack_ptr(packed).0 as usize, addr);
+        }
+
+        packed = pack(ptr, packed);
+        assert_eq!(packed >> TAG_SHIFT, 0);
+        assert_eq!(unpack_ptr(packed).0 as usize, addr);
     }
 }

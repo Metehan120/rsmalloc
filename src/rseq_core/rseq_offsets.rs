@@ -52,7 +52,7 @@ pub unsafe fn get_rseq() -> &'static rseq {
     if unlikely(pointer.cpu_id == u32::MAX) {
         RSMallocError::RseqCeasedToExist.log_and_abort(
             null_mut(),
-            "RSEQ reported CPU ID UINT_MAX (u32::MAX). This indicates a kernel or hardware failure. Please report this issue. If your system uses ECC memory, inspect corrected/uncorrected memory error logs.",
+            "RSEQ reported CPU ID (UINT_MAX/u32::MAX). This indicates a kernel or hardware failure. Please report this issue. If your system uses ECC memory, inspect corrected/uncorrected memory error logs.",
             None,
         );
     }

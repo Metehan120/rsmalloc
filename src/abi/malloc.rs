@@ -21,17 +21,11 @@ pub unsafe extern "C" fn malloc_usable_size(ptr: *mut c_void) -> usize {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn malloc_trim(requested_size: usize) -> c_int {
     let buddy_trim = BUDDY_BACKEND.trim_old(requested_size);
-
-    if requested_size != 0 && buddy_trim >= requested_size {
-        return 1;
+    let mut small_trim = 0;
+    if requested_size.saturating_sub(buddy_trim) != 0 || requested_size == 0 {
+        small_trim = trim_small(requested_size.saturating_sub(buddy_trim));
     }
-
-    let small_trim = trim_small(requested_size.saturating_sub(buddy_trim));
     let total = buddy_trim.saturating_add(small_trim);
 
-    if requested_size == 0 {
-        (total > 0) as c_int
-    } else {
-        (total >= requested_size) as c_int
-    }
+    if total != 0 { 1 } else { 0 }
 }

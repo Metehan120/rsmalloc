@@ -31,6 +31,7 @@ pub const BIG_BUDDY_MAX_ORDER: usize = 26; // 64 MiB
 pub const BUDDY_NUM_ORDERS: usize = BIG_BUDDY_MAX_ORDER - BIG_BUDDY_MIN_ORDER + 1;
 const NUM_ORDERS: usize = BUDDY_NUM_ORDERS;
 const PAGE_SIZE: usize = 4096;
+const BIG_BUDDY_MAX_BLOCK_SIZE: usize = 1 << BIG_BUDDY_MAX_ORDER;
 
 pub const BUDDY_TRIM_NOT_ALLOCATED: u8 = 0;
 const BUDDY_TRIM_ALLOCATED: u8 = 1;
@@ -127,6 +128,13 @@ impl BuddyAllocator {
     }
 
     #[inline(always)]
+    fn normalize_region_size(size: usize) -> usize {
+        size.checked_next_power_of_two()
+            .unwrap_or(BIG_BUDDY_MAX_BLOCK_SIZE)
+            .max(BIG_BUDDY_MAX_BLOCK_SIZE)
+    }
+
+    #[inline(always)]
     fn align_to_page(size: usize) -> usize {
         align_to(size, PAGE_SIZE)
     }
@@ -178,9 +186,7 @@ impl BuddyAllocator {
 
     #[inline(never)]
     unsafe fn add_region(&mut self, size: usize, node_id: u16, init: bool, is_numa: bool) -> bool {
-        let normalized_size = size
-            .next_power_of_two()
-            .clamp(1 << BIG_BUDDY_MIN_ORDER, 1 << BIG_BUDDY_MAX_ORDER);
+        let normalized_size = Self::normalize_region_size(size);
 
         let mut retries = 0;
         let mut base = null_mut();
@@ -223,15 +229,23 @@ impl BuddyAllocator {
 
         core::ptr::write(region_ptr, BuddyRegion::empty());
 
-        let top_order = Self::order_for_size(normalized_size);
         (*region_ptr).base = base;
         (*region_ptr).total_size = normalized_size;
-        (*region_ptr).order = top_order;
+        (*region_ptr).order = BIG_BUDDY_MAX_ORDER;
         (*region_ptr).node_id = node_id;
 
-        let block = FreeBlock::new(base, 0, BUDDY_TRIM_NOT_ALLOCATED);
-        (*region_ptr).free[Self::order_index(top_order)] = block;
-        Self::mark_order_nonempty(region_ptr, top_order);
+        // A configured region may be larger than the largest allocation order
+        // represent it as independent maximum-order blocks so the fixed order
+        // tables and masks never need to index above BIG_BUDDY_MAX_ORDER
+        let top_index = Self::order_index(BIG_BUDDY_MAX_ORDER);
+        let mut offset = 0;
+        while offset < normalized_size {
+            let block = FreeBlock::new(base + offset, 0, BUDDY_TRIM_NOT_ALLOCATED);
+            (*block).next = (*region_ptr).free[top_index];
+            (*region_ptr).free[top_index] = block;
+            offset += BIG_BUDDY_MAX_BLOCK_SIZE;
+        }
+        Self::mark_order_nonempty(region_ptr, BIG_BUDDY_MAX_ORDER);
 
         {
             let _guard = self.spin.lock();
@@ -340,15 +354,13 @@ impl BuddyAllocator {
         self.once.call_once(|| unsafe {
             let page = &mut *this;
             page.thp = thp;
-            let normalized_size = size
-                .next_power_of_two()
-                .clamp(1 << BIG_BUDDY_MIN_ORDER, 1 << BIG_BUDDY_MAX_ORDER);
+            let normalized_size = Self::normalize_region_size(size);
 
             let (_, inner) = SLAB_CACHE.get_numa_and_inner();
             let current_cpu = sched_getcpu();
             let node_id = SLAB_CACHE.node_for_cpu(current_cpu as usize, inner);
 
-            page.grow_order = Self::order_for_size(normalized_size);
+            page.grow_order = Self::order_for_size(normalized_size).min(BIG_BUDDY_MAX_ORDER);
             page.add_region(normalized_size, node_id, true, inner.is_numa);
         });
     }
@@ -722,3 +734,32 @@ impl BuddyAllocator {
 }
 
 pub static mut BUDDY_BACKEND: BuddyAllocator = BuddyAllocator::new();
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn region_size_preserves_supported_values_above_max_order() {
+        assert_eq!(
+            BuddyAllocator::normalize_region_size(256 * 1024 * 1024),
+            256 * 1024 * 1024
+        );
+        assert_eq!(
+            BuddyAllocator::normalize_region_size(65 * 1024 * 1024),
+            128 * 1024 * 1024
+        );
+    }
+
+    #[test]
+    fn region_size_keeps_a_max_order_minimum_and_handles_overflow() {
+        assert_eq!(
+            BuddyAllocator::normalize_region_size(1),
+            BIG_BUDDY_MAX_BLOCK_SIZE
+        );
+        assert_eq!(
+            BuddyAllocator::normalize_region_size(usize::MAX),
+            BIG_BUDDY_MAX_BLOCK_SIZE
+        );
+    }
+}

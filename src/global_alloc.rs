@@ -581,7 +581,10 @@ unsafe fn init(rs: &RSMalloc) {
     ARENA_SIZE = rs.config.arena_min_size.0;
     MAX_REFILL_RETRIES = rs.config.max_refill_retries as usize;
     RS_DISABLE_THP = !rs.config.thp_settings.thp.enabled();
-    BUDDY_MAX_CACHE = rs.config.max_per_buddy_cache.get_size().next_power_of_two();
+    // Buddy initialization performs checked normalization after applying its
+    // minimum region size. Keep the raw configuration value here so an
+    // overflowing next-power-of-two request cannot wrap before validation.
+    BUDDY_MAX_CACHE = rs.config.max_per_buddy_cache.get_size();
 
     PREDICTOR_INIT_BATCH = rs.config.predictor_settings.init_batch as usize;
     BUDDY_ATTEMPT_HUGE = rs.config.thp_settings.buddy_use_thp.enabled();

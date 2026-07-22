@@ -304,6 +304,8 @@ pub(crate) enum RSMallocError {
     #[cfg(not(feature = "preload"))]
     ForeignPointer = 0x100E,
     InvalidPointer = 0x100F,
+    #[cfg(feature = "abort-on-rseq-failure")]
+    RseqCeasedToExist = 0x1010,
 }
 
 impl Debug for RSMallocError {
@@ -319,6 +321,8 @@ impl Debug for RSMallocError {
             #[cfg(not(feature = "preload"))]
             Self::ForeignPointer => write!(f, "ForeignPointer (0x100E)"),
             Self::InvalidPointer => write!(f, "InvalidPointer (0x100F)"),
+            #[cfg(feature = "abort-on-rseq-failure")]
+            Self::RseqCeasedToExist => write!(f, "RseqCeasedToExist (0x1010)"),
         }
     }
 }

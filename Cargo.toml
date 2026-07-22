@@ -39,6 +39,7 @@ lazy-page-trim = []
 # Can significantly reduce RSS at the cost of higher TLB pressure.
 page-backend-no-huge-page = []
 page-backend-huge-page = []
+abort-on-rseq-failure = []
 
 [[bench]]
 name = "book_speed"

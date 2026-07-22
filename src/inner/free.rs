@@ -16,6 +16,9 @@ pub unsafe fn find_original_ptr(ptr: UnsafePointer<Header>) -> UnsafePointer<Hea
         let raw_loc = (header_search_ptr.cast_usize()).wrapping_sub(OFFSET_SIZE) as *const usize;
         let presumed_original_ptr = read_unaligned(raw_loc) as *mut c_void;
 
+        // Do not dereference the recovered aligned allocation base until ownership is
+        // verified the offset preceding an arbitrary pointer is untrusted and may
+        // contain forged allocator metadata
         if !RADIX.is_owned(presumed_original_ptr as usize) {
             RSMallocError::AttackOrCorruption.log_and_abort(
                 header_search_ptr.as_ptr() as *mut c_void,
@@ -36,6 +39,9 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
         return;
     }
 
+    // Classify ownership before reading allocator metadata unowned pointers within
+    // the supported user-address range follow the configured foreign-pointer
+    // policy; addresses outside that range are rejected as invalid
     if !RADIX.is_owned(ptr.cast_usize()) {
         if unlikely(!RADIX.is_valid_user_addr(ptr.cast_usize())) {
             RSMallocError::InvalidPointer.log_and_abort(
@@ -78,6 +84,8 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
         return;
     }
 
+    // if it is double free, abort just to keep heap intact
+    // if it is not double free, we have a memory corruption or a security violation
     if !MAGIC_DISABLE {
         if header.magic == FREED_MAGIC {
             RSMallocError::DoubleFree.log_and_abort(header.cast_as_ptr(), "magic mismatch", None)

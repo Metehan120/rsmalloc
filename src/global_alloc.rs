@@ -4,6 +4,7 @@ use std::ptr::{null_mut, write_bytes};
 
 use rustix::rand::{GetRandomFlags, getrandom};
 
+use crate::backend::page_allocator::ARENA_SIZE;
 use crate::big_allocations::buddy::BUDDY_BACKEND;
 use crate::core_prim::predictor::{DEFAULT_BATCH, PREDICTOR_INIT_BATCH};
 use crate::core_prim::wrappers::UnsafePointer;
@@ -338,7 +339,8 @@ impl TrimThread {
 pub struct Bytes(pub usize);
 
 impl Bytes {
-    pub const DEFAULT: Bytes = Bytes(1024 * 1024 * 10);
+    pub const TRIM_DEFAULT: Bytes = Bytes(1024 * 1024 * 10);
+    pub const ARENA_DEFAULT: Bytes = Bytes(1024 * 1024 * 256);
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -350,7 +352,7 @@ pub struct TrimThreadSettings {
 impl TrimThreadSettings {
     pub const DEFAULT: TrimThreadSettings = TrimThreadSettings {
         background_worker: TrimThread::Enabled,
-        threshold: Bytes::DEFAULT,
+        threshold: Bytes::TRIM_DEFAULT,
     };
 }
 
@@ -442,6 +444,9 @@ pub struct RSMallocConfig {
     pub experimental_features: ExperimentalFeatures,
     pub trim_thread: TrimThreadSettings,
     pub relief: ReliefSettings,
+    /// Minimum slab page-backend arena data size. The default is 256 MiB;
+    /// arena creation page-aligns it and may exceed it for a larger refill.
+    pub arena_min_size: Bytes,
 }
 
 impl RSMallocConfig {
@@ -457,12 +462,13 @@ impl RSMallocConfig {
         foreign_pointer: ForeignPointerSettings::DEFAULT,
         trim_thread: TrimThreadSettings {
             background_worker: TrimThread::Disabled,
-            threshold: Bytes::DEFAULT,
+            threshold: Bytes::TRIM_DEFAULT,
         },
         relief: ReliefSettings::DEFAULT,
         max_per_buddy_cache: PerCacheLimit::Default,
         magic_safety: MagicSafety::MagicRandomization,
         experimental_features: ExperimentalFeatures::DEFAULT,
+        arena_min_size: Bytes::ARENA_DEFAULT,
     };
 
     #[must_use]
@@ -572,6 +578,7 @@ unsafe fn init(rs: &RSMalloc) {
         START_TIME = Some(Instant::now());
     }
 
+    ARENA_SIZE = rs.config.arena_min_size.0;
     MAX_REFILL_RETRIES = rs.config.max_refill_retries as usize;
     RS_DISABLE_THP = !rs.config.thp_settings.thp.enabled();
     BUDDY_MAX_CACHE = rs.config.max_per_buddy_cache.get_size().next_power_of_two();

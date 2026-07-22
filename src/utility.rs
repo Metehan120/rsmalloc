@@ -68,6 +68,10 @@ pub const SIZE_LUT: [u8; 256] = {
     lut
 };
 
+// Classes between 4 KiB and 32 KiB are irregular, but fit in eight 4 KiB
+// buckets. Classes above 32 KiB are powers of two and are matched arithmetically.
+const LARGE_SIZE_LUT: [u8; 8] = [0, 23, 24, 25, 26, 26, 27, 27];
+
 #[must_use]
 #[inline(always)]
 pub const fn align_to(size: usize, align: usize) -> usize {
@@ -141,15 +145,32 @@ pub unsafe fn match_size_class(size: usize) -> Option<usize> {
         return None;
     }
 
-    slow_path_match(size)
+    if size <= 32768 {
+        let index = (size - 1) >> 12;
+        return Some(*LARGE_SIZE_LUT.get_unchecked(index) as usize);
+    }
+
+    let exponent = usize::BITS as usize - (size - 1).leading_zeros() as usize;
+    Some(exponent + 12)
 }
 
-#[inline(always)]
-fn slow_path_match(size: usize) -> Option<usize> {
-    for i in 0..NUM_SIZE_CLASSES {
-        if size <= SIZE_CLASSES[i] {
-            return Some(i);
+#[cfg(test)]
+mod tests {
+    use super::{NUM_SIZE_CLASSES, SIZE_CLASSES, match_size_class};
+
+    fn reference_match(size: usize) -> Option<usize> {
+        if size == 0 {
+            return Some(0);
+        }
+        SIZE_CLASSES
+            .iter()
+            .position(|&class_size| size <= class_size)
+    }
+
+    #[test]
+    fn fast_size_matching_matches_reference_for_every_slab_size() {
+        for size in 0..=SIZE_CLASSES[NUM_SIZE_CLASSES - 1] + 1 {
+            assert_eq!(unsafe { match_size_class(size) }, reference_match(size));
         }
     }
-    None
 }

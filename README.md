@@ -97,11 +97,13 @@ const CONFIG: RSMallocConfig = RSMallocConfig::DEFAULT
 static GLOBAL: RSMalloc = RSMalloc::new_with_config(CONFIG);
 ```
 
-`RSMallocConfig` groups allocator tuning into THP settings, adaptive refill-predictor settings, magic-value safety behavior, foreign-pointer behavior, buddy-cache sizing, memory-pressure relief behavior, refill retry limits, and alpha feature flags. The default configuration keeps randomized magic values enabled, aborts on foreign pointers in Rust global-allocator mode, enables general THP support, leaves buddy THP forcing disabled, uses the default buddy cache limit, leaves memory-pressure relief disabled by default, and starts the refill predictor with allocator defaults.
+`RSMallocConfig` groups allocator tuning into THP settings, adaptive refill-predictor settings, magic-value safety behavior, foreign-pointer behavior, buddy-cache sizing, slab page-arena minimum sizing, memory-pressure relief behavior, refill retry limits, and alpha feature flags. The default configuration keeps randomized magic values enabled, aborts on foreign pointers in Rust global-allocator mode, enables general THP support, leaves buddy THP forcing disabled, uses the default buddy cache limit, uses a 256 MiB minimum slab page-arena size, leaves memory-pressure relief disabled by default, and starts the refill predictor with allocator defaults.
 
 `THPSettings` uses explicit enums instead of raw booleans: `THP::Enabled` or `THP::Disabled` for general THP behavior, and `BuddyTHP::Disabled` or `BuddyTHP::Force` for buddy-region huge-page requests.
 
 The buddy cache limit is configured with `PerCacheLimit`. `PerCacheLimit::Default` uses the allocator default, while `PerCacheLimit::Bytes(...)` requests an explicit byte limit that is rounded up to a power of two during initialization.
+
+The slab page-backend arena minimum is configured through `RSMallocConfig::arena_min_size` using `Bytes(...)`. Its default is 256 MiB. This is a minimum reserved virtual data size rather than a committed-RSS limit: an arena grows to fit a larger refill request, the selected size is page-aligned internally, and physical pages are populated as refill memory is touched.
 
 Memory-pressure relief is configured with `ReliefSettings` and is disabled by default. When enabled, the background worker periodically samples system-wide memory pressure. If usage rises above the configured disable threshold, the buddy backend is temporarily disabled and future large allocations are served directly with `mmap`/`munmap` instead of being cached. Once memory pressure remains below the configured re-enable threshold for repeated samples, the buddy backend is re-enabled. This can significantly increase allocation overhead, but may prevent allocator-side caching from worsening OOM-prone workloads. It is intended for memory-constrained or burst-heavy applications rather than maximum-throughput runs.
 
@@ -189,6 +191,7 @@ Use semi-hardening and exact/transfer/predictor debug modes only when diagnosing
 
 ## Runtime Configuration For Preload
 
+- `RS_ARENA_SIZE`: Minimum slab page-backend arena data size in bytes. Defaults to `268435456` (256 MiB). Actual arenas are page-aligned and may be larger when required by a refill request; the reservation does not imply that the entire arena is resident.
 - `RS_PREDICTOR_INIT_BATCH`: Initial per-size-class predictor batch value for small allocation refills. Defaults to `128`.
 
 - `RS_MAX_REFILL_RETRIES`: Maximum number of refill retries. Defaults to `3`.
@@ -225,7 +228,7 @@ Big allocations do not use the same slab path. They are tracked separately in `B
 
 ### Slab page backend and RSS on aggressive THP systems
 
-`0.2.0-alpha` uses a hybrid slab page backend for refill memory instead of mapping each refill span independently. Each NUMA node gets larger page arenas; allocation tries cheap bump allocation first, then bitmap-tracked reusable page runs, then maps a new arena only when needed. This reduces `mmap` call count, VMA churn, and scattered refill mappings while keeping refill memory NUMA-local.
+`0.2.0-alpha` uses a hybrid slab page backend for refill memory instead of mapping each refill span independently. Each NUMA node gets page arenas with a configurable 256 MiB default minimum; allocation tries cheap bump allocation first, then bitmap-tracked reusable page runs, then maps a new arena if needed. Rust configurations select the minimum with `RSMallocConfig::arena_min_size`, while preload builds use `RS_ARENA_SIZE` in bytes. An arena may exceed the configured minimum when a refill request itself is larger. This reduces `mmap` call count, VMA churn, and scattered refill mappings while keeping refill memory NUMA-local.
 
 The backend reserves virtual arena space, but `bulk_fill()` still initializes headers lazily and `RADIX` marks only the allocated metadata span, not the whole arena. In practice this can reduce RSS even when cached/reserved virtual address space increases. Some systems aggressively promote these arenas to transparent huge pages, though; on those systems, RSS can look much higher than expected when arena slack is backed by huge pages rather than remaining cheap virtual space.
 

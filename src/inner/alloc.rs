@@ -259,6 +259,10 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
     refill(class, cpu_id)
 }
 
+// In hardened builds, verify that a pointer popped from allocator-managed
+// lists still belongs to rsmalloc before dereferencing or stamping its header.
+// This detects corrupted or forged freelist metadata; it is not a complete
+// freelist-integrity proof.
 macro_rules! is_owned {
     ($ptr:expr) => {
         #[cfg(feature = "check-owned-on-alloc")]

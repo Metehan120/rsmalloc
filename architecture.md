@@ -99,6 +99,7 @@ Bootstrap initializes:
 
 1. RSEQ availability through libc-provided RSEQ TLS state.
 2. Runtime knobs:
+   - `RS_ARENA_SIZE`,
    - `RS_MAX_REFILL_RETRIES`,
    - `RS_PREDICTOR_INIT_BATCH`,
    - buddy cache size / THP / trim options in preload mode.
@@ -313,6 +314,8 @@ Blocks are initialized lazily in batches. `bulk_fill()` writes headers only for 
 ### Slab Page Backend
 
 The slab page backend serves fresh bulk-fill metadata spans from larger NUMA-preferred arenas instead of issuing a direct mapping for every refill span. It is a hybrid allocator: it tries cheap bump allocation from the current node arena first, then scans arena bitmaps for reusable free page runs, then maps a new arena if needed. This reduces `mmap` call count, VMA churn, and scattered refill mappings while giving the allocator a central place to manage slab backing memory.
+
+The arena data-size minimum defaults to 256 MiB. Rust `GlobalAlloc` configurations provide it through `RSMallocConfig::arena_min_size`; preload initialization reads `RS_ARENA_SIZE` as a byte count. Arena creation uses the larger of this minimum and the current refill request, then aligns the result to the page size. The mapping reserves virtual address space; physical RSS remains driven primarily by pages touched during lazy refill initialization and by the selected THP policy.
 
 Each page-backend arena stores its `PageArena` metadata and bitmap at the front of the mapping, then exposes a page-aligned data region for refill spans:
 

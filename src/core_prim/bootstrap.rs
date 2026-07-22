@@ -3,6 +3,7 @@ use std::ptr::null_mut;
 
 #[cfg(feature = "debug")]
 use crate::START_TIME;
+use crate::backend::page_allocator::ARENA_SIZE;
 use crate::rseq_core::rseq_offsets::__rseq_offset;
 use crate::{
     ALIGN_TAG, BIG_MAGIC, BUDDY_ATTEMPT_HUGE, BUDDY_MAX_CACHE, DISABLE_TRIM_THREAD, FREED_MAGIC,
@@ -93,6 +94,7 @@ pub unsafe fn bootstrap() {
         START_TIME = Some(std::time::Instant::now());
     }
 
+    ARENA_SIZE = get_env_usize("RS_ARENA_SIZE".as_bytes()).unwrap_or(ARENA_SIZE);
     MAX_REFILL_RETRIES = get_env_usize("RS_MAX_REFILL_RETRIES".as_bytes()).unwrap_or(3);
 
     let predictor = get_env_usize("RS_PREDICTOR_INIT_BATCH".as_bytes()).unwrap_or(DEFAULT_BATCH);

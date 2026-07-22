@@ -29,7 +29,7 @@ use crate::{
 };
 
 const PAGE_SIZE: usize = 4096;
-const ARENA_SIZE: usize = 64 * 1024 * 1024;
+pub static mut ARENA_SIZE: usize = 1024 * 1024 * 256;
 const BITS_PER_WORD: usize = 64;
 
 struct PageArena {

@@ -49,6 +49,7 @@ Major themes are: fewer mapping/VMA slow paths, NUMA-aware locality, lower refil
 - Page-backend arenas store `PageArena` metadata and a bitmap at the front of the mapping, then expose a page-aligned data region for refill spans.
 - Set the default minimum page-backend arena data size to 256 MiB and made it configurable through Rust `RSMallocConfig::arena_min_size` or the preload `RS_ARENA_SIZE` byte value. Arena creation still grows beyond the minimum when required by a refill request.
 - Bump allocations also mark bitmap bits, so future bitmap reuse and release logic share one page-run ownership model.
+- Batched contiguous page-backend bitmap marking and clearing by 64-bit word. Full words now use one store, while leading and trailing partial words use masks that preserve neighboring page ownership bits.
 - Added `PAGE_ALLOCATOR.release(...)` as future span-reclaim scaffolding. It is not part of normal slab free yet; safe use still requires future span live-count/reclaim policy.
 - Added page-backend in-place growth support for single-block slab refill spans, replacing the old direct `mremap` shortcut for large small-class realloc growth under the new page-backend model.
 - `bulk_fill()` still initializes headers lazily for only the requested adaptive batch and leaves remaining span space tracked by thread-local or pending `MetaData`.

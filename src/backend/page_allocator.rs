@@ -57,19 +57,47 @@ impl PageArena {
 
     #[inline(always)]
     unsafe fn mark_range(&mut self, start: usize, pages: usize) {
-        for page in start..start + pages {
+        let mut page = start;
+        let mut remaining = pages;
+
+        while remaining != 0 {
             let word = page / BITS_PER_WORD;
-            let bit = 1u64 << (page & (BITS_PER_WORD - 1));
-            *self.bitmap.add(word) |= bit;
+            let first_bit = page & (BITS_PER_WORD - 1);
+            let bits = remaining.min(BITS_PER_WORD - first_bit);
+            let bitmap_word = self.bitmap.add(word);
+
+            if bits == BITS_PER_WORD {
+                *bitmap_word = u64::MAX;
+            } else {
+                let mask = ((1u64 << bits) - 1) << first_bit;
+                *bitmap_word |= mask;
+            }
+
+            page += bits;
+            remaining -= bits;
         }
     }
 
     #[inline(always)]
     unsafe fn clear_range(&mut self, start: usize, pages: usize) {
-        for page in start..start + pages {
+        let mut page = start;
+        let mut remaining = pages;
+
+        while remaining != 0 {
             let word = page / BITS_PER_WORD;
-            let bit = 1u64 << (page & (BITS_PER_WORD - 1));
-            *self.bitmap.add(word) &= !bit;
+            let first_bit = page & (BITS_PER_WORD - 1);
+            let bits = remaining.min(BITS_PER_WORD - first_bit);
+            let bitmap_word = self.bitmap.add(word);
+
+            if bits == BITS_PER_WORD {
+                *bitmap_word = 0;
+            } else {
+                let mask = ((1u64 << bits) - 1) << first_bit;
+                *bitmap_word &= !mask;
+            }
+
+            page += bits;
+            remaining -= bits;
         }
     }
 
@@ -463,3 +491,40 @@ impl PageAllocator {
 }
 
 pub static PAGE_ALLOCATOR: PageAllocator = PageAllocator::new();
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_arena(bitmap: &mut [u64; 3]) -> PageArena {
+        PageArena {
+            next: null_mut(),
+            base: 0,
+            end: PAGE_SIZE * BITS_PER_WORD * bitmap.len(),
+            current: 0,
+            page_count: BITS_PER_WORD * bitmap.len(),
+            search_hint: 0,
+            bitmap: bitmap.as_mut_ptr(),
+        }
+    }
+
+    #[test]
+    fn mark_range_batches_full_words_and_preserves_boundaries() {
+        let mut bitmap = [0u64; 3];
+        let mut arena = test_arena(&mut bitmap);
+
+        unsafe { arena.mark_range(63, 66) };
+
+        assert_eq!(bitmap, [1u64 << 63, u64::MAX, 1]);
+    }
+
+    #[test]
+    fn clear_range_batches_full_words_and_preserves_boundaries() {
+        let mut bitmap = [u64::MAX; 3];
+        let mut arena = test_arena(&mut bitmap);
+
+        unsafe { arena.clear_range(63, 66) };
+
+        assert_eq!(bitmap, [u64::MAX >> 1, 0, u64::MAX & !1]);
+    }
+}

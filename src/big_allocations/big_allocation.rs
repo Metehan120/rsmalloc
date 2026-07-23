@@ -40,6 +40,7 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
     let mut registered = false;
     let mut mapped_total = aligned_total;
     let mut actual_ptr: *mut u8 = null_mut();
+    let mut buddy_region = 0usize;
     let mut flag = 100;
     let cpu_id = get_rseq().cpu_id as usize;
     let (numa, inner) = SLAB_CACHE.get_numa_and_inner();
@@ -48,8 +49,9 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
     if size <= 1024 * 1024 * 64 && BUDDY_INIT && !DISABLE_BUDDY.load(Relaxed) {
         let buddy = BUDDY_BACKEND.alloc(aligned_total, node_id, (numa, inner));
 
-        if let Some((addr, order, trim_state)) = buddy {
+        if let Some((addr, order, trim_state, region)) = buddy {
             actual_ptr = addr as *mut u8;
+            buddy_region = region;
             registered = true;
             mapped_total = 1 << order;
 
@@ -114,6 +116,7 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
             next: null_mut(),
             size,
             order: mapped_total.next_power_of_two().trailing_zeros() as usize,
+            buddy_region,
             aligned,
         },
     );
@@ -133,11 +136,9 @@ pub unsafe fn big_free(ptr: usize) {
     let mapping_base = (ptr - Header::SIZE) as *mut u8;
     let payload_size = estimate_and_align_2mb(header.size + Header::SIZE);
 
-    if BUDDY_INIT {
-        if BUDDY_BACKEND.is_in_pool(mapping_base as usize) {
-            BUDDY_BACKEND.free(mapping_base as usize, header.order);
-            return;
-        }
+    if header.buddy_region != 0 {
+        BUDDY_BACKEND.free(header.buddy_region, mapping_base as usize, header.order);
+        return;
     }
 
     if header.aligned {

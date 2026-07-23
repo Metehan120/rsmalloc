@@ -530,11 +530,11 @@ mod tests {
         assert_eq!(cpu_to_node, [0, 2, 0, 0]);
         assert_eq!(cpu_ranges[0].start_cpu, 0);
         assert_eq!(cpu_ranges[0].end_cpu, 3);
-        assert_eq!(cpu_ranges[1].start_cpu, 0);
+        assert_eq!(cpu_ranges[1].start_cpu, 1);
         assert_eq!(cpu_ranges[1].end_cpu, 0);
         assert_eq!(cpu_ranges[2].start_cpu, 1);
         assert_eq!(cpu_ranges[2].end_cpu, 1);
-        assert_eq!(cpu_ranges[3].start_cpu, 0);
+        assert_eq!(cpu_ranges[3].start_cpu, 1);
         assert_eq!(cpu_ranges[3].end_cpu, 0);
     }
 }

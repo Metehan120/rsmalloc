@@ -256,6 +256,7 @@ pub(crate) struct BigAllocMeta {
     pub next: *mut BigAllocMeta,
     pub size: usize,
     pub order: usize,
+    pub buddy_region: usize,
     pub aligned: bool,
 }
 

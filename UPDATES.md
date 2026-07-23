@@ -91,6 +91,8 @@ Major themes are: fewer mapping/VMA slow paths, NUMA-aware locality, lower refil
 - Changed buddy region `nonempty_mask` from a plain `u8` to `AtomicU8`.
 - Replaced the single per-region buddy free-list lock with `order_locks: [SpinLock; NUM_ORDERS]`.
 - Made configured buddy regions larger than the 64 MiB maximum allocation order usable by partitioning each mapping into independent 64 MiB top-order blocks. Region sizing now uses checked power-of-two normalization without widening the fixed order tables or allowing coalescing above the cached-allocation limit.
+- Stored the stable owning buddy-region token in large-allocation metadata. Buddy free and in-place realloc growth now address their region directly instead of linearly scanning the append-only region list; direct mappings retain a zero owner token.
+- Added per-region, per-order free-block bitmaps and backward free-list links. Buddy coalescing and in-place growth now test exact buddy membership through the bitmap and unlink known free buddies in constant time instead of linearly searching an order list; existing lifetime and trim-state traversal remains intact.
 - Updated buddy allocation, free/coalescing, in-place growth, trim, and fork-child lock reset paths to use per-order locks.
 - Added buddy free-block lifetime/trim state tracking and background old-block trimming for buddy cached blocks, with successful trim accounting based on `madvise` success.
 - Routed realloc copy/fallback paths through shared inner `rs_alloc`/`rs_free` operations so big-block transitions reuse normal ownership, buddy, metadata-map, and optional semi-hardening checks.

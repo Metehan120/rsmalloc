@@ -1,9 +1,3 @@
-//! Application-style SQLite and producer/consumer benchmarks.
-//!
-//! SQLite runs in memory with durability disabled so the benchmark emphasizes
-//! application and allocation work rather than storage latency. This benchmark
-//! does not select or configure an allocator; the runner controls that setup.
-
 use std::{
     collections::HashMap,
     hint::black_box,

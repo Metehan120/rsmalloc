@@ -7,6 +7,7 @@ use std::{
     mem::size_of,
     os::raw::c_void,
     ptr::{null_mut, write},
+    sync::Mutex,
 };
 
 #[cfg(any(
@@ -23,7 +24,7 @@ use rustix::mm::{Advice, madvise};
 use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 
 use crate::{
-    internals::{binder::prefer_node, lock::SpinLock, once::Once},
+    internals::{binder::prefer_node, once::Once},
     record_mmap_call,
     utility::align_to,
 };
@@ -150,11 +151,14 @@ impl PageArena {
     }
 }
 
-#[repr(C, align(64))]
-struct NodeArena {
-    lock: SpinLock,
+struct NodeArenaState {
     current: *mut PageArena,
     arenas: *mut PageArena,
+}
+
+#[repr(C, align(64))]
+struct NodeArena {
+    state: Mutex<NodeArenaState>,
     node_id: u16,
 }
 
@@ -205,9 +209,10 @@ impl PageAllocator {
                     write(
                         arenas.add(node),
                         NodeArena {
-                            lock: SpinLock::new(),
-                            current: null_mut(),
-                            arenas: null_mut(),
+                            state: Mutex::new(NodeArenaState {
+                                current: null_mut(),
+                                arenas: null_mut(),
+                            }),
                             node_id: node as u16,
                         },
                     );
@@ -240,28 +245,28 @@ impl PageAllocator {
         } else {
             node_id as usize
         };
-        let node = &mut *inner.arenas.add(node);
-        let _guard = node.lock.lock();
+        let node = &*inner.arenas.add(node);
+        let mut state = node.state.lock().unwrap_or_else(|e| e.into_inner());
 
-        if let Some(ptr) = Self::allocate_bump(node, pages) {
+        if let Some(ptr) = Self::allocate_bump(&mut state, pages) {
             return Some(ptr);
         }
 
-        if let Some(ptr) = Self::allocate_bit(node, pages) {
+        if let Some(ptr) = Self::allocate_bit(&mut state, pages) {
             return Some(ptr);
         }
 
-        Self::new_arena_locked(node, size)?;
-        Self::allocate_bump(node, pages)
+        Self::new_arena_locked(&mut state, node.node_id, size)?;
+        Self::allocate_bump(&mut state, pages)
     }
 
     #[inline(always)]
-    unsafe fn allocate_bump(node: &mut NodeArena, pages: usize) -> Option<*mut c_void> {
-        if node.current.is_null() {
+    unsafe fn allocate_bump(state: &mut NodeArenaState, pages: usize) -> Option<*mut c_void> {
+        if state.current.is_null() {
             return None;
         }
 
-        let arena = &mut *node.current;
+        let arena = &mut *state.current;
         let bytes = pages.checked_mul(PAGE_SIZE)?;
         let next = arena.current.checked_add(bytes)?;
         if next > arena.end {
@@ -279,8 +284,8 @@ impl PageAllocator {
     }
 
     #[inline(always)]
-    unsafe fn allocate_bit(node: &mut NodeArena, pages: usize) -> Option<*mut c_void> {
-        let mut arena = node.arenas;
+    unsafe fn allocate_bit(state: &mut NodeArenaState, pages: usize) -> Option<*mut c_void> {
+        let mut arena = state.arenas;
 
         while !arena.is_null() {
             let arena_ref = &mut *arena;
@@ -330,10 +335,10 @@ impl PageAllocator {
         } else {
             node_id as usize
         };
-        let node = &mut *inner.arenas.add(node);
-        let _guard = node.lock.lock();
+        let node = &*inner.arenas.add(node);
+        let state = node.state.lock().unwrap_or_else(|e| e.into_inner());
         let addr = ptr as usize;
-        let mut arena = node.arenas;
+        let mut arena = state.arenas;
 
         while !arena.is_null() {
             let arena_ref = &mut *arena;
@@ -400,10 +405,10 @@ impl PageAllocator {
         } else {
             node_id as usize
         };
-        let node = &mut *inner.arenas.add(node);
-        let _guard = node.lock.lock();
+        let node = &*inner.arenas.add(node);
+        let state = node.state.lock().unwrap_or_else(|e| e.into_inner());
         let addr = ptr as usize;
-        let mut arena = node.arenas;
+        let mut arena = state.arenas;
 
         while !arena.is_null() {
             let arena_ref = &mut *arena;
@@ -433,7 +438,11 @@ impl PageAllocator {
 
     #[cold]
     #[inline(never)]
-    unsafe fn new_arena_locked(node: &mut NodeArena, requested: usize) -> Option<()> {
+    unsafe fn new_arena_locked(
+        state: &mut NodeArenaState,
+        node_id: u16,
+        requested: usize,
+    ) -> Option<()> {
         let data_size = align_to(requested.max(ARENA_SIZE), PAGE_SIZE);
         let page_count = data_size / PAGE_SIZE;
         let bitmap_words = (page_count + BITS_PER_WORD - 1) / BITS_PER_WORD;
@@ -464,7 +473,7 @@ impl PageAllocator {
         ))]
         let _ = madvise(mem, map_size, Advice::LinuxHugepage);
 
-        prefer_node(mem, map_size, node.node_id);
+        prefer_node(mem, map_size, node_id);
 
         let arena = mem as *mut PageArena;
         let base = mem as usize + metadata_size;
@@ -473,7 +482,7 @@ impl PageAllocator {
         write(
             arena,
             PageArena {
-                next: node.arenas,
+                next: state.arenas,
                 base,
                 end: base.checked_add(data_size)?,
                 current: base,
@@ -483,8 +492,8 @@ impl PageAllocator {
             },
         );
 
-        node.arenas = arena;
-        node.current = arena;
+        state.arenas = arena;
+        state.current = arena;
 
         Some(())
     }

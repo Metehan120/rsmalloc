@@ -57,7 +57,12 @@ use crate::{
 
 #[cfg(not(target_arch = "x86_64"))]
 compile_error!(
-    "rsmalloc is currently only supporting x86-64 due to assembly use, future updates may add arm64 support"
+    "RSMalloc is currently only supporting x86-64 due to assembly use, future updates may add arm64 support"
+);
+
+#[cfg(not(target_os = "linux"))]
+compile_error!(
+    "RSMalloc is only supported on Linux; RSEQ is a Linux-only syscall feature and cannot be replicated on other OSes. RSMalloc will only support Linux until other OSes support RSEQ-like syscall."
 );
 
 #[cfg(not(feature = "extended-header"))]

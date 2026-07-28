@@ -49,10 +49,15 @@ harness = false
 name = "rstress"
 harness = false
 
+[[bench]]
+name = "rstress_app"
+harness = false
+
 [dev-dependencies]
 criterion = "0.8.2"
 loom = "0.7.2"
 rand = "0.10.2"
+rusqlite = { version = "0.40.1", features = ["bundled"] }
 
 [lib]
 name = "rsmalloc"

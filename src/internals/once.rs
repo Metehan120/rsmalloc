@@ -20,7 +20,7 @@ impl Once {
     where
         F: FnOnce(),
     {
-        if likely(self.state.load(Ordering::Relaxed) == 2) {
+        if likely(self.state.load(Ordering::Acquire) == 2) {
             return;
         }
         self.start(f);

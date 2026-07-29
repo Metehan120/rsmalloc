@@ -3,7 +3,7 @@
 2. Check safety of AI written lines or rewrite entirely - only hashmap left
 3. Add ABA tags for TransferCache - Done
 4. Rewrite entire RSEQ path in Assembly - Cancelled
-5. Find other way than HashMap for big allocations, maybe RB-Trees - Planned for next alpha release
+5. Find other way than HashMap for big allocations, maybe RB-Trees - Done for Alpha-2, implemented RB-Tree
 6. Change RADIX with dynamic radix tree if possible - Done for alpha
 7. Add small-allocation/background trimming thread - Done for Alpha-2
 8. Add GlobalAlloc support - Done

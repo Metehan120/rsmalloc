@@ -1,37 +1,27 @@
 use std::{
     cell::UnsafeCell,
-    hint::spin_loop,
     mem::size_of,
     ptr::null_mut,
-    sync::atomic::{
-        AtomicBool, AtomicUsize,
-        Ordering::{self, Relaxed},
-    },
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering, Ordering::Relaxed},
 };
 
 use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 
-use crate::{MetaData, internals::once::Once, record_mmap_call, utility::NUM_SIZE_CLASSES};
+use crate::{
+    MetaData, internals::lock::SpinLock, internals::once::Once, record_mmap_call,
+    utility::NUM_SIZE_CLASSES,
+};
 
-const PAGE_SIZE: usize = 4096;
-const TAG_MASK: usize = PAGE_SIZE - 1;
-const PTR_MASK: usize = !TAG_MASK;
 #[cfg(feature = "debug")]
 pub static GLOBAL_QUEUE_REPORTS: AtomicUsize = AtomicUsize::new(0);
 
-#[inline(always)]
-fn pack(ptr: *mut MetaData, old_word: usize) -> usize {
-    let tag = old_word.wrapping_add(1) & TAG_MASK;
-    ((ptr as usize) & PTR_MASK) | tag
-}
-
-#[inline(always)]
-fn unpack_ptr(word: usize) -> *mut MetaData {
-    (word & PTR_MASK) as *mut MetaData
+struct Slot {
+    head: UnsafeCell<*mut MetaData>,
+    lock: SpinLock,
 }
 
 pub struct ThreadQueue {
-    nodes: UnsafeCell<*mut [AtomicUsize; NUM_SIZE_CLASSES]>,
+    nodes: UnsafeCell<*mut [Slot; NUM_SIZE_CLASSES]>,
     node_count: AtomicUsize,
     once: Once,
     is_numa: AtomicBool,
@@ -54,7 +44,7 @@ impl ThreadQueue {
     pub unsafe fn init(&self, node_count: usize, is_numa: bool) {
         self.once.call_once(|| {
             let node_count = node_count.max(1);
-            let bytes = size_of::<[AtomicUsize; NUM_SIZE_CLASSES]>() * node_count;
+            let bytes = size_of::<[Slot; NUM_SIZE_CLASSES]>() * node_count;
             record_mmap_call(bytes);
             if let Ok(mem) = mmap_anonymous(
                 null_mut(),
@@ -62,7 +52,7 @@ impl ThreadQueue {
                 ProtFlags::READ | ProtFlags::WRITE,
                 MapFlags::PRIVATE,
             ) {
-                *self.nodes.get() = mem as *mut [AtomicUsize; NUM_SIZE_CLASSES];
+                *self.nodes.get() = mem as *mut [Slot; NUM_SIZE_CLASSES];
                 self.node_count.store(node_count, Ordering::Release);
                 self.is_numa.store(is_numa, Relaxed);
             }
@@ -70,7 +60,7 @@ impl ThreadQueue {
     }
 
     #[inline(always)]
-    unsafe fn head(&self, node_id: u16, class: usize) -> Option<&AtomicUsize> {
+    unsafe fn slot(&self, node_id: u16, class: usize) -> Option<&Slot> {
         let nodes = *self.nodes.get();
         if nodes.is_null() {
             return None;
@@ -91,56 +81,35 @@ impl ThreadQueue {
     #[cold]
     #[inline(never)]
     pub unsafe fn insert(&self, class: usize, node: *mut MetaData) {
-        let Some(head) = self.head((*node).node_id, class) else {
+        let Some(slot) = self.slot((*node).node_id, class) else {
             return;
         };
 
         #[cfg(feature = "debug")]
         GLOBAL_QUEUE_REPORTS.fetch_add(1, Ordering::Relaxed);
 
-        loop {
-            let old = head.load(Ordering::Relaxed);
-            (*node).next_page = unpack_ptr(old);
-            let new = pack(node, old);
-
-            if head
-                .compare_exchange_weak(old, new, Ordering::Release, Ordering::Relaxed)
-                .is_ok()
-            {
-                return;
-            }
-
-            spin_loop();
-        }
+        let _guard = slot.lock.lock();
+        let head = slot.head.get();
+        (*node).next_page = *head;
+        *head = node;
     }
 
     #[inline(always)]
     pub unsafe fn pop(&self, node_id: u16, class: usize) -> *mut MetaData {
-        let Some(head) = self.head(node_id, class) else {
+        let Some(slot) = self.slot(node_id, class) else {
             return null_mut();
         };
 
-        loop {
-            let old = head.load(Ordering::Acquire);
-            let node = unpack_ptr(old);
-
-            if node.is_null() {
-                return null_mut();
-            }
-
-            let next = (*node).next_page;
-            let new = pack(next, old);
-
-            if head
-                .compare_exchange_weak(old, new, Ordering::Acquire, Ordering::Relaxed)
-                .is_ok()
-            {
-                (*node).next_page = null_mut();
-                return node;
-            }
-
-            spin_loop();
+        let _guard = slot.lock.lock();
+        let head = slot.head.get();
+        let node = *head;
+        if node.is_null() {
+            return null_mut();
         }
+
+        *head = (*node).next_page;
+        (*node).next_page = null_mut();
+        node
     }
 }
 

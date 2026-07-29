@@ -20,7 +20,7 @@ use crate::{
         alloc::{rs_alloc, usable_size},
         free::{find_original_ptr, rs_free},
     },
-    internals::{hashmap::BIG_META_MAP, l3_main_radix::RADIX},
+    internals::{radix_tree::RADIX, rbtree::BIG_META_MAP},
     utility::{ITERATIONS, SIZE_CLASSES, align_to, match_size_class},
 };
 

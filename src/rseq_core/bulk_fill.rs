@@ -14,7 +14,7 @@ use crate::{CURRENT_STAMP, ZERO_FLAG};
 use crate::{
     Err, FREED_MAGIC, Header, MetaData, add_slab_cached_va,
     backend::page_allocator::PAGE_ALLOCATOR,
-    internals::l3_main_radix::RADIX,
+    internals::radix_tree::RADIX,
     utility::{ITERATIONS, NUM_SIZE_CLASSES, SIZE_CLASSES, align_to},
 };
 

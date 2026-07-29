@@ -11,7 +11,7 @@ use crate::{
     TRIMMED_FLAG, ZERO_FLAG,
     big_allocations::buddy::{BUDDY_BACKEND, BUDDY_TRIM_NOT_ALLOCATED, BUDDY_TRIM_TRIMMED},
     core_prim::wrappers::UnsafePointer,
-    internals::{binder::prefer_node, hashmap::BIG_MAP, l3_main_radix::RADIX},
+    internals::{binder::prefer_node, radix_tree::RADIX, rbtree::BIG_MAP},
     record_mmap_call,
     rseq_core::{rseq_offsets::get_rseq, slab_cache::SLAB_CACHE},
     trim::DISABLE_BUDDY,

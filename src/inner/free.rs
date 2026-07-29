@@ -3,7 +3,7 @@ use std::{hint::unlikely, os::raw::c_void, ptr::read_unaligned, sync::atomic::Or
 use crate::{
     ALIGN_TAG, BIG_MAGIC, CURRENT_STAMP, FREED_MAGIC, GenericCache, Header, MAGIC, MAGIC_DISABLE,
     OFFSET_SIZE, RSMallocError, TAG_SIZE, big_allocations::big_allocation::big_free,
-    core_prim::wrappers::UnsafePointer, internals::l3_main_radix::RADIX,
+    core_prim::wrappers::UnsafePointer, internals::radix_tree::RADIX,
     rseq_core::slab_cache::SLAB_CACHE,
 };
 

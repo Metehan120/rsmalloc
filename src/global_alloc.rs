@@ -13,8 +13,8 @@ use crate::inner::alloc::{MAX_REFILL_RETRIES, rs_alloc, usable_size};
 use crate::inner::calloc::rs_calloc;
 use crate::inner::free::rs_free;
 use crate::inner::realloc::rs_realloc;
-use crate::internals::l3_main_radix::{RADIX, RadixTree};
 use crate::internals::once::Once;
+use crate::internals::radix_tree::{RADIX, RadixTree};
 use crate::rseq_core::rseq_offsets::__rseq_offset;
 use crate::rseq_core::rseq_offsets::__rseq_size;
 use crate::rseq_core::slab_cache::SLAB_CACHE;
@@ -948,7 +948,7 @@ impl RSMalloc {
             HIGH_WATER_SLAB_CACHED_VA, HIGH_WATER_TOTAL_CACHED_VA, NCPU, REFILL_OVER_PREDICTS,
             REFILL_UNDER_PREDICTS, REFILLS_BY_CLASS, TOTAL_CACHED_VA, TOTAL_REFILL_CALLS,
             big_allocations::buddy::{BIG_BUDDY_MIN_ORDER, BUDDY_BACKEND, BUDDY_TOTAL_CACHED_VA},
-            internals::l3_main_radix::{CHUNK_SIZE, RADIX},
+            internals::radix_tree::{CHUNK_SIZE, RADIX},
             rseq_core::slab_cache::SLAB_CACHE,
             trim::{DISABLE_BUDDY, TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA},
             utility::{NUM_SIZE_CLASSES, SIZE_CLASSES},

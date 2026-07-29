@@ -16,8 +16,8 @@ use crate::{
     BUDDY_AVERAGE_BLOCK_TIMES, BUDDY_INIT, CURRENT_STAMP, GLOBAL_TRIM_LOCK, add_buddy_cached_va,
     inner::alloc::MAX_REFILL_RETRIES,
     internals::{
-        binder::prefer_node, l3_main_radix::RADIX, lock::SpinLock, numa_parser::NumaTopology,
-        once::Once,
+        binder::prefer_node, lock::SpinLock, numa_parser::NumaTopology, once::Once,
+        radix_tree::RADIX,
     },
     record_mmap_call,
     rseq_core::slab_cache::{SLAB_CACHE, SlabCacheInner},

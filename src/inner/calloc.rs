@@ -8,7 +8,7 @@ use crate::{
     Header, RSMallocError,
     core_prim::wrappers::UnsafePointer,
     inner::alloc::rs_alloc,
-    internals::hashmap::BIG_META_MAP,
+    internals::rbtree::BIG_META_MAP,
     utility::{SIZE_CLASSES, match_size_class},
 };
 

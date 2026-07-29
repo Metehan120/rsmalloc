@@ -3,7 +3,7 @@
 // Agent: Claude CODE.
 //
 // If possible rewrite this code in future...
-// which is seems like we are not going to need it.
+// which is seems like we are not going to need a rewite.
 //
 // - Metehan
 

@@ -9,7 +9,7 @@ use crate::{
     GLOBAL_TRIM_LOCK, RSMallocError,
     big_allocations::buddy::BUDDY_BACKEND,
     inner::{fallback::fallback_reinit_on_fork, libc_int::pthread_atfork},
-    internals::{hashmap::BIG_MAP, lock::LockGuard},
+    internals::{lock::LockGuard, rbtree::BIG_MAP},
     rseq_core::rseq_offsets::__rseq_size,
 };
 

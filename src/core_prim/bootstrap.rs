@@ -13,7 +13,7 @@ use crate::{
     inner::alloc::MAX_REFILL_RETRIES,
     internals::{
         env::get_env_usize,
-        l3_main_radix::{RADIX, RadixTree},
+        radix_tree::{RADIX, RadixTree},
     },
     rseq_core::{rseq_offsets::__rseq_size, slab_cache::SLAB_CACHE},
     trim::{BUDDY_DISABLE_PERCENTAGE, BUDDY_ENABLE_PERCENTAGE, DISABLE_RELIEF},

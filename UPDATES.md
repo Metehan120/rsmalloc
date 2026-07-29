@@ -19,7 +19,7 @@ Major themes are: fewer mapping/VMA slow paths, NUMA-aware locality, lower refil
   - `mail_*` APIs -> `transfer_*`
   - `BIG_BUDDY_ALLOCATOR` -> `BUDDY_BACKEND`
   - `L3_RADIX` -> `RADIX`
-  - big-allocation metadata naming toward `BIG_METADATA_MAP` / `BIG_MAP`
+  - big-allocation metadata naming toward `BIG_META_MAP` / `BIG_MAP`
 - Added `syscalls` and expanded `rustix` feature usage for NUMA binding, system memory-pressure sampling, thread CPU lookup, filesystem/sysfs topology parsing, and memory advice paths.
 
 ### Slab/RSEQ allocation path
@@ -123,7 +123,7 @@ Major themes are: fewer mapping/VMA slow paths, NUMA-aware locality, lower refil
 
 - Added preload errno helpers and improved C ABI errno behavior for calloc overflow/failure and alignment API failures.
 - Updated C alignment APIs toward standard behavior, including `posix_memalign` validation, `aligned_alloc` size-multiple checks, checked `pvalloc` page rounding, and `memalign` errno reporting.
-- Added fork-child reset handling for trim locks, buddy backend locks, `BIG_METADATA_MAP` locks, fallback symbol initialization, and background trim state.
+- Added fork-child reset handling for trim locks, buddy backend locks, `BIG_META_MAP` locks, fallback symbol initialization, and background trim state.
 - Added `SerialLock::try_lock()` and fork-reset helpers for allocator-internal locks.
 - Updated preload runtime configuration documentation for `RS_DISABLE_TRIM_THREAD`, `RS_TRIMMER_THRESHOLD`, default-disabled `RS_ENABLE_RELIEF` where `0` enables relief in the current alpha preload path, buddy relief pressure thresholds, adaptive refill predictor initialization, and buddy-cache sizing behavior.
 

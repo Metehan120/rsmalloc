@@ -29,7 +29,7 @@ The current codebase supports two intended modes:
 - Small allocations are served from size classes backed by `SLAB_CACHE` per-CPU RSEQ caches, transfer caches, adaptive refill, a hybrid slab page backend, and pending refill metadata reuse.
 - RSEQ fast paths use inline assembly critical sections for push/pop operations.
 - Overflow and zero-size handling exists for calloc/realloc paths.
-- Big allocations are tracked separately in `BIG_METADATA_MAP` and can use the NUMA-aware 4 MiB to 64 MiB `BUDDY_BACKEND` cache with old-block trimming and optional memory-pressure relief.
+- Big allocations are tracked separately in `BIG_META_MAP` and can use the NUMA-aware 4 MiB to 64 MiB `BUDDY_BACKEND` cache with old-block trimming and optional memory-pressure relief.
 - Transparent huge page attempts are configurable for big allocation regions, and the slab page backend has an opt-in `page-backend-no-huge-page` feature for systems that aggressively promote THP and inflate RSS.
 - Preload builds provide C ABI allocation entry points including `malloc`, `calloc`, `realloc`, `reallocarray`, `recallocarray`, `free`, sized-free compatibility shims, usable-size queries, alignment APIs, and opt-in `malloc_trim(...)` support.
 - Trimming supports buddy-cache blocks and small-allocation/background trim scanning for size classes equal to or greater than 4096 bytes.
@@ -59,7 +59,7 @@ The initial predictor batch is configurable through `RefillPredictorSettings`/`w
 - **This is alpha-quality allocator software with limited test coverage.**
 - The crate currently requires nightly Rust features and `rustc 1.96.0` or higher.
 - The preload path and the Rust `GlobalAlloc` path are still being separated and stabilized.
-- Big allocation metadata still uses an internal hashmap, which is planned for replacement.
+- Big allocation metadata uses an internal lock-protected red-black tree.
 - Runtime behavior under every libc, loader, and fork/preload combination has not been fully audited.
 - Optional extended-header metadata is a debugging/diagnostic aid, not a replacement for memory-safety tooling or a high-security sandbox.
 - Documentation inside the allocator internals is incomplete.
@@ -221,7 +221,7 @@ The allocator is organized into a few main areas:
 - `core_prim`: bootstrap, predictor state, fork handling, and pointer wrappers.
 - `inner`: allocator operation implementations such as allocation, free, calloc, realloc, and alignment.
 - `big_allocations`: big allocation path and `BUDDY_BACKEND` implementation.
-- `internals`: internal data structures including `BIG_METADATA_MAP`, `RADIX` ownership tracking, NUMA parsing/binding helpers, locks, and once primitives.
+- `internals`: internal data structures including `BIG_META_MAP`, `RADIX` ownership tracking, NUMA parsing/binding helpers, locks, and once primitives.
 - `rseq_core`: `SLAB_CACHE` structures, transfer caches, inline assembly critical sections, bulk-fill metadata, and pending refill queues.
 - `utility`: size classes and shared allocation helpers.
 
@@ -229,7 +229,7 @@ The allocator is organized into a few main areas:
 
 rsmalloc treats the small allocation fast path as a per-CPU cache problem. RSEQ lets the allocator update CPU-local linked lists without normal lock overhead when the current CPU remains stable through the critical section. If the kernel preempts or migrates the thread during that critical section, the operation is aborted and retried or moved to a fallback path.
 
-Big allocations do not use the same slab path. They are tracked separately in `BIG_METADATA_MAP`, can be mapped directly, and can be served from the NUMA-aware `BUDDY_BACKEND` cache for eligible sizes.
+Big allocations do not use the same slab path. They are tracked separately in `BIG_META_MAP`, can be mapped directly, and can be served from the NUMA-aware `BUDDY_BACKEND` cache for eligible sizes.
 
 ### Slab page backend and RSS on aggressive THP systems
 

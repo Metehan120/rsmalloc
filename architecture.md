@@ -31,7 +31,7 @@ flowchart TD
     BIG[big allocation path]
     BUDDY[BUDDY_BACKEND cache]
     RADIX[RADIX ownership map]
-    MAP[BIG_METADATA_MAP]
+    MAP[BIG_META_MAP]
 
     API --> ABI
     API --> GLOBAL
@@ -72,7 +72,7 @@ Main source areas:
 | `src/rseq_core` | `SLAB_CACHE` layout, transfer caches, nonempty transfer hints, inline assembly critical sections, bulk refill metadata, pending queue, RSEQ TLS access. |
 | `src/backend` | Slab page backend arenas used by bulk refill metadata allocation. |
 | `src/big_allocations` | Big allocation path and NUMA-aware `BUDDY_BACKEND`, including cached-region reuse, trimming, and relief integration. |
-| `src/internals` | `RADIX` ownership map, `BIG_METADATA_MAP`, NUMA parsing/binding helpers, locks, once primitives, env parsing. |
+| `src/internals` | `RADIX` ownership map, `BIG_META_MAP`, NUMA parsing/binding helpers, locks, once primitives, env parsing. |
 | `src/core_prim` | Bootstrap, fork handling, predictor state, pointer wrappers. |
 | `src/utility.rs` | Size classes, refill targets, lookup tables, shared helpers. |
 
@@ -543,7 +543,7 @@ The tag is randomized at bootstrap unless randomization is disabled. Free/reallo
 - direct big allocations may try in-place `mremap`,
 - buddy-backed big allocations may try in-place buddy growth before falling back to allocate/copy/free.
 
-Fallback/copy paths route through the shared inner `rs_alloc` and `rs_free` operations. That keeps ownership checks, `BIG_METADATA_MAP` updates, buddy return logic, and optional semi-hardening ownership checks centralized instead of duplicating unchecked big-block allocation/free behavior inside realloc.
+Fallback/copy paths route through the shared inner `rs_alloc` and `rs_free` operations. That keeps ownership checks, `BIG_META_MAP` updates, buddy return logic, and optional semi-hardening ownership checks centralized instead of duplicating unchecked big-block allocation/free behavior inside realloc.
 
 ## Big Allocation Path
 
@@ -556,7 +556,7 @@ Big allocation behavior:
 3. If the buddy backend is initialized and the original request is `<= 64 MiB`, try `BUDDY_BACKEND`; internally the buddy path rounds up to at least the `4 MiB` minimum order.
 4. Otherwise mmap directly.
 5. Write a `BIG_MAGIC` header.
-6. Record metadata in `BIG_METADATA_MAP` keyed by payload pointer.
+6. Record metadata in `BIG_META_MAP` keyed by payload pointer.
 7. Mark ownership in `RADIX`.
 
 Direct big allocations are unmapped on free. Buddy allocations are returned to the buddy pool.
@@ -731,7 +731,7 @@ Semi-hardening and debug feature tiers are intentionally explicit in alpha-2. `c
 - The extra `SLAB_CACHE` slot is reserved space and is not normal CPU-local traffic.
 - `TransferCache` is a relief valve and medium-class reuse layer; too much tiny/small traffic there usually means refill/capacity pressure should be inspected.
 - Thread-local pending refill metadata avoids shared refill locks but can temporarily strand pending slabs until reuse or thread-exit drain. Drained metadata enters the per-node global pending queue, not transfer caches.
-- `BIG_METADATA_MAP` is an internal hashmap and is planned for future replacement.
+- `BIG_META_MAP` is an internal lock-protected red-black tree backed by mmap-allocated node chunks.
 - Buddy trimming uses `madvise`, not `munmap`, so it returns physical pressure to the kernel while keeping the virtual region structure.
 - NUMA policy is preferred placement rather than guaranteed physical placement; first-touch behavior still matters.
 
@@ -747,7 +747,7 @@ sequenceDiagram
     participant Pending as PENDING_QUEUE
     participant Page as PAGE_ALLOCATOR
     participant Big as big allocation path
-    participant Map as BIG_METADATA_MAP
+    participant Map as BIG_META_MAP
     participant Radix as RADIX
 
     User->>Inner: malloc / GlobalAlloc::alloc

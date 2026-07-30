@@ -84,7 +84,7 @@ impl SpinLock {
 
     #[inline(always)]
     pub fn get_lock(&self) -> bool {
-        self.state.load(Ordering::Relaxed)
+        self.state.load(Ordering::Acquire)
     }
 
     #[cfg(feature = "preload")]

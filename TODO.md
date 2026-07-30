@@ -8,7 +8,7 @@
 7. Add small-allocation/background trimming thread - Done for Alpha-2
 8. Add GlobalAlloc support - Done
 9. Add NUMA-aware allocation paths - Things like buddy paths left for cross numa free stability
-10. Audit entire allocator
-11. Lock-free RADIX tree - Done
-12. Lock-free buddy if possible / For stable release
-13. Add special benchmark to stress test every subsystem at once - Done
+10. Lock-free RADIX tree - Done
+11. Lock-free buddy if possible / For stable release
+12. Add special benchmark to stress test every subsystem at once - Done
+13. Audit entire allocator before stable release

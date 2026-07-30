@@ -1,5 +1,6 @@
 use rustix::rand::{GetRandomFlags, getrandom};
 use std::ptr::null_mut;
+use std::sync::atomic::Ordering::Relaxed;
 
 #[cfg(feature = "debug")]
 use crate::START_TIME;
@@ -18,6 +19,7 @@ use crate::{
     rseq_core::{rseq_offsets::__rseq_size, slab_cache::SLAB_CACHE},
     trim::{BUDDY_DISABLE_PERCENTAGE, BUDDY_ENABLE_PERCENTAGE, DISABLE_RELIEF},
 };
+use crate::{CURRENT_STAMP, get_clock};
 
 #[inline(never)]
 unsafe fn init_magic() {
@@ -93,6 +95,9 @@ pub unsafe fn bootstrap() {
     {
         START_TIME = Some(std::time::Instant::now());
     }
+
+    let stamp = get_clock().elapsed().as_millis() as u32;
+    CURRENT_STAMP.store(stamp, Relaxed);
 
     ARENA_SIZE = get_env_usize("RS_ARENA_SIZE".as_bytes()).unwrap_or(ARENA_SIZE);
     MAX_REFILL_RETRIES = get_env_usize("RS_MAX_REFILL_RETRIES".as_bytes()).unwrap_or(3);

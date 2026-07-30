@@ -318,9 +318,10 @@ impl BuddyAllocator {
         // A configured region may be larger than the largest allocation order
         // represent it as independent maximum-order blocks so the fixed order
         // tables and masks never need to index above BIG_BUDDY_MAX_ORDER
+        let current_lifetime = CURRENT_STAMP.load(Ordering::Relaxed);
         let mut offset = 0;
         while offset < normalized_size {
-            let block = FreeBlock::new(base + offset, 0, BUDDY_TRIM_NOT_ALLOCATED);
+            let block = FreeBlock::new(base + offset, current_lifetime, BUDDY_TRIM_NOT_ALLOCATED);
             Self::push_free_block(region_ptr, BIG_BUDDY_MAX_ORDER, block);
             offset += BIG_BUDDY_MAX_BLOCK_SIZE;
         }
@@ -528,7 +529,7 @@ impl BuddyAllocator {
 
         let block = FreeBlock::new(
             current,
-            CURRENT_STAMP.load(std::sync::atomic::Ordering::Relaxed),
+            CURRENT_STAMP.load(Ordering::Relaxed),
             BUDDY_TRIM_ALLOCATED,
         );
         let order_index = Self::order_index(current_order);

@@ -1,6 +1,7 @@
 use std::alloc::{GlobalAlloc, Layout};
 use std::hint::likely;
 use std::ptr::{null_mut, write_bytes};
+use std::sync::atomic::Ordering::Relaxed;
 
 use rustix::rand::{GetRandomFlags, getrandom};
 
@@ -20,9 +21,9 @@ use crate::rseq_core::rseq_offsets::__rseq_size;
 use crate::rseq_core::slab_cache::SLAB_CACHE;
 use crate::trim::{BUDDY_DISABLE_PERCENTAGE, BUDDY_ENABLE_PERCENTAGE, DISABLE_RELIEF, trim_small};
 use crate::{
-    ALIGN_TAG, BIG_MAGIC, BUDDY_ATTEMPT_HUGE, BUDDY_MAX_CACHE, DISABLE_TRIM_THREAD,
+    ALIGN_TAG, BIG_MAGIC, BUDDY_ATTEMPT_HUGE, BUDDY_MAX_CACHE, CURRENT_STAMP, DISABLE_TRIM_THREAD,
     FOREIGN_POINTER_ABORT, FREED_MAGIC, Header, MAGIC, MAGIC_DISABLE, RS_DISABLE_THP,
-    RSMallocError, TRIM_THRESHOLD,
+    RSMallocError, TRIM_THRESHOLD, get_clock,
 };
 
 #[inline(never)]
@@ -577,6 +578,9 @@ unsafe fn init(rs: &RSMalloc) {
 
         START_TIME = Some(Instant::now());
     }
+
+    let stamp = get_clock().elapsed().as_millis() as u32;
+    CURRENT_STAMP.store(stamp, Relaxed);
 
     ARENA_SIZE = rs.config.arena_min_size.0;
     MAX_REFILL_RETRIES = rs.config.max_refill_retries as usize;

@@ -1,8 +1,14 @@
 // WARNING: This benchmark only measures the speed bookkeeping speed of the allocator, not the real performance of the allocator.
 
-use std::{hint::black_box, os::raw::c_void};
+use std::{
+    hint::black_box,
+    os::raw::c_void,
+    sync::{Arc, Barrier},
+    thread,
+    time::Instant,
+};
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use rustix::system::sysinfo;
 
 unsafe extern "C" {
@@ -72,6 +78,56 @@ fn bench_alloc_free(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_alloc_free,);
+fn bench_alloc_free_mt(c: &mut Criterion) {
+    let mut group = c.benchmark_group("alloc_free_mt");
+
+    let cpus = thread::available_parallelism().map_or(4, |n| n.get());
+    let mut thread_counts = vec![2, 4, 8];
+    thread_counts.retain(|&n| n <= cpus);
+    if !thread_counts.contains(&cpus) {
+        thread_counts.push(cpus);
+    }
+
+    for size in [64usize, 4096] {
+        for &threads in &thread_counts {
+            group.bench_with_input(
+                BenchmarkId::new(format!("{}B", size), threads),
+                &threads,
+                |b, &threads| {
+                    b.iter_custom(|iters| {
+                        let barrier = Arc::new(Barrier::new(threads));
+
+                        let handles: Vec<_> = (0..threads)
+                            .map(|_| {
+                                let barrier = Arc::clone(&barrier);
+                                thread::spawn(move || {
+                                    barrier.wait();
+                                    let start = Instant::now();
+                                    for _ in 0..iters {
+                                        unsafe {
+                                            let ptr = black_box(malloc(size));
+                                            black_box(free(ptr));
+                                        }
+                                    }
+                                    start.elapsed()
+                                })
+                            })
+                            .collect();
+
+                        handles
+                            .into_iter()
+                            .map(|h| h.join().expect("worker panicked"))
+                            .max()
+                            .unwrap()
+                    });
+                },
+            );
+        }
+    }
+
+    group.finish();
+}
+
+criterion_group!(benches, bench_alloc_free, bench_alloc_free_mt,);
 
 criterion_main!(benches);

@@ -44,18 +44,18 @@ unsafe fn color_of(n: *mut Node) -> Color {
     }
 }
 
-pub struct BigAllocMap {
+pub struct RBTree {
     root: AtomicPtr<Node>,
     free_list: AtomicPtr<Node>,
     lock: SpinLock,
 }
 
-pub static BIG_META_MAP: BigAllocMap = BigAllocMap::new();
+pub static BIG_META_MAP: RBTree = RBTree::new();
 pub use BIG_META_MAP as BIG_MAP;
 
-impl BigAllocMap {
+impl RBTree {
     pub const fn new() -> Self {
-        BigAllocMap {
+        RBTree {
             root: AtomicPtr::new(null_mut()),
             free_list: AtomicPtr::new(null_mut()),
             lock: SpinLock::new(),
@@ -425,7 +425,7 @@ impl BigAllocMap {
     }
 }
 
-unsafe impl Sync for BigAllocMap {}
+unsafe impl Sync for RBTree {}
 
 #[cfg(test)]
 mod tests {
@@ -442,7 +442,7 @@ mod tests {
         }
     }
 
-    unsafe fn black_height(map: &BigAllocMap, node: *mut Node) -> Result<usize, &'static str> {
+    unsafe fn black_height(map: &RBTree, node: *mut Node) -> Result<usize, &'static str> {
         if node.is_null() {
             return Ok(1);
         }
@@ -460,7 +460,7 @@ mod tests {
         Ok(left + inc)
     }
 
-    unsafe fn assert_valid_rb_tree(map: &BigAllocMap) {
+    unsafe fn assert_valid_rb_tree(map: &RBTree) {
         let root = map.root.load(Ordering::Relaxed);
         assert_eq!(color_of(root), Color::Black);
         black_height(map, root).unwrap();
@@ -468,7 +468,7 @@ mod tests {
 
     #[test]
     fn insert_get_replace_remove_matches_reference_hashmap() {
-        let map = BigAllocMap::new();
+        let map = RBTree::new();
         let mut reference: StdHashMap<usize, usize> = StdHashMap::new();
 
         let mut state: u64 = 0x2545F4914F6CDD1D;
@@ -508,7 +508,7 @@ mod tests {
 
     #[test]
     fn replace_returns_old_value_and_leaves_key_present() {
-        let map = BigAllocMap::new();
+        let map = RBTree::new();
         unsafe {
             assert!(map.replace(42, meta(1)).is_none());
             map.insert(42, meta(1));

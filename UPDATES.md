@@ -54,7 +54,7 @@ Major themes are: fewer mapping/VMA slow paths, NUMA-aware locality, lower refil
 - Added page-backend in-place growth support for single-block slab refill spans, replacing the old direct `mremap` shortcut for large small-class realloc growth under the new page-backend model.
 - `bulk_fill()` still initializes headers lazily for only the requested adaptive batch and leaves remaining span space tracked by thread-local or pending `MetaData`.
 - `RADIX` ownership and cached-VA accounting still apply to the allocated metadata span, not to every byte of page-backend arena slack.
-- Added a lock-free per-node/per-class global pending metadata queue so thread-exit drained refill metadata can be reused by local-node threads.
+- Added a locked per-node/per-class global pending metadata queue so thread-exit drained refill metadata can be reused by local-node threads.
 - Added thread-exit draining of thread-local pending refill metadata into the per-node global pending queue.
 - Added low-level TLS destructor registration for `ThreadBulk` cleanup and a regression test proving pending metadata is drained on thread exit.
 - Added page-backend THP advice knobs:

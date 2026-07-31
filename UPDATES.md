@@ -91,6 +91,8 @@ Major themes are: fewer mapping/VMA slow paths, NUMA-aware locality, lower refil
 - Changed buddy region `nonempty_mask` from a plain `u8` to `AtomicU8`.
 - Replaced the single per-region buddy free-list lock with `order_locks: [SpinLock; NUM_ORDERS]`.
 - Made configured buddy regions larger than the 64 MiB maximum allocation order usable by partitioning each mapping into independent 64 MiB top-order blocks. Region sizing now uses checked power-of-two normalization without widening the fixed order tables or allowing coalescing above the cached-allocation limit.
+- Replaced the hashmap-based big-allocation metadata map with `internals::rbtree`, a hand-rolled red-black tree (`RBTree`), keeping metadata lookups lock-protected behind one global `SpinLock`.
+- Fixed buddy free-block lifetime stamping: newly created region blocks and bootstrap/global-allocator init now seed `CURRENT_STAMP` from `get_clock()` instead of leaving fresh blocks stamped `0`, so trim-eligibility timing is correct from process start.
 - Stored the stable owning buddy-region token in large-allocation metadata. Buddy free and in-place realloc growth now address their region directly instead of linearly scanning the append-only region list; direct mappings retain a zero owner token.
 - Added per-region, per-order free-block bitmaps and backward free-list links. Buddy coalescing and in-place growth now test exact buddy membership through the bitmap and unlink known free buddies in constant time instead of linearly searching an order list; existing lifetime and trim-state traversal remains intact.
 - Updated buddy allocation, free/coalescing, in-place growth, trim, and fork-child lock reset paths to use per-order locks.
@@ -118,6 +120,11 @@ Major themes are: fewer mapping/VMA slow paths, NUMA-aware locality, lower refil
 - Added a small free-path user-address-range check before handling unowned pointers as foreign.
 - Batched `RADIX` ownership range updates by 64-bit bitmap word and L3 leaf. Contiguous registration and removal now resolve the radix hierarchy once per 16 MiB leaf and update up to 64 adjacent 4 KiB ownership chunks with one Release atomic RMW, while masked boundary words preserve unrelated ownership bits.
 - Kept weakened magic-value modes behind explicit unsafe acknowledgement in the Rust configuration surface.
+
+### Concurrency and ordering fixes
+
+- Fixed `SpinLock::get_lock()` to use `Acquire` instead of `Relaxed`, closing a data race where `BuddyAllocator::regions_head()` could observe a partially-published region list after only polling the lock state.
+- Fixed `Once::call_once()`'s fast path to use `Acquire` instead of `Relaxed`, ensuring initialization side effects are properly visible once the fast path is taken.
 
 ### Preload, C ABI, fork, and runtime configuration
 
@@ -153,8 +160,9 @@ Debug mode behavior is a major part of `0.2.0-alpha` because several allocator s
 
 ### Benchmarks, tests, and documentation
 
-- Replaced the old `speed` benchmark with `book_speed`.
+- Replaced the old `speed` benchmark with `book_speed`, later extended with a multi-threaded `alloc_free_mt` benchmark group to measure bookkeeping speed under concurrent per-CPU cache contention across several thread counts and sizes.
 - Added the large `rstress` benchmark covering thread churn, allocator edge cases, SIMD-style allocation patterns, teardown behavior, and trim pressure.
+- Added `rstress_app.rs`, a larger multi-threaded stress/application-shaped benchmark harness with producer/processor/aggregator thread roles, later refined alongside a page-backend arena overhaul.
 - Added checked-in benchmark notes/results for the updated benchmark suite.
 - Added NUMA parser tests for range parsing, whitespace, malformed lists, overflow rejection, CPU clipping, sparse `cpu_ranges[node_id]` behavior, and missing/invalid CPU fallback.
 - Added a thread-exit pending metadata drain regression test for refill `ThreadBulk` cleanup.

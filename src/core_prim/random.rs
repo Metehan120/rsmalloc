@@ -119,14 +119,12 @@ pub unsafe fn init_magic() {
 
 pub unsafe fn init_align() {
     let mut main = 0usize.to_le_bytes();
-    match getrandom(&mut main, GetRandomFlags::empty()) {
-        Ok(_) => {
-            ALIGN_TAG = usize::from_le_bytes(main);
-        }
-        Err(err) => RSMallocError::SecurityViolation.log_and_abort(
+    if let Err(err) = getrandom(&mut main, GetRandomFlags::empty()) {
+        RSMallocError::SecurityViolation.log_and_abort(
             null_mut(),
             "calling getrandom failed, cannot initialize align tag",
             Some(err.raw_os_error()),
-        ),
-    };
+        )
+    }
+    ALIGN_TAG = usize::from_le_bytes(main);
 }

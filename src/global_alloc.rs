@@ -3,11 +3,10 @@ use std::hint::likely;
 use std::ptr::{null_mut, write_bytes};
 use std::sync::atomic::Ordering::Relaxed;
 
-use rustix::rand::{GetRandomFlags, getrandom};
-
 use crate::backend::page_allocator::ARENA_SIZE;
 use crate::big_allocations::buddy::BUDDY_BACKEND;
 use crate::core_prim::predictor::{DEFAULT_BATCH, PREDICTOR_INIT_BATCH};
+use crate::core_prim::random::{init_align, init_magic};
 use crate::core_prim::wrappers::UnsafePointer;
 use crate::inner::align::memalign_inner;
 use crate::inner::alloc::{MAX_REFILL_RETRIES, rs_alloc, usable_size};
@@ -21,70 +20,10 @@ use crate::rseq_core::rseq_offsets::__rseq_size;
 use crate::rseq_core::slab_cache::SLAB_CACHE;
 use crate::trim::{BUDDY_DISABLE_PERCENTAGE, BUDDY_ENABLE_PERCENTAGE, DISABLE_RELIEF, trim_small};
 use crate::{
-    ALIGN_TAG, BIG_MAGIC, BUDDY_ATTEMPT_HUGE, BUDDY_MAX_CACHE, CURRENT_STAMP, DISABLE_TRIM_THREAD,
-    FOREIGN_POINTER_ABORT, FREED_MAGIC, Header, MAGIC, MAGIC_DISABLE, RS_DISABLE_THP,
-    RSMallocError, TRIM_THRESHOLD, get_clock,
+    ALIGN_TAG, BUDDY_ATTEMPT_HUGE, BUDDY_MAX_CACHE, CURRENT_STAMP, DISABLE_TRIM_THREAD,
+    FOREIGN_POINTER_ABORT, Header, MAGIC_DISABLE, RS_DISABLE_THP, RSMallocError, TRIM_THRESHOLD,
+    get_clock,
 };
-
-#[inline(never)]
-unsafe fn init_magic() {
-    #[cfg(not(feature = "extended-header"))]
-    {
-        let mut main = 0u16.to_le_bytes();
-
-        match getrandom(&mut main, GetRandomFlags::empty()) {
-            Ok(_) => {
-                let small = u16::from_le_bytes(main);
-                let medium = small.wrapping_sub(1);
-                let large = medium.wrapping_sub(1);
-
-                MAGIC = small;
-                FREED_MAGIC = medium;
-                BIG_MAGIC = large;
-            }
-            Err(err) => RSMallocError::SecurityViolation.log_and_abort(
-                null_mut(),
-                "calling getrandom failed, cannot initialize magic",
-                Some(err.raw_os_error()),
-            ),
-        };
-    }
-
-    #[cfg(feature = "extended-header")]
-    {
-        let mut main = 0u64.to_le_bytes();
-        match getrandom(&mut main, GetRandomFlags::empty()) {
-            Ok(_) => {
-                let small = u64::from_le_bytes(main);
-                let medium = small.wrapping_sub(1);
-                let large = medium.wrapping_sub(1);
-
-                MAGIC = small;
-                FREED_MAGIC = medium;
-                BIG_MAGIC = large;
-            }
-            Err(err) => RSMallocError::SecurityViolation.log_and_abort(
-                null_mut(),
-                "calling getrandom failed, cannot initialize magic",
-                Some(err.raw_os_error()),
-            ),
-        };
-    }
-}
-
-unsafe fn init_align() {
-    let mut main = 0usize.to_le_bytes();
-    match getrandom(&mut main, GetRandomFlags::empty()) {
-        Ok(_) => {
-            ALIGN_TAG = usize::from_le_bytes(main);
-        }
-        Err(err) => RSMallocError::SecurityViolation.log_and_abort(
-            null_mut(),
-            "calling getrandom failed, cannot initialize align tag",
-            Some(err.raw_os_error()),
-        ),
-    };
-}
 
 // ------------------
 

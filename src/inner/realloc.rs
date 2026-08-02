@@ -151,6 +151,18 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
     };
     let aligned_new = estimate_and_align_2mb(new_total);
 
+    if is_in_buddy && old_mapped_size >= aligned_new {
+        let new_meta = BigAllocMeta {
+            next: std::ptr::null_mut(),
+            size: new_size,
+            order: old_meta.order,
+            buddy_region: old_meta.buddy_region,
+            aligned: old_meta.aligned,
+        };
+        let _ = BIG_META_MAP.replace(old_ptr, new_meta);
+        return ptr.apply_unsafe();
+    }
+
     if !is_in_buddy {
         if let Ok(new_addr) = mremap(old_mapping, old_total, aligned_new, MremapFlags::empty()) {
             let new_meta = BigAllocMeta {

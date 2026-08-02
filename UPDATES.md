@@ -121,6 +121,7 @@ Major themes are: fewer mapping/VMA slow paths, NUMA-aware locality, lower refil
 - Batched `RADIX` ownership range updates by 64-bit bitmap word and L3 leaf. Contiguous registration and removal now resolve the radix hierarchy once per 16 MiB leaf and update up to 64 adjacent 4 KiB ownership chunks with one Release atomic RMW, while masked boundary words preserve unrelated ownership bits.
 - Kept weakened magic-value modes behind explicit unsafe acknowledgement in the Rust configuration surface.
 - Fixed magic-value randomization to draw `MAGIC`, `FREED_MAGIC`, and `BIG_MAGIC` from independent `getrandom()` calls with uniqueness retries, instead of deriving `FREED_MAGIC`/`BIG_MAGIC` from `MAGIC` via `wrapping_sub(1)`, so leaking one magic value no longer trivially reveals the other two. Applies to both the standard and `extended-header` magic widths.
+- Moved disabling magic-value double-free/corruption checks from a runtime `RSMallocConfig` toggle (`MagicSafety::Disabled`) to the compile-time-only `disable-magic-security-checks` Cargo feature. There is no longer a code path that can weaken magic validation at runtime, making the check harder to defeat from a process that only controls allocator inputs/config, not the build.
 
 ### Concurrency and ordering fixes
 

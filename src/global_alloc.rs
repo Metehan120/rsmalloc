@@ -21,8 +21,7 @@ use crate::rseq_core::slab_cache::SLAB_CACHE;
 use crate::trim::{BUDDY_DISABLE_PERCENTAGE, BUDDY_ENABLE_PERCENTAGE, DISABLE_RELIEF, trim_small};
 use crate::{
     ALIGN_TAG, BUDDY_ATTEMPT_HUGE, BUDDY_MAX_CACHE, CURRENT_STAMP, DISABLE_TRIM_THREAD,
-    FOREIGN_POINTER_ABORT, Header, MAGIC_DISABLE, RS_DISABLE_THP, RSMallocError, TRIM_THRESHOLD,
-    get_clock,
+    FOREIGN_POINTER_ABORT, Header, RS_DISABLE_THP, RSMallocError, TRIM_THRESHOLD, get_clock,
 };
 
 // ------------------
@@ -129,21 +128,11 @@ pub enum MagicSafety {
     /// This requires an explicit unsafe acknowledgement because predictable
     /// magic values weaken corruption detection against crafted overwrites.
     FixedMagic(MagicSafetyDisable),
-
-    /// Disable magic checks.
-    ///
-    /// This requires an explicit unsafe acknowledgement because it weakens
-    /// double-free and corruption detection.
-    Disabled(DisableMagic),
 }
 
 impl MagicSafety {
     const fn is_fixed(&self) -> bool {
         matches!(self, MagicSafety::FixedMagic(_))
-    }
-
-    const fn is_disabled(&self) -> bool {
-        matches!(self, MagicSafety::Disabled(_))
     }
 }
 
@@ -547,7 +536,7 @@ unsafe fn init(rs: &RSMalloc) {
         .0
         .min(BUDDY_DISABLE_PERCENTAGE);
 
-    if !rs.config.magic_safety.is_fixed() && !rs.config.magic_safety.is_disabled() {
+    if !rs.config.magic_safety.is_fixed() {
         init_magic();
         init_align();
 
@@ -557,10 +546,6 @@ unsafe fn init(rs: &RSMalloc) {
             }
         }
     };
-
-    if rs.config.magic_safety.is_disabled() {
-        MAGIC_DISABLE = true;
-    }
 
     if rs.config.foreign_pointer.global_alloc.is_abort() {
         FOREIGN_POINTER_ABORT = true;

@@ -1,8 +1,8 @@
 use std::{hint::unlikely, os::raw::c_void, ptr::read_unaligned, sync::atomic::Ordering};
 
 use crate::{
-    ALIGN_TAG, BIG_MAGIC, CURRENT_STAMP, FREED_MAGIC, GenericCache, Header, MAGIC, MAGIC_DISABLE,
-    OFFSET_SIZE, RSMallocError, TAG_SIZE, big_allocations::big_allocation::big_free,
+    ALIGN_TAG, BIG_MAGIC, CURRENT_STAMP, FREED_MAGIC, GenericCache, Header, MAGIC, OFFSET_SIZE,
+    RSMallocError, TAG_SIZE, big_allocations::big_allocation::big_free,
     core_prim::wrappers::UnsafePointer, internals::radix_tree::RADIX,
     rseq_core::slab_cache::SLAB_CACHE,
 };
@@ -86,7 +86,7 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
 
     // if it is double free, abort just to keep heap intact
     // if it is not double free, we have a memory corruption or a security violation
-    if !MAGIC_DISABLE {
+    if !cfg!(feature = "disable-magic-security-checks") {
         if header.magic == FREED_MAGIC {
             RSMallocError::DoubleFree.log_and_abort(header.cast_as_ptr(), "magic mismatch", None)
         }

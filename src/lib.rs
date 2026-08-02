@@ -83,7 +83,6 @@ pub(crate) static mut RS_DISABLE_THP: bool = false;
 pub(crate) static mut BUDDY_INIT: bool = false;
 pub(crate) static mut BUDDY_MAX_CACHE: usize = 0;
 pub(crate) static mut BUDDY_ATTEMPT_HUGE: bool = false;
-pub(crate) static mut MAGIC_DISABLE: bool = false;
 #[cfg(not(feature = "preload"))]
 pub(crate) static mut FOREIGN_POINTER_ABORT: bool = false;
 pub(crate) static mut ALIGN_TAG: usize = usize::from_le_bytes(*b"RSMALIGN");

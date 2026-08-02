@@ -103,7 +103,7 @@ pub unsafe fn trimmer_main() -> ! {
         let stamp = get_clock().elapsed().as_millis() as u32;
         CURRENT_STAMP.store(stamp, Relaxed);
 
-        if stamp.saturating_sub(latest_stamp) > AVERAGE_BLOCK_TIMES.load(Relaxed)
+        if stamp.saturating_sub(latest_stamp) > AVERAGE_BLOCK_TIMES.load(Relaxed).max(3000)
             && !DISABLE_TRIM_THREAD
         {
             use crate::big_allocations::buddy::BUDDY_BACKEND;
@@ -201,7 +201,6 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
             if total > 0 {
                 let new_avg = (avg / total).clamp(100, 10000).saturating_add(10);
                 TRIM_PREDICTOR[class].update_refill(new_avg as usize, 100, 10000);
-                AVERAGE_BLOCK_TIMES.store(TRIM_PREDICTOR[class].time(10000) as u32, Relaxed);
             }
 
             if total_push > 0 {
@@ -245,6 +244,17 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
                 trim_list = next;
             }
         }
+    }
+
+    let mut global_avg: u64 = 0;
+    let mut global_count: u64 = 0;
+    for class in get_size_4096_class()..NUM_SIZE_CLASSES {
+        global_avg += TRIM_PREDICTOR[class].time(10000) as u64;
+        global_count += 1;
+    }
+
+    if global_count > 0 {
+        AVERAGE_BLOCK_TIMES.store((global_avg / global_count) as u32, Relaxed);
     }
 
     total_trimmed

@@ -41,6 +41,7 @@ page-backend-no-huge-page = []
 page-backend-huge-page = []
 abort-on-rseq-failure = []
 disable-magic-security-checks = []
+trim-aggressively = []
 
 [[bench]]
 name = "book_speed"

@@ -81,8 +81,6 @@ pub unsafe fn relief_paths() {
     }
 }
 
-const TRIM_REPUSH_BATCH: usize = 8;
-
 #[inline(never)]
 pub unsafe fn trimmer_main() -> ! {
     let mut latest_stamp = 0;
@@ -113,6 +111,8 @@ pub unsafe fn trimmer_main() -> ! {
         }
     }
 }
+
+const TRIM_REPUSH_BATCH: usize = 8;
 
 pub unsafe fn trim_small(requested_size: usize) -> usize {
     let Some(_global_trim_guard) = GLOBAL_TRIM_LOCK.try_lock() else {

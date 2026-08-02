@@ -151,6 +151,7 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
             };
 
             if output.is_null() {
+                TRIM_PREDICTOR[class].update_refill(10000, 100, 10000);
                 continue;
             }
 

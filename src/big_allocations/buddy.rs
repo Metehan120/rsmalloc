@@ -14,6 +14,7 @@ use rustix::{
 use crate::trim::{TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA};
 use crate::{
     BUDDY_AVERAGE_BLOCK_TIMES, BUDDY_INIT, CURRENT_STAMP, GLOBAL_TRIM_LOCK, add_buddy_cached_va,
+    core_prim::predictor::EMA_ALPHA,
     inner::alloc::MAX_REFILL_RETRIES,
     internals::{
         binder::prefer_node, lock::SpinLock, numa_parser::NumaTopology, once::Once,
@@ -723,9 +724,14 @@ impl BuddyAllocator {
 
                         if force_trim && requested_size != 0 && trimmed >= requested_size {
                             if total > 0 {
-                                let avg = (avg / total).clamp(1000, 60000);
+                                let new_avg = (avg / total).clamp(1000, 60000);
+                                let blended = (EMA_ALPHA * new_avg as f32
+                                    + (1.0 - EMA_ALPHA) * avg_life as f32)
+                                    .round()
+                                    .clamp(1000.0, 60000.0)
+                                    as u32;
                                 BUDDY_AVERAGE_BLOCK_TIMES
-                                    .store(avg, std::sync::atomic::Ordering::Relaxed);
+                                    .store(blended, std::sync::atomic::Ordering::Relaxed);
                             }
                             return trimmed;
                         }
@@ -740,8 +746,11 @@ impl BuddyAllocator {
         }
 
         if total > 0 {
-            let avg = (avg / total).clamp(1000, 60000);
-            BUDDY_AVERAGE_BLOCK_TIMES.store(avg, std::sync::atomic::Ordering::Relaxed);
+            let new_avg = (avg / total).clamp(1000, 60000);
+            let blended = (EMA_ALPHA * new_avg as f32 + (1.0 - EMA_ALPHA) * avg_life as f32)
+                .round()
+                .clamp(1000.0, 60000.0) as u32;
+            BUDDY_AVERAGE_BLOCK_TIMES.store(blended, std::sync::atomic::Ordering::Relaxed);
         }
 
         trimmed

@@ -99,3 +99,37 @@ pub static mut BULK_FILL_PREDICTOR: [Predictor; NUM_SIZE_CLASSES] = {
     }
     result
 };
+
+pub const EMA_ALPHA: f32 = 0.25;
+
+pub struct EmaPredictor {
+    ema: f32,
+    time: usize,
+}
+
+impl EmaPredictor {
+    pub const fn new() -> Self {
+        Self {
+            ema: 1000.0,
+            time: 1000,
+        }
+    }
+
+    #[inline(always)]
+    pub unsafe fn update_refill(&mut self, demand: usize, min: usize, max: usize) {
+        let demand = demand.max(1);
+
+        self.ema = EMA_ALPHA * demand as f32 + (1.0 - EMA_ALPHA) * self.ema;
+        self.time = (self.ema.ceil() as usize).clamp(min, max);
+    }
+
+    #[inline(always)]
+    pub unsafe fn time(&mut self, fallback: usize) -> usize {
+        let out = self.time.max(1).min(fallback);
+
+        out
+    }
+}
+
+pub static mut TRIM_PREDICTOR: [EmaPredictor; NUM_SIZE_CLASSES] =
+    [const { EmaPredictor::new() }; NUM_SIZE_CLASSES];

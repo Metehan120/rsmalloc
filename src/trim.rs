@@ -18,6 +18,7 @@ use crate::{
     ALLOCATED_FLAG, AVERAGE_BLOCK_TIMES, CURRENT_STAMP, DISABLE_TRIM_THREAD, GLOBAL_TRIM_LOCK,
     Header, NCPU, TRIMMED_FLAG,
     big_allocations::buddy::BUDDY_BACKEND,
+    core_prim::predictor::TRIM_PREDICTOR,
     rseq_core::slab_cache::{SLAB_CACHE, pack, unpack_ptr},
     utility::{NUM_SIZE_CLASSES, SIZE_CLASSES, get_size_4096_class},
 };
@@ -162,7 +163,7 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
             let mut push_list = null_mut();
 
             let stamp = CURRENT_STAMP.load(Relaxed);
-            let avg_life = AVERAGE_BLOCK_TIMES.load(Relaxed);
+            let avg_life = TRIM_PREDICTOR[class].time(10000) as u32;
             let mut next = output;
             while !next.is_null() {
                 let old_next = (*next).next;
@@ -198,8 +199,9 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
             }
 
             if total > 0 {
-                let avg = (avg / total).clamp(100, 10000).saturating_add(10);
-                AVERAGE_BLOCK_TIMES.store(avg, Relaxed);
+                let new_avg = (avg / total).clamp(100, 10000).saturating_add(10);
+                TRIM_PREDICTOR[class].update_refill(new_avg as usize, 100, 10000);
+                AVERAGE_BLOCK_TIMES.store(TRIM_PREDICTOR[class].time(10000) as u32, Relaxed);
             }
 
             if total_push > 0 {

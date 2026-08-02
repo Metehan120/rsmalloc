@@ -168,7 +168,6 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
         let mut current_addr = old_mapping as usize;
         let mut current_order = old_meta.order;
 
-        let mut tries = 0;
         while current_order < BIG_BUDDY_MAX_ORDER {
             if aligned_new.next_power_of_two().trailing_zeros() as usize > BIG_BUDDY_MAX_ORDER {
                 break;
@@ -204,10 +203,7 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
 
                     return UnsafePointer::new(current_addr as *mut Header).walk_header();
                 } else {
-                    if tries > 3 {
-                        break;
-                    }
-                    tries += 1;
+                    break;
                 }
             } else {
                 break;

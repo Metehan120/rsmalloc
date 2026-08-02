@@ -258,7 +258,7 @@ impl PerCacheLimit {
     const fn get_size(&self) -> usize {
         match self {
             Self::Bytes(some) => *some,
-            Self::Default => 1024 * 1024 * 256,
+            Self::Default => 1024 * 1024 * 64,
         }
     }
 }

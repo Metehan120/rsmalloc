@@ -52,7 +52,7 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
         }
 
         #[cfg(feature = "preload")]
-        crate::inner::fallback::free_fallback(ptr.cast_as_ptr() as *mut c_void);
+        crate::inner::fallback::free_fallback(ptr.cast_as_ptr() as *mut _);
 
         #[cfg(not(feature = "preload"))]
         {

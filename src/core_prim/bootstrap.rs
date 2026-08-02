@@ -48,8 +48,8 @@ pub unsafe fn bootstrap() {
     RADIX = RadixTree::new();
     SLAB_CACHE.ensure_cache();
     BUDDY_MAX_CACHE = get_env_usize("RS_BUDDY_PER_CACHE_SIZE".as_bytes())
-        .unwrap_or(1024 * 1024 * 256)
-        .clamp(1024 * 1024 * 256, 2 << 46)
+        .unwrap_or(1024 * 1024 * 64)
+        .clamp(1024 * 1024 * 64, 2 << 46)
         .next_power_of_two();
 
     BUDDY_ATTEMPT_HUGE = get_env_usize("RS_BUDDY_ATTEMPT_HUGEPAGE".as_bytes()).unwrap_or(0) != 0;

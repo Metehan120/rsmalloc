@@ -182,8 +182,8 @@ pub(crate) static GLOBAL_SPIN_WAITS: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) static TIME_STAMP: OnceLock<Instant> = OnceLock::new();
 pub(crate) static CURRENT_STAMP: AtomicU32 = AtomicU32::new(0);
-pub(crate) static AVERAGE_BLOCK_TIMES: AtomicU32 = AtomicU32::new(1000);
-pub(crate) static BUDDY_AVERAGE_BLOCK_TIMES: AtomicU32 = AtomicU32::new(1000);
+pub(crate) static AVERAGE_BLOCK_TIMES: AtomicU32 = AtomicU32::new(10);
+pub(crate) static BUDDY_AVERAGE_BLOCK_TIMES: AtomicU32 = AtomicU32::new(10);
 pub(crate) static GLOBAL_TRIM_LOCK: SpinLock = SpinLock::new();
 pub(crate) static mut NCPU: usize = 0;
 
@@ -204,7 +204,7 @@ pub(crate) static mut START_TIME: Option<Instant> = None;
 pub(crate) fn get_clock() -> &'static Instant {
     TIME_STAMP.get_or_init(|| {
         let current = Instant::now();
-        CURRENT_STAMP.store(current.elapsed().as_millis() as u32, Ordering::Relaxed);
+        CURRENT_STAMP.store((current.elapsed().as_millis() / 100) as u32, Ordering::Relaxed);
         current
     })
 }

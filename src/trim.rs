@@ -100,10 +100,10 @@ pub unsafe fn trimmer_main() -> ! {
             relief_paths();
         }
 
-        let stamp = get_clock().elapsed().as_millis() as u32;
+        let stamp = (get_clock().elapsed().as_millis() / 100) as u32;
         CURRENT_STAMP.store(stamp, Relaxed);
 
-        if stamp.saturating_sub(latest_stamp) > AVERAGE_BLOCK_TIMES.load(Relaxed).max(3000)
+        if stamp.saturating_sub(latest_stamp) > AVERAGE_BLOCK_TIMES.load(Relaxed).max(30)
             && !DISABLE_TRIM_THREAD
         {
             use crate::big_allocations::buddy::BUDDY_BACKEND;
@@ -152,7 +152,7 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
 
             if output.is_null() {
                 if !cfg!(feature = "trim-aggressively") {
-                    TRIM_PREDICTOR[class].update_refill(10000, 100, 10000);
+                    TRIM_PREDICTOR[class].update_refill(100, 1, 100);
                 }
                 continue;
             }
@@ -166,7 +166,7 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
             let mut push_list = null_mut();
 
             let stamp = CURRENT_STAMP.load(Relaxed);
-            let avg_life = TRIM_PREDICTOR[class].time(10000) as u32;
+            let avg_life = TRIM_PREDICTOR[class].time(100) as u32;
             let mut next = output;
             while !next.is_null() {
                 let old_next = (*next).next;
@@ -202,8 +202,8 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
             }
 
             if total > 0 {
-                let new_avg = (avg / total).clamp(100, 10000).saturating_add(10);
-                TRIM_PREDICTOR[class].update_refill(new_avg as usize, 100, 10000);
+                let new_avg = (avg / total).clamp(1, 100);
+                TRIM_PREDICTOR[class].update_refill(new_avg as usize, 1, 100);
             }
 
             if total_push > 0 {
@@ -252,7 +252,7 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
     let mut global_avg: u64 = 0;
     let mut global_count: u64 = 0;
     for class in get_size_4096_class()..NUM_SIZE_CLASSES {
-        global_avg += TRIM_PREDICTOR[class].time(10000) as u64;
+        global_avg += TRIM_PREDICTOR[class].time(100) as u64;
         global_count += 1;
     }
 

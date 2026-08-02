@@ -110,8 +110,8 @@ pub struct EmaPredictor {
 impl EmaPredictor {
     pub const fn new() -> Self {
         Self {
-            ema: 1000.0,
-            time: 1000,
+            ema: 10.0,
+            time: 10,
         }
     }
 

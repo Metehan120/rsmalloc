@@ -724,11 +724,11 @@ impl BuddyAllocator {
 
                         if force_trim && requested_size != 0 && trimmed >= requested_size {
                             if total > 0 {
-                                let new_avg = (avg / total).clamp(1000, 60000);
+                                let new_avg = (avg / total).clamp(10, 600);
                                 let blended = (EMA_ALPHA * new_avg as f32
                                     + (1.0 - EMA_ALPHA) * avg_life as f32)
                                     .round()
-                                    .clamp(1000.0, 60000.0)
+                                    .clamp(10.0, 600.0)
                                     as u32;
                                 BUDDY_AVERAGE_BLOCK_TIMES
                                     .store(blended, std::sync::atomic::Ordering::Relaxed);
@@ -746,10 +746,10 @@ impl BuddyAllocator {
         }
 
         if total > 0 {
-            let new_avg = (avg / total).clamp(1000, 60000);
+            let new_avg = (avg / total).clamp(10, 600);
             let blended = (EMA_ALPHA * new_avg as f32 + (1.0 - EMA_ALPHA) * avg_life as f32)
                 .round()
-                .clamp(1000.0, 60000.0) as u32;
+                .clamp(10.0, 600.0) as u32;
             BUDDY_AVERAGE_BLOCK_TIMES.store(blended, std::sync::atomic::Ordering::Relaxed);
         }
 

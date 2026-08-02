@@ -1,7 +1,6 @@
 use std::alloc::{GlobalAlloc, Layout};
 use std::hint::likely;
 use std::ptr::{null_mut, write_bytes};
-use std::sync::atomic::Ordering::Relaxed;
 
 use crate::backend::page_allocator::ARENA_SIZE;
 use crate::big_allocations::buddy::BUDDY_BACKEND;
@@ -20,8 +19,8 @@ use crate::rseq_core::rseq_offsets::__rseq_size;
 use crate::rseq_core::slab_cache::SLAB_CACHE;
 use crate::trim::{BUDDY_DISABLE_PERCENTAGE, BUDDY_ENABLE_PERCENTAGE, DISABLE_RELIEF, trim_small};
 use crate::{
-    ALIGN_TAG, BUDDY_ATTEMPT_HUGE, BUDDY_MAX_CACHE, CURRENT_STAMP, DISABLE_TRIM_THREAD,
-    FOREIGN_POINTER_ABORT, Header, RS_DISABLE_THP, RSMallocError, TRIM_THRESHOLD, get_clock,
+    ALIGN_TAG, BUDDY_ATTEMPT_HUGE, BUDDY_MAX_CACHE, DISABLE_TRIM_THREAD, FOREIGN_POINTER_ABORT,
+    Header, RS_DISABLE_THP, RSMallocError, TRIM_THRESHOLD, get_clock,
 };
 
 // ------------------
@@ -507,8 +506,7 @@ unsafe fn init(rs: &RSMalloc) {
         START_TIME = Some(Instant::now());
     }
 
-    let stamp = get_clock().elapsed().as_millis() as u32;
-    CURRENT_STAMP.store(stamp, Relaxed);
+    get_clock();
 
     ARENA_SIZE = rs.config.arena_min_size.0;
     MAX_REFILL_RETRIES = rs.config.max_refill_retries as usize;
@@ -1023,8 +1021,8 @@ impl RSMalloc {
             class_avg_cached_bytes,
             trim_calls: TOTAL_TRIM_CALLS.load(Relaxed),
             trimmed_va: TOTAL_TRIMMED_VA.load(Relaxed),
-            avg_small_life_ms: crate::AVERAGE_BLOCK_TIMES.load(Relaxed),
-            avg_buddy_life_ms: BUDDY_AVERAGE_BLOCK_TIMES.load(Relaxed),
+            avg_small_life_ms: crate::AVERAGE_BLOCK_TIMES.load(Relaxed).saturating_mul(100),
+            avg_buddy_life_ms: BUDDY_AVERAGE_BLOCK_TIMES.load(Relaxed).saturating_mul(100),
             buddy_disabled: DISABLE_BUDDY.load(Relaxed),
             buddy_regions: buddy.regions,
             buddy_total_region_bytes: buddy.total_region_bytes,

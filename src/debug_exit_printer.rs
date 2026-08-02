@@ -132,7 +132,7 @@ pub(crate) unsafe fn print_report() {
     item(
         &mut report,
         "clock",
-        format!("{} ms", CURRENT_STAMP.load(Relaxed)),
+        format!("{} ms", CURRENT_STAMP.load(Relaxed) as u64 * 100),
     );
     item(&mut report, "cpus", NCPU);
 
@@ -347,12 +347,12 @@ pub(crate) unsafe fn print_report() {
     item(
         &mut report,
         "avg small life",
-        format!("{} ms", AVERAGE_BLOCK_TIMES.load(Relaxed)),
+        format!("{} ms", AVERAGE_BLOCK_TIMES.load(Relaxed) as u64 * 100),
     );
     item(
         &mut report,
         "avg buddy life",
-        format!("{} ms", BUDDY_AVERAGE_BLOCK_TIMES.load(Relaxed)),
+        format!("{} ms", BUDDY_AVERAGE_BLOCK_TIMES.load(Relaxed) as u64 * 100),
     );
     item(&mut report, "buddy disabled", DISABLE_BUDDY.load(Relaxed));
 

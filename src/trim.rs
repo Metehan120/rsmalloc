@@ -81,8 +81,7 @@ pub unsafe fn relief_paths() {
     }
 }
 
-// Leave it at around 16-32
-const TRIM_REPUSH_BATCH: usize = 16;
+const TRIM_REPUSH_BATCH: usize = 8;
 
 #[inline(never)]
 pub unsafe fn trimmer_main() -> ! {

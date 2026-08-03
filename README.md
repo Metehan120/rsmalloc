@@ -42,6 +42,67 @@ The current codebase supports two intended modes:
 - Internal allocation paths are NUMA-aware where topology is available: transfer-cache victim stealing, slab page-backend arenas, pending metadata reuse, buddy backend regions, and direct big mappings prefer the current CPU's node.
 - Batch transfer-cache stealing uses relaxed per-class nonempty CPU hints to narrow victim selection before falling back to the actual ABA-tagged transfer-list pop path.
 
+## Current Limitations
+
+- **This is alpha-quality allocator software with limited test coverage.**
+- The crate currently requires nightly Rust features and `rustc 1.96.0` or higher.
+- The preload path and the Rust `GlobalAlloc` path are still being separated and stabilized.
+- Big allocation metadata uses an internal lock-protected red-black tree.
+- Runtime behavior under every libc, loader, and fork/preload combination has not been fully audited.
+- Optional extended-header metadata is a debugging/diagnostic aid, not a replacement for memory-safety tooling or a high-security sandbox.
+- Documentation inside the allocator internals is incomplete.
+- Benchmarks are used as development signals, but they are not the design target and are not yet authoritative enough to make stable performance claims.
+- The public Rust API is still subject to change before a stable release.
+
+## Efficiency of RSMalloc
+
+In tested workloads like Blender, Krita, mimalloc-bench, C/C++/Rust (many projects, including rsmalloc) compilation, etc. RSMalloc demonstrated better microarchitectural (especially in Zen) instruction-retirement efficiency compared to other allocators.
+
+### Tested system:
+- CPU: AMD Ryzen 5 5600X
+- RAM: 16GB RAM DDR4 3200MHz
+- OS: CachyOS 7.1.4-cachyos-bore
+- Desktop Environment: KDE Plasma 6.7.3
+- Environment Temperature: ~28-30C
+- CPU Cooler: Arctic Freezer 36
+- Motherboard: MSI B550M PRO-VDH
+- BIOS: 2.M0 (Reported by dmidecode)
+- GPU: ASUS ROG Strix OC RX 6600 XT
+
+### Methodology:
+1. Krita: created a 16384×16384 3-layer canvas and painted each layer black using “Flood Fill”. (Both runs had different exit times; rsmalloc 18.1s for exit, mimalloc 16.5s for exit. Repeted 5 times.)
+2. Blender: started Blender, removed the cube, added a UV Sphere, and made it 256×256. (Both runs had the same exit time. No camera movement. Repeated 15 times.)
+
+In Krita RSMalloc reduced instruction retirement overhead by ~%40 compared to mimalloc (non-repeated runs may differ):
+
+Raw AMD Zen PMC dispatch-stall counters, event `0xAF` (dispatch resource stalls) and event `0xAE` (integer scheduler / retire token stalls), broken down by sub-event bit:
+
+|Allocator|RSMalloc|mimalloc|
+|---|---|---|
+|INT_PHY_REG_FILE |2.350.615.088|2.677.560.455|
+|LOAD_QUEUE       |763.315.122|730.665.826|
+|STORE_QUEUE      |835.548.927|712.661.203|
+|FP_REG_FILE      |31.512.193.929|33.789.888.393|
+|INT_SCHEDULER_0  |777.675.307|891.293.797|
+|INT_SCHEDULER_1  |4.461.471.251|4.922.779.694|
+|INT_SCHEDULER_2  |22.176.034.505|26.200.062.522|
+|INT_SCHEDULER_3  |2.317.902.484|3.857.713.483|
+|RETIRE_TOKEN     |3.656.167.370|7.847.454.178|
+
+In Blender, the same raw AMD Zen PMC dispatch-stall counters:
+
+|Allocator|RSMalloc|mimalloc|
+|---|---|---|
+|INT_PHY_REG_FILE |215.356.247|216.971.772|
+|LOAD_QUEUE       |119.328.261|118.992.621|
+|STORE_QUEUE      |104.328.787|104.006.581|
+|FP_REG_FILE      |608.713.025|682.492.961|
+|INT_SCHEDULER_0  |156.231.590|142.970.156|
+|INT_SCHEDULER_1  |312.140.233|312.982.113|
+|INT_SCHEDULER_2  |219.066.606|302.994.170|
+|INT_SCHEDULER_3  |42.710.209|45.892.070|
+|RETIRE_TOKEN     |26.056.876|27.901.051|
+
 ### Transfer-cache ABA boundary
 
 Transfer-cache heads are sharded by CPU and size class and stored as one 64-bit atomic word. Bits 0–55 hold the allocator pointer and bits 56–63 hold an eight-bit generation counter. Every successful head update advances the generation, so a stale compare-and-swap cannot match after 1–255 intervening successful updates to that exact shard. The packed head can repeat after 256 updates; this is an explicit bounded-tag limitation, not an unbounded ABA-proof guarantee.
@@ -54,17 +115,6 @@ Small-allocation cache refills use a fast integer adaptive predictor to estimate
 
 The initial predictor batch is configurable through `RefillPredictorSettings`/`with_refill_predictor_settings` in the Rust API and `RS_PREDICTOR_INIT_BATCH` in preload builds. A separate bulk-fill predictor is used so page/list initialization can still happen in practical batches even when cache-pop or steal behavior observes smaller short-term demand. Bulk fill initializes headers only for the selected batch and keeps remaining mapped metadata as pending refill state.
 
-## Current Limitations
-
-- **This is alpha-quality allocator software with limited test coverage.**
-- The crate currently requires nightly Rust features and `rustc 1.96.0` or higher.
-- The preload path and the Rust `GlobalAlloc` path are still being separated and stabilized.
-- Big allocation metadata uses an internal lock-protected red-black tree.
-- Runtime behavior under every libc, loader, and fork/preload combination has not been fully audited.
-- Optional extended-header metadata is a debugging/diagnostic aid, not a replacement for memory-safety tooling or a high-security sandbox.
-- Documentation inside the allocator internals is incomplete.
-- Benchmarks are used as development signals, but they are not the design target and are not yet authoritative enough to make stable performance claims.
-- The public Rust API is still subject to change before a stable release.
 
 ## Using As A Rust Global Allocator
 

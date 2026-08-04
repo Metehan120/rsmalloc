@@ -25,7 +25,7 @@ macro_rules! calloc_zero {
     };
 }
 
-#[inline(always)]
+#[inline(never)]
 unsafe fn calc_and_get(size: Layout, nmem: usize) -> Option<(UnsafePointer<Header>, usize)> {
     let size = size.size();
     let total_size = match nmem.checked_mul(size) {

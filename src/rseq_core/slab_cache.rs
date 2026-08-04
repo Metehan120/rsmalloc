@@ -609,7 +609,7 @@ impl SlabCache {
         self.transfer_push_single_to(list_ptr, class, header, cpu_id, inner);
     }
 
-    #[inline(always)]
+    #[inline(never)]
     pub unsafe fn transfer_pop_single(&self, class: usize, cpu_id: usize) -> UnsafePointer<Header> {
         #[cfg(feature = "transfer-debug-exact")]
         crate::TOTAL_TRANSFER_POP_CALLS.fetch_add(1, Ordering::Relaxed);

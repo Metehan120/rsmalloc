@@ -572,6 +572,11 @@ impl RSMalloc {
     }
 }
 
+#[inline(never)]
+unsafe fn memalign_non_inline(align: usize, size: usize) -> UnsafePointer<Header> {
+    memalign_inner(align, size)
+}
+
 unsafe impl GlobalAlloc for RSMalloc {
     /// Allocates memory.
     ///
@@ -588,7 +593,7 @@ unsafe impl GlobalAlloc for RSMalloc {
         if likely(layout.align() <= 16) {
             rs_alloc(layout.size(), false).cast_as_ptr()
         } else {
-            memalign_inner(layout.align(), layout.size()).cast_as_ptr()
+            memalign_non_inline(layout.align(), layout.size()).cast_as_ptr()
         }
     }
 

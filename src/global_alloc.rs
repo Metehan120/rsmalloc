@@ -1,6 +1,6 @@
 use std::alloc::{GlobalAlloc, Layout};
 use std::hint::likely;
-use std::ptr::{null_mut, write_bytes};
+use std::ptr::null_mut;
 
 use crate::backend::page_allocator::ARENA_SIZE;
 use crate::big_allocations::buddy::BUDDY_BACKEND;
@@ -9,7 +9,7 @@ use crate::core_prim::random::{init_align, init_magic};
 use crate::core_prim::wrappers::UnsafePointer;
 use crate::inner::align::memalign_inner;
 use crate::inner::alloc::{MAX_REFILL_RETRIES, rs_alloc, usable_size};
-use crate::inner::calloc::rs_calloc;
+use crate::inner::calloc::{rs_calloc, zero};
 use crate::inner::free::rs_free;
 use crate::inner::realloc::rs_realloc;
 use crate::internals::once::Once;
@@ -647,7 +647,7 @@ unsafe impl GlobalAlloc for RSMalloc {
         } else {
             let ptr = self.alloc_non_inline(layout);
             if !ptr.is_null() {
-                write_bytes(ptr, 0, layout.size());
+                zero(ptr, layout.size());
             }
             ptr
         }

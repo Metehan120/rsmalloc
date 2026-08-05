@@ -12,15 +12,26 @@ use crate::{
     utility::{SIZE_CLASSES, match_size_class},
 };
 
+unsafe fn zero(pointer: *mut u8, len: usize) {
+    if cfg!(feature = "explicit-zero") {
+        unsafe extern "C" {
+            fn explicit_bzero(s: *mut c_void, len: usize);
+        }
+
+        explicit_bzero(pointer as *mut c_void, len);
+    } else {
+        std::ptr::write_bytes(pointer, 0, len);
+    }
+}
+
 macro_rules! calloc_zero {
     ($header:expr, $ptr:expr, $actual_size:expr, $effective_size:expr) => {
         let flags = (*$header.as_ptr()).flags;
         if flags == ALLOCATED_FLAG || flags == TRIMMED_FLAG {
-            std::ptr::write_bytes(
+            zero(
                 $ptr.cast_as_ptr() as *mut u8,
-                0,
                 $actual_size.min($effective_size),
-            );
+            )
         }
     };
 }

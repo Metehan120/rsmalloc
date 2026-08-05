@@ -508,7 +508,7 @@ unsafe fn init(rs: &RSMalloc) {
 
     get_clock();
 
-    ARENA_SIZE = rs.config.arena_min_size.0;
+    ARENA_SIZE = rs.config.arena_min_size.0.max(256 * 1024);
     MAX_REFILL_RETRIES = rs.config.max_refill_retries as usize;
     RS_DISABLE_THP = !rs.config.thp_settings.thp.enabled();
     // Buddy initialization performs checked normalization after applying its

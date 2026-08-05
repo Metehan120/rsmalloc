@@ -36,6 +36,7 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
     let Some(requested_total) = size.checked_add(Header::SIZE) else {
         return UnsafePointer::NULL;
     };
+
     let aligned_total = estimate_and_align_2mb(requested_total);
     let mut registered = false;
     let mut mapped_total = aligned_total;

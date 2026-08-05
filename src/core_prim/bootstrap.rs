@@ -37,7 +37,10 @@ pub unsafe fn bootstrap() {
 
     get_clock();
 
-    ARENA_SIZE = get_env_usize("RS_ARENA_SIZE".as_bytes()).unwrap_or(ARENA_SIZE);
+    ARENA_SIZE = get_env_usize("RS_ARENA_SIZE".as_bytes())
+        .unwrap_or(ARENA_SIZE)
+        .max(256 * 1024);
+
     MAX_REFILL_RETRIES = get_env_usize("RS_MAX_REFILL_RETRIES".as_bytes()).unwrap_or(3);
 
     let predictor = get_env_usize("RS_PREDICTOR_INIT_BATCH".as_bytes()).unwrap_or(DEFAULT_BATCH);

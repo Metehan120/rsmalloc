@@ -12,7 +12,7 @@ use crate::{
     utility::{SIZE_CLASSES, match_size_class},
 };
 
-unsafe fn zero(pointer: *mut u8, len: usize) {
+pub unsafe fn zero(pointer: *mut u8, len: usize) {
     if cfg!(feature = "explicit-zero") {
         unsafe extern "C" {
             fn explicit_bzero(s: *mut c_void, len: usize);

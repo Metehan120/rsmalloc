@@ -570,6 +570,11 @@ impl RSMalloc {
         #[cfg(feature = "debug-printer-thread")]
         crate::debug_printer_thread::start();
     }
+
+    #[inline(never)]
+    unsafe fn alloc_non_inline(&self, layout: Layout) -> *mut u8 {
+        self.alloc(layout)
+    }
 }
 
 #[inline(never)]
@@ -640,7 +645,7 @@ unsafe impl GlobalAlloc for RSMalloc {
         if likely(layout.align() <= 16) {
             rs_calloc(1, layout.size()).cast_as_ptr()
         } else {
-            let ptr = self.alloc(layout);
+            let ptr = self.alloc_non_inline(layout);
             if !ptr.is_null() {
                 write_bytes(ptr, 0, layout.size());
             }

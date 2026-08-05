@@ -1,10 +1,12 @@
-# Real-Workload Microarchitectural Observations
+# Demonstration in Real Workloads
 
 This page holds raw hardware-performance-counter comparisons gathered from
-real applications (not synthetic benchmarks) running under `LD_PRELOAD` with
-rsmalloc vs. mimalloc. See [`benchmarks.md`](benchmarks.md) for the synthetic
-benchmark snapshot and its caveats — the same "development signal, not a
-guarantee" caveat applies here.
+real applications (not a controlled benchmark) running under `LD_PRELOAD` with
+rsmalloc vs. mimalloc. These are demonstrations of behavior observed in
+specific runs, not reproducible benchmark results — see
+[`benchmarks.md`](benchmarks.md) for the actual benchmark snapshot and its
+caveats. The same "development signal, not a guarantee" caveat applies here,
+even more so.
 
 ## Summary
 
@@ -27,14 +29,14 @@ mixed (rsmalloc lower on some counters, higher on others).
 - BIOS: 2.M0 (Reported by dmidecode)
 - GPU: ASUS ROG Strix OC RX 6600 XT
 
-## Methodology
+## What was done
 
 1. Krita: created a 16384×16384 3-layer canvas and painted each layer black
    using "Flood Fill". (Both runs had different exit times; rsmalloc 18.1s
-   for exit, mimalloc 16.5s for exit. Repeated 5 times.)
+   for exit, mimalloc 16.5s for exit. Repeated 5 times by hand, not scripted.)
 2. Blender: started Blender, removed the cube, added a UV Sphere, and made it
    256×256. (Both runs had the same exit time. No camera movement. Repeated
-   15 times.)
+   15 times by hand, not scripted.)
 
 Raw AMD Zen PMC dispatch-stall counters, event `0xAF` (dispatch resource
 stalls) and event `0xAE` (integer scheduler / retire token stalls), broken
@@ -42,8 +44,9 @@ down by sub-event bit.
 
 ## Krita
 
-In Krita, rsmalloc reduced instruction retirement overhead by ~40% compared
-to mimalloc (non-repeated single runs may differ from this average):
+In this Krita session, rsmalloc showed ~40% lower instruction retirement
+overhead than mimalloc across the repeated runs (a single non-repeated run may
+look different — this is not a controlled benchmark result):
 
 |Allocator|RSMalloc|mimalloc|
 |---|---|---|

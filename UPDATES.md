@@ -31,6 +31,12 @@ Major themes are: fewer mapping/VMA slow paths, NUMA-aware locality, lower refil
 - Added `get_size_4096_class()` and cached lookup support for selecting trim-eligible size classes.
 - Updated larger slab/cache pressure behavior so oversized batches spill through transfer caches instead of overfilling CPU-local class caches.
 
+### Fast-path register pressure
+
+- Marked `SlabCache::transfer_pop_single` `#[inline(never)]` to keep it out of `malloc`'s inlined body.
+- Split `rs_calloc`'s size/overflow computation into a separate `#[inline(never)] calc_and_get`, avoiding a second full inline of the `rs_alloc` fast path inside `calloc`.
+- Added `#[inline(never)]` wrappers (`alloc_non_inline`, `memalign_non_inline`) around the rare large-alignment paths in `GlobalAlloc::alloc` and `GlobalAlloc::alloc_zeroed`, keeping the common aligned fast path lean.
+
 ### Transfer cache balancing
 
 - Added NUMA-aware transfer-cache victim stealing for batch `try_pop(...)`: local CPU transfer cache first, same-node CPU ranges next, then remote node ranges when NUMA is active.

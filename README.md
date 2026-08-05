@@ -1,124 +1,16 @@
-# RSMalloc (rseq/rust slab memory allocator)
+# RSMalloc
 
-rsmalloc is a Rust memory allocator focused on low-overhead concurrent allocation for real-world application workloads, not benchmark-only allocation patterns. The slab allocation path is built around Linux Restartable Sequences (RSEQ), so cache ownership is CPU-oriented rather than thread-oriented. Larger allocations use a separate big-allocation path with a buddy backend for cached regions.
+An RSEQ-based memory allocator for Rust, focused on low-overhead concurrent allocation for real applications rather than benchmark-only patterns. The small-allocation fast path uses Linux Restartable Sequences (RSEQ), so cache ownership follows the CPU, not the thread. Larger allocations go through a separate NUMA-aware buddy-cached path.
 
-Current release line: `0.2.0-alpha`.
+**Status: `0.2.0-alpha`. Alpha-quality software — not production-ready.** See [Status & Limitations](#status--limitations) below.
 
-`0.2.0-alpha` is a full allocator overhaul from the `0.1.0-alpha` line: RSEQ/slab internals, transfer-cache balancing, lazy refill metadata reuse, NUMA placement, buddy caching/trimming, preload ABI behavior, and Rust configuration have all changed materially.
+[crates.io](https://crates.io/crates/rsmalloc) · [Architecture](architecture.md) · [Release Notes](UPDATES.md) · [Roadmap](TODO.md) · [Benchmarks](benchmarks/benchmarks.md) · [Contributing](CONTRIBUTING.md)
 
-crates.io: https://crates.io/crates/rsmalloc
+> **Known issue:** Linux kernel `7.0.10` appears to trigger `SIGBUS` in some workloads when using rsmalloc. If you hit unexplained `SIGBUS` crashes, try a different kernel version before assuming allocator corruption.
 
-See [UPDATES.md](UPDATES.md) for release notes and [TODO.md](TODO.md) for planned work.
-See [benchmarks/benchmarks.md](benchmarks/benchmarks.md) for general benchmark notes and [benchmarks/rstress_results.md](benchmarks/rstress_results.md) for the current `rstress` RSEQ allocator stress benchmark snapshot.
+## Quick Start
 
-> **Note:** Linux kernel `7.0.10` appears to trigger `SIGBUS` in some workloads when using rsmalloc. If you hit unexplained `SIGBUS` crashes, try updating or downgrading your kernel before assuming allocator corruption.
-
-## Current Status
-
-rsmalloc is under active development. It is intended to become a practical allocator for normal applications with messy, mixed allocation behavior, not a microbenchmark-specialized allocator. It is useful for allocator experiments, preload testing, and early integration work, but **it is not production-ready.**
-
-The crate currently requires nightly Rust and `rustc 1.96.0` or higher.
-
-The current codebase supports two intended modes:
-
-- `cdylib` preload mode with the `preload` feature enabled.
-- Rust library/global allocator mode through the `rlib` target and `RSMalloc`.
-
-## Current Capabilities
-
-- Small allocations are served from size classes backed by `SLAB_CACHE` per-CPU RSEQ caches, transfer caches, adaptive refill, a hybrid slab page backend, and pending refill metadata reuse.
-- RSEQ fast paths use inline assembly critical sections for push/pop operations.
-- Overflow and zero-size handling exists for calloc/realloc paths.
-- Big allocations are tracked separately in `BIG_META_MAP` and can use the NUMA-aware 4 MiB to 64 MiB `BUDDY_BACKEND` cache with old-block trimming and optional memory-pressure relief.
-- Transparent huge page attempts are configurable for big allocation regions, and the slab page backend has an opt-in `page-backend-no-huge-page` feature for systems that aggressively promote THP and inflate RSS.
-- Preload builds provide C ABI allocation entry points including `malloc`, `calloc`, `realloc`, `reallocarray`, `recallocarray`, `free`, sized-free compatibility shims, usable-size queries, alignment APIs, and opt-in `malloc_trim(...)` support.
-- Trimming supports buddy-cache blocks and small-allocation/background trim scanning for size classes equal to or greater than 4096 bytes.
-- Non-preload builds expose `RSMalloc`, `RSMallocConfig`, and `GlobalAlloc` integration.
-- Runtime tuning is available for refill behavior, predictor behavior, THP behavior, buddy cache sizing, trim-thread behavior, memory-pressure relief, trimming, magic-value behavior, and foreign-pointer handling in global-allocator mode.
-- Small-allocation refill sizing uses a fast integer adaptive predictor, with a separate bulk-fill predictor so cache-pop/steal behavior does not force page/list initialization into tiny batches.
-- In the default thread-local refill path, pending refill metadata is drained on thread exit into a lock-free per-node global pending queue to reduce stranded per-thread pending slabs.
-- Optional `extended-header` Cargo feature provides wider allocator metadata for experiments and stress testing.
-- Non-preload builds expose a small capability snapshot with allocator version, configured THP state, and current public NUMA support status.
-- Internal allocation paths are NUMA-aware where topology is available: transfer-cache victim stealing, slab page-backend arenas, pending metadata reuse, buddy backend regions, and direct big mappings prefer the current CPU's node.
-- Batch transfer-cache stealing uses relaxed per-class nonempty CPU hints to narrow victim selection before falling back to the actual ABA-tagged transfer-list pop path.
-
-## Current Limitations
-
-- **This is alpha-quality allocator software with limited test coverage.**
-- The crate currently requires nightly Rust features and `rustc 1.96.0` or higher.
-- The preload path and the Rust `GlobalAlloc` path are still being separated and stabilized.
-- Big allocation metadata uses an internal lock-protected red-black tree.
-- Runtime behavior under every libc, loader, and fork/preload combination has not been fully audited.
-- Optional extended-header metadata is a debugging/diagnostic aid, not a replacement for memory-safety tooling or a high-security sandbox.
-- Documentation inside the allocator internals is incomplete.
-- Benchmarks are used as development signals, but they are not the design target and are not yet authoritative enough to make stable performance claims.
-- The public Rust API is still subject to change before a stable release.
-
-## Efficiency of RSMalloc
-
-In tested workloads like Blender, Krita, mimalloc-bench, C/C++/Rust (many projects, including rsmalloc) compilation, etc. RSMalloc demonstrated better microarchitectural (especially in Zen) instruction-retirement efficiency compared to other allocators.
-
-### Tested system:
-- CPU: AMD Ryzen 5 5600X
-- RAM: 16GB RAM DDR4 3200MHz
-- OS: CachyOS 7.1.4-cachyos-bore
-- Desktop Environment: KDE Plasma 6.7.3
-- Environment Temperature: ~28-30C
-- CPU Cooler: Arctic Freezer 36
-- Motherboard: MSI B550M PRO-VDH
-- BIOS: 2.M0 (Reported by dmidecode)
-- GPU: ASUS ROG Strix OC RX 6600 XT
-
-### Methodology:
-1. Krita: created a 16384×16384 3-layer canvas and painted each layer black using “Flood Fill”. (Both runs had different exit times; rsmalloc 18.1s for exit, mimalloc 16.5s for exit. Repeted 5 times.)
-2. Blender: started Blender, removed the cube, added a UV Sphere, and made it 256×256. (Both runs had the same exit time. No camera movement. Repeated 15 times.)
-
-In Krita RSMalloc reduced instruction retirement overhead by ~%40 compared to mimalloc (non-repeated runs may differ):
-
-Raw AMD Zen PMC dispatch-stall counters, event `0xAF` (dispatch resource stalls) and event `0xAE` (integer scheduler / retire token stalls), broken down by sub-event bit:
-
-|Allocator|RSMalloc|mimalloc|
-|---|---|---|
-|INT_PHY_REG_FILE |2.350.615.088|2.677.560.455|
-|LOAD_QUEUE       |763.315.122|730.665.826|
-|STORE_QUEUE      |835.548.927|712.661.203|
-|FP_REG_FILE      |31.512.193.929|33.789.888.393|
-|INT_SCHEDULER_0  |777.675.307|891.293.797|
-|INT_SCHEDULER_1  |4.461.471.251|4.922.779.694|
-|INT_SCHEDULER_2  |22.176.034.505|26.200.062.522|
-|INT_SCHEDULER_3  |2.317.902.484|3.857.713.483|
-|RETIRE_TOKEN     |3.656.167.370|7.847.454.178|
-
-In Blender, the same raw AMD Zen PMC dispatch-stall counters:
-
-|Allocator|RSMalloc|mimalloc|
-|---|---|---|
-|INT_PHY_REG_FILE |215.356.247|216.971.772|
-|LOAD_QUEUE       |119.328.261|118.992.621|
-|STORE_QUEUE      |104.328.787|104.006.581|
-|FP_REG_FILE      |608.713.025|682.492.961|
-|INT_SCHEDULER_0  |156.231.590|142.970.156|
-|INT_SCHEDULER_1  |312.140.233|312.982.113|
-|INT_SCHEDULER_2  |219.066.606|302.994.170|
-|INT_SCHEDULER_3  |42.710.209|45.892.070|
-|RETIRE_TOKEN     |26.056.876|27.901.051|
-
-### Transfer-cache ABA boundary
-
-Transfer-cache heads are sharded by CPU and size class and stored as one 64-bit atomic word. Bits 0–55 hold the allocator pointer and bits 56–63 hold an eight-bit generation counter. Every successful head update advances the generation, so a stale compare-and-swap cannot match after 1–255 intervening successful updates to that exact shard. The packed head can repeat after 256 updates; this is an explicit bounded-tag limitation, not an unbounded ABA-proof guarantee.
-
-Ordinary transfer traffic remains CPU-local. Mutating another CPU's shard requires exceptional cross-CPU activity such as stealing or trim handling, and an actual ABA failure additionally requires the same pointer to return as the head with a different successor while the original operation is stalled. CPU/class sharding therefore makes tag wrap materially less likely in normal operation, but it does not make the 256-update schedule formally impossible.
-
-## Adaptive Refill Prediction
-
-Small-allocation cache refills use a fast integer adaptive predictor to estimate current per-size-class refill demand. When a refill returns exactly the requested batch and the class still has headroom, observed demand is slightly uplifted (+25%, clamped) so the next refill can grow quickly under pressure. Sustained low-demand samples shrink the predicted batch gradually to avoid oscillating on one-off dips.
-
-The initial predictor batch is configurable through `RefillPredictorSettings`/`with_refill_predictor_settings` in the Rust API and `RS_PREDICTOR_INIT_BATCH` in preload builds. A separate bulk-fill predictor is used so page/list initialization can still happen in practical batches even when cache-pop or steal behavior observes smaller short-term demand. Bulk fill initializes headers only for the selected batch and keeps remaining mapped metadata as pending refill state.
-
-
-## Using As A Rust Global Allocator
-
-The non-preload library path exposes `RSMalloc` as a `GlobalAlloc` implementation.
+Requires nightly Rust (`rustc 1.96.0`+) and a libc with RSEQ TLS support (glibc 2.35+ or equivalent) — rsmalloc relies on libc-registered `__rseq_size`/`__rseq_offset` rather than registering RSEQ itself, so an older libc will fail to bootstrap.
 
 ```rust
 use rsmalloc::RSMalloc;
@@ -127,7 +19,40 @@ use rsmalloc::RSMalloc;
 static GLOBAL: RSMalloc = RSMalloc::new_default();
 ```
 
-For explicit runtime configuration:
+That's it — `RSMalloc::new_default()` is a reasonable starting configuration. See [Configuration](#configuration) below to tune it.
+
+### Or preload it into any binary
+
+```sh
+cargo build --release --features preload
+LD_PRELOAD=./target/release/librsmalloc.so your-program
+```
+
+Preload builds provide the standard C ABI: `malloc`, `calloc`, `realloc`, `reallocarray`, `recallocarray`, `free`, sized-free shims, `posix_memalign`, `memalign`, `aligned_alloc`, `valloc`, `pvalloc`, `malloc_usable_size`, and opt-in `malloc_trim`.
+
+## Design Approach
+
+- **CPU-local caching via RSEQ.** The small-allocation fast path mutates per-CPU freelists without normal lock overhead as long as the thread stays on the same CPU through the critical section; on migration the operation retries or falls back to a transfer cache.
+- **NUMA topology is used where available**, as a placement preference rather than a guarantee. Transfer-cache stealing, refill arenas, the buddy backend, and pending-metadata reuse try the current node first before scanning remote nodes. This is preferred placement (`mbind`), not enforced physical placement, and the public capability surface currently reports NUMA support as partial.
+- **Adaptive refill sizing.** A small integer predictor grows/shrinks per-class refill batches based on observed demand instead of a static batch size.
+- **Background and manual trimming.** Cold small-allocation and buddy-cached pages are returned to the kernel via `madvise`, with per-size-class eligibility tracked by an EMA of observed block lifetimes.
+- In early, workload-specific measurements it has performed competitively against mimalloc/glibc on some real applications — see [benchmarks/real_workloads.md](benchmarks/real_workloads.md). This is not a general performance guarantee; results vary by workload (see the Blender numbers there for a mixed case).
+
+None of this has been evaluated at production scale or across a wide range of workloads yet. For the full internals (allocation/free lifecycle, slab cache layout, refill path, buddy backend, ownership tracking) see [architecture.md](architecture.md).
+
+## Status & Limitations
+
+- Alpha-quality software with limited test coverage — expect rough edges, not memory-safety guarantees beyond what's documented.
+- Requires nightly Rust and `rustc 1.96.0`+.
+- Requires a libc with RSEQ TLS support (glibc 2.35+ or equivalent); rsmalloc reads libc's `__rseq_size`/`__rseq_offset` rather than registering RSEQ itself, so older libc versions won't bootstrap.
+- The preload path and the Rust `GlobalAlloc` path are still being separated and stabilized; the public Rust API may still change before a stable release.
+- Big-allocation metadata uses an internal lock-protected red-black tree.
+- Not yet audited across every libc/loader/fork combination.
+- Benchmarks are a development signal, not an authoritative performance claim — test with your own workload.
+
+## Configuration
+
+`RSMallocConfig` groups tuning into a few areas: THP behavior, adaptive refill-predictor settings, magic-value safety, foreign-pointer handling, buddy-cache sizing, slab arena sizing, memory-pressure relief, and refill retry limits.
 
 ```rust
 use rsmalloc::{
@@ -153,148 +78,64 @@ const CONFIG: RSMallocConfig = RSMallocConfig::DEFAULT
 static GLOBAL: RSMalloc = RSMalloc::new_with_config(CONFIG);
 ```
 
-`RSMallocConfig` groups allocator tuning into THP settings, adaptive refill-predictor settings, magic-value safety behavior, foreign-pointer behavior, buddy-cache sizing, slab page-arena minimum sizing, memory-pressure relief behavior, refill retry limits, and alpha feature flags. The default configuration keeps randomized magic values enabled, aborts on foreign pointers in Rust global-allocator mode, enables general THP support, leaves buddy THP forcing disabled, uses the default buddy cache limit, uses a 256 MiB minimum slab page-arena size, leaves memory-pressure relief disabled by default, and starts the refill predictor with allocator defaults.
+Defaults: randomized magic values enabled, abort on foreign pointers, general THP enabled (buddy THP forcing off), default buddy cache limit, 256 MiB minimum slab arena, memory-pressure relief disabled, allocator-default refill predictor.
 
-`THPSettings` uses explicit enums instead of raw booleans: `THP::Enabled` or `THP::Disabled` for general THP behavior, and `BuddyTHP::Disabled` or `BuddyTHP::Force` for buddy-region huge-page requests.
+Weakening magic-value checks (for debugging/reproducible tests/security research) requires an explicit unsafe acknowledgement token — see `MagicSafety`/`MagicSafetyDisable` in the crate docs.
 
-The buddy cache limit is configured with `PerCacheLimit`. `PerCacheLimit::Default` uses the allocator default, while `PerCacheLimit::Bytes(...)` requests an explicit byte limit that is rounded up to a power of two during initialization.
+`RSMalloc` also exposes direct helpers in non-preload builds — `rs_malloc`, `rs_calloc`, `rs_memalign`, `rs_realloc`, `rs_trim`, `rs_free`, `rs_usable_size` — for use only with pointers `RSMalloc` itself returned. `GLOBAL.get_capabilities()` reports version, THP state, and NUMA support without allocating.
 
-The slab page-backend arena minimum is configured through `RSMallocConfig::arena_min_size` using `Bytes(...)`. Its default is 256 MiB. This is a minimum reserved virtual data size rather than a committed-RSS limit: an arena grows to fit a larger refill request, the selected size is page-aligned internally, and physical pages are populated as refill memory is touched.
+### Runtime environment variables (preload builds)
 
-Memory-pressure relief is configured with `ReliefSettings` and is disabled by default. When enabled, the background worker periodically samples system-wide memory pressure. If usage rises above the configured disable threshold, the buddy backend is temporarily disabled and future large allocations are served directly with `mmap`/`munmap` instead of being cached. Once memory pressure remains below the configured re-enable threshold for repeated samples, the buddy backend is re-enabled. This can significantly increase allocation overhead, but may prevent allocator-side caching from worsening OOM-prone workloads. It is intended for memory-constrained or burst-heavy applications rather than maximum-throughput runs.
+| Variable | Default | Meaning |
+|---|---|---|
+| `RS_ARENA_SIZE` | `268435456` (256 MiB) | Minimum slab page-backend arena size in bytes. |
+| `RS_PREDICTOR_INIT_BATCH` | `128` | Initial per-class refill predictor batch. |
+| `RS_MAX_REFILL_RETRIES` | `3` | Max refill retries. |
+| `RS_BUDDY_PER_CACHE_SIZE` | `268435456` | Initial buddy region size; clamped to at least this, rounded to a power of two. |
+| `RS_BUDDY_ATTEMPT_HUGEPAGE` | `0` | Set `1` to request THP for buddy regions. |
+| `RS_DISABLE_TRIM_THREAD` | `0` | Set nonzero to disable the background trim worker (manual `malloc_trim` still works). |
+| `RS_TRIMMER_THRESHOLD` | `10485760` | Minimum cached VA (bytes) before the background trim worker starts. |
+| `RS_ENABLE_RELIEF` | disabled | Set `0` to enable system-memory-pressure relief (yes, `0` enables it in the current alpha). |
+| `RS_BUDDY_RELIEF_DISABLE_PERCENTAGE` | `85` | System memory-usage % at/above which the buddy backend is disabled. |
+| `RS_BUDDY_RELIEF_ENABLE_PERCENTAGE` | `80` | System memory-usage % at/below which the buddy backend may re-enable. |
+| `RS_DISABLE_THP` | `0` | Set `1` to disable transparent huge page attempts. |
+| `RS_DISABLE_RANDOMIZING` | `0` | Set `1` to keep fixed built-in magic values instead of randomizing at bootstrap. |
 
-Rust-mode trimming is available through `RSMalloc::rs_trim(...)`. Use `RSMallocTrim::Request(bytes)` or `RSMallocTrim::All` to ask the buddy backend and eligible small-allocation caches to return cold pages to the kernel. The method returns `RSTrimStatus::Trimmed(bytes)` today; the `Disabled` and `NothingToTrim` variants are reserved for API compatibility as the trim policy evolves. Helper methods include `get_trim_size()`, `succeeded()`, and `disabled()`.
+## Cargo Features
 
-Magic-value behavior can be weakened for debugging, reproducible tests, security research, or allocator experiments. These modes require explicit unsafe acknowledgement:
+| Feature | Effect |
+|---|---|
+| `preload` | Builds the C ABI / `LD_PRELOAD` surface. |
+| `extended-header` | Wider per-allocation header metadata for experiments/stress testing. |
+| `page-backend-no-huge-page` | No-huge-page advice for slab arenas — cuts RSS on THP-aggressive systems (e.g. CachyOS), costs TLB pressure. |
+| `page-backend-huge-page` | Huge-page advice for slab arenas (ignored if the above is also set). |
+| `check-owned-on-alloc` | Semi-hardening: verifies popped allocations are still `RADIX`-owned before returning them. Adds a lookup to the alloc path. |
+| `lazy-page-trim` | Lazy page-free advice for small-allocation trim instead of immediate `MADV_DONTNEED`. |
+| `trim-aggressively` | Skips the idle-class ceiling nudge in trim's average-lifetime tracking, keeping trim eligibility tighter. |
+| `disable-magic-security-checks` | Compile-time-only: disables magic-value double-free/corruption checks. |
+| `print-cpu-on-double-free` | Includes the current RSEQ CPU id in fatal double-free/corruption reports. |
 
-```rust
-use rsmalloc::{
-    DisableMagic, MagicSafety, MagicSafetyDisable, RSMalloc, RSMallocConfig,
-};
+### Debug/diagnostic tiers
 
-const FIXED_MAGIC: RSMallocConfig = RSMallocConfig::DEFAULT.with_magic_safety(
-    MagicSafety::FixedMagic(unsafe {
-        MagicSafetyDisable::acknowledge_safety_risk()
-    }),
-);
+Each tier below enables the previous one plus more. Higher tiers add real overhead — use them for diagnosing behavior, not for benchmarking.
 
-const DISABLE_MAGIC_CHECKS: RSMallocConfig = RSMallocConfig::DEFAULT.with_magic_safety(
-    MagicSafety::Disabled(unsafe {
-        DisableMagic::acknowledge_safety_risk()
-    }),
-);
-
-#[global_allocator]
-static GLOBAL: RSMalloc = RSMalloc::new_with_config(FIXED_MAGIC);
-```
-
-`RSMalloc` also exposes Rust-facing low-level helper methods such as `rs_malloc`, `rs_calloc`, `rs_memalign`, `rs_realloc`, `rs_trim`, `rs_free`, and `rs_usable_size` in non-preload builds. These helpers should only be used with pointers returned by `RSMalloc` where pointer ownership applies.
-
-Capability information is available without allocation:
-
-```rust
-let caps = GLOBAL.get_capabilities();
-```
-
-The capability snapshot reports the allocator version, whether THP is enabled by the current config, and NUMA support status. In `0.2.0-alpha`, NUMA support is reported as `NumaSupport::Partial`: internal allocation paths use NUMA-aware placement when topology is available, but the public capability surface does not yet promise full NUMA policy control.
-
-## Building For Preload
-
-The preload ABI is behind the `preload` feature.
-
-```sh
-cargo build --release --features preload
-```
-
-The generated shared object is intended for LD_PRELOAD-style testing. Preload-specific fallback, libc, fork, and errno handling are compiled only in this mode.
-
-Preload builds currently expose these C ABI symbols: `malloc`, `malloc_usable_size`, `malloc_trim`, `calloc`, `free`, `free_sized`, `free_aligned_sized`, `realloc`, `reallocarray`, `recallocarray`, `posix_memalign`, `memalign`, `aligned_alloc`, `valloc`, and `pvalloc`.
-
-## Optional Cargo Features
-
-For allocator experiments and stress testing, rsmalloc can use wider header metadata:
-
-```sh
-cargo build --release --features extended-header
-```
-
-- `extended-header` uses wider header metadata and implies a larger per-allocation header.
-
-Other optional Cargo features:
-
-- `page-backend-no-huge-page` applies `MADV_NOHUGEPAGE`/`Advice::LinuxNoHugepage` to slab page-backend arenas. This is useful on systems such as CachyOS or other kernels/configurations that aggressively promote transparent huge pages for allocator arenas: it can significantly reduce apparent RSS, at the cost of higher TLB pressure. If both slab page-backend THP advice features are enabled, no explicit page-backend THP advice is applied.
-- `page-backend-huge-page` applies huge-page advice to slab page-backend arenas when `page-backend-no-huge-page` is not enabled. This is a TLB/RSS tradeoff knob; do not enable it on systems where THP promotion already inflates RSS.
-- `check-owned-on-alloc` enables an opt-in semi-hardening ownership check that verifies popped allocation pointers are still owned by `RADIX` before they are returned to callers. This can catch some corrupted freelist/transfer-cache metadata earlier, but it is not a full integrity proof and adds an ownership-map lookup to allocation paths.
-- `lazy-page-trim` uses lazy page-free advice for small-allocation trim where supported instead of immediate `MADV_DONTNEED`-style advice.
-- `print-cpu-on-double-free` includes the current RSEQ CPU id in fatal double-free/corruption reports when available.
-
-### Alpha-2 debug modes
-
-`0.2.0-alpha` has several explicit debug feature tiers. These modes are intentionally split because some are useful for routine allocator visibility while others add significant measurement overhead:
-
-- `debug`: base internal counters, including RSEQ/refill debug counters used by reports and stats.
-- `debug-print`: enables `debug` and prints an allocator report at process exit via `.fini_array`/`eprintln!`.
-- `debug-printer-thread`: enables `debug-print` and starts a background printer thread for live allocator-state snapshots.
-- `debug-exact`: enables `debug-print` and adds higher-overhead lock counters such as lock calls, retries, try-lock misses, and spin waits.
-- `debug-predictor-exact`: enables `debug-print` and uses more intrusive refill-prediction accounting to distinguish over/under prediction behavior.
-- `predictor-debug`: logs predictor batch decisions with `eprintln!` from the predictor path.
-- `transfer-debug`: enables `debug-exact` and tracks transfer-cache steals, dry steals, and CAS retries.
-- `transfer-debug-exact`: enables `transfer-debug` and also counts transfer-cache push/pop calls.
-- `debug-full`: convenience feature for broad transfer/debug instrumentation.
-- `debug-full-critic`: enables broad debug instrumentation plus exact predictor diagnostics.
-
-Use semi-hardening and exact/transfer/predictor debug modes only when diagnosing allocator behavior or corruption; they can materially change benchmark results.
-
-## Runtime Configuration For Preload
-
-- `RS_ARENA_SIZE`: Minimum slab page-backend arena data size in bytes. Defaults to `268435456` (256 MiB). Actual arenas are page-aligned and may be larger when required by a refill request; the reservation does not imply that the entire arena is resident.
-- `RS_PREDICTOR_INIT_BATCH`: Initial per-size-class predictor batch value for small allocation refills. Defaults to `128`.
-- `RS_MAX_REFILL_RETRIES`: Maximum number of refill retries. Defaults to `3`.
-- `RS_BUDDY_PER_CACHE_SIZE`: Initial buddy backend region size for big allocations. Defaults to `268435456` bytes, is clamped to at least `268435456`, and is rounded up to a power of two.
-- `RS_BUDDY_ATTEMPT_HUGEPAGE`: Set to `1` to request transparent huge pages for buddy backend regions.
-- `RS_DISABLE_TRIM_THREAD`: Set to nonzero to disable the background trim worker. Manual `malloc_trim(...)` remains available.
-- `RS_TRIMMER_THRESHOLD`: Minimum cached virtual address space before starting the background trim worker. Defaults to `10485760` bytes.
-- `RS_ENABLE_RELIEF`: Controls system-memory-pressure relief behavior in the current alpha preload path. Relief is disabled by default; set this to `0` to enable it.
-- `RS_BUDDY_RELIEF_DISABLE_PERCENTAGE`: System memory usage percentage at or above which the buddy backend is disabled and buddy trim is forced when relief is enabled. Defaults to `85`.
-- `RS_BUDDY_RELIEF_ENABLE_PERCENTAGE`: System memory usage percentage at or below which the buddy backend may be re-enabled after repeated low-pressure samples. Defaults to `80` and is clamped to the disable percentage.
-- `RS_DISABLE_THP`: Set to `1` to disable transparent huge page attempts.
-- `RS_DISABLE_RANDOMIZING`: Set to `1` to keep fixed built-in magic values instead of randomizing them at bootstrap.
+| Feature | Adds |
+|---|---|
+| `debug` | Base internal counters (RSEQ/refill). |
+| `debug-print` | Exit-time allocator report via `eprintln!`. |
+| `debug-printer-thread` | Background thread for live report snapshots. |
+| `debug-exact` | Lock call/retry/spin-wait counters. |
+| `debug-predictor-exact` | More intrusive refill over/under-prediction accounting. |
+| `predictor-debug` | Per-decision predictor logging. |
+| `transfer-debug` | Transfer-cache steal/dry-steal/CAS-retry counters. |
+| `transfer-debug-exact` | Transfer-cache push/pop call counters. |
+| `debug-full` | Convenience bundle: broad transfer/debug instrumentation. |
+| `debug-full-critic` | `debug-full` plus exact predictor diagnostics. |
 
 ## Architecture
 
-For a fuller architecture walkthrough, see [`architecture.md`](architecture.md).
-
-The allocator is organized into a few main areas:
-
-- `abi`: C ABI entry points for preload builds.
-- `global_alloc`: Rust `GlobalAlloc` integration and direct Rust-facing allocation helpers.
-- `core_prim`: bootstrap, predictor state, fork handling, and pointer wrappers.
-- `inner`: allocator operation implementations such as allocation, free, calloc, realloc, and alignment.
-- `big_allocations`: big allocation path and `BUDDY_BACKEND` implementation.
-- `internals`: internal data structures including `BIG_META_MAP`, `RADIX` ownership tracking, NUMA parsing/binding helpers, locks, and once primitives.
-- `rseq_core`: `SLAB_CACHE` structures, transfer caches, inline assembly critical sections, bulk-fill metadata, and pending refill queues.
-- `utility`: size classes and shared allocation helpers.
-
-## Design Notes
-
-rsmalloc treats the small allocation fast path as a per-CPU cache problem. RSEQ lets the allocator update CPU-local linked lists without normal lock overhead when the current CPU remains stable through the critical section. If the kernel preempts or migrates the thread during that critical section, the operation is aborted and retried or moved to a fallback path.
-
-Big allocations do not use the same slab path. They are tracked separately in `BIG_META_MAP`, can be mapped directly, and can be served from the NUMA-aware `BUDDY_BACKEND` cache for eligible sizes.
-
-### Slab page backend and RSS on aggressive THP systems
-
-`0.2.0-alpha` uses a hybrid slab page backend for refill memory instead of mapping each refill span independently. Each NUMA node gets page arenas with a configurable 256 MiB default minimum; allocation tries cheap bump allocation first, then bitmap-tracked reusable page runs, then maps a new arena if needed. Rust configurations select the minimum with `RSMallocConfig::arena_min_size`, while preload builds use `RS_ARENA_SIZE` in bytes. An arena may exceed the configured minimum when a refill request itself is larger. This reduces `mmap` call count, VMA churn, and scattered refill mappings while keeping refill memory NUMA-local.
-
-The backend reserves virtual arena space, but `bulk_fill()` still initializes headers lazily and `RADIX` marks only the allocated metadata span, not the whole arena. In practice this can reduce RSS even when cached/reserved virtual address space increases. Some systems aggressively promote these arenas to transparent huge pages, though; on those systems, RSS can look much higher than expected when arena slack is backed by huge pages rather than remaining cheap virtual space.
-
-If that happens, build with:
-
-```sh
-cargo build --release --features page-backend-no-huge-page
-```
-
-This asks Linux not to back slab page-backend arenas with huge pages. It can significantly reduce RSS on THP-aggressive systems, at the cost of higher TLB pressure. If your workload is TLB-sensitive and RSS is fine, leave it disabled. The opposite `page-backend-huge-page` feature requests huge-page advice for page-backend arenas when `page-backend-no-huge-page` is not also enabled.
+See [architecture.md](architecture.md) for the full walkthrough. Short version: `abi` (C ABI), `global_alloc` (Rust `GlobalAlloc`), `inner` (shared alloc/free/realloc/calloc/align ops), `rseq_core` (`SLAB_CACHE`, transfer caches, RSEQ asm, refill), `big_allocations` (`BUDDY_BACKEND`), `internals` (`RADIX` ownership map, `BIG_META_MAP`, NUMA, locks), `backend` (slab page arenas), `core_prim` (bootstrap, predictors, fork handling).
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to contribute to rsmalloc.
+See [CONTRIBUTING.md](CONTRIBUTING.md).

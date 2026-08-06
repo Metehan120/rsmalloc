@@ -53,6 +53,38 @@ pub const ITERATIONS: [usize; NUM_SIZE_CLASSES] = {
     arr
 };
 
+const fn refill_total_bytes_for_payload(payload: usize) -> usize {
+    let block_size = align_to(payload + Header::SIZE, 16);
+    let num_blocks = refill_iterations_for_payload(payload);
+    let meta_size = core::mem::size_of::<crate::MetaData>();
+    let total = meta_size + block_size * num_blocks;
+
+    let pages = (total + 4095) / 4096;
+    let available_bytes = pages * 4096 - meta_size;
+    let max_blocks_in_pages = available_bytes / block_size;
+
+    if max_blocks_in_pages > num_blocks {
+        meta_size + block_size * max_blocks_in_pages
+    } else {
+        total
+    }
+}
+
+pub const MIN_REFILL_BYTES: usize = {
+    let mut min = usize::MAX;
+    let mut i = 0;
+
+    while i < NUM_SIZE_CLASSES {
+        let total = refill_total_bytes_for_payload(SIZE_CLASSES[i]);
+        if total < min {
+            min = total;
+        }
+        i += 1;
+    }
+
+    align_to(min, 4096)
+};
+
 pub const SIZE_LUT: [u8; 256] = {
     let mut lut = [0u8; 256];
     let mut i = 0;

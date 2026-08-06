@@ -14,12 +14,12 @@ use rustix::mm::{Advice, MapFlags, ProtFlags, madvise, mmap_anonymous};
 use crate::{
     internals::{binder::prefer_node, once::Once},
     record_mmap_call,
-    utility::align_to,
+    utility::{MIN_REFILL_BYTES, align_to},
 };
 
 const PAGE_SIZE: usize = 4096;
 pub static mut ARENA_SIZE: usize = 1024 * 1024 * 256;
-const BITS_PER_WORD: usize = 64;
+
 #[cfg(feature = "debug")]
 pub static TOTAL_REMOVED: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "debug")]
@@ -31,90 +31,6 @@ struct PageArena {
     base: usize,
     end: usize,
     current: usize,
-    page_count: usize,
-    search_hint: usize,
-    bitmap: *mut u64,
-}
-
-impl PageArena {
-    #[inline(always)]
-    unsafe fn all_used(&self, start: usize, pages: usize) -> bool {
-        let mut page = start;
-        let mut remaining = pages;
-
-        while remaining != 0 {
-            let word = page / BITS_PER_WORD;
-            let first_bit = page & (BITS_PER_WORD - 1);
-            let bits = remaining.min(BITS_PER_WORD - first_bit);
-            let bitmap_word = *self.bitmap.add(word);
-
-            let mask = if bits == BITS_PER_WORD {
-                u64::MAX
-            } else {
-                ((1u64 << bits) - 1) << first_bit
-            };
-
-            if bitmap_word & mask != mask {
-                return false;
-            }
-
-            page += bits;
-            remaining -= bits;
-        }
-
-        true
-    }
-
-    #[inline(always)]
-    unsafe fn all_free(&self, start: usize, pages: usize) -> bool {
-        let mut page = start;
-        let mut remaining = pages;
-
-        while remaining != 0 {
-            let word = page / BITS_PER_WORD;
-            let first_bit = page & (BITS_PER_WORD - 1);
-            let bits = remaining.min(BITS_PER_WORD - first_bit);
-            let bitmap_word = *self.bitmap.add(word);
-
-            let mask = if bits == BITS_PER_WORD {
-                u64::MAX
-            } else {
-                ((1u64 << bits) - 1) << first_bit
-            };
-
-            if bitmap_word & mask != 0 {
-                return false;
-            }
-
-            page += bits;
-            remaining -= bits;
-        }
-
-        true
-    }
-
-    #[inline(always)]
-    unsafe fn mark_range(&mut self, start: usize, pages: usize) {
-        let mut page = start;
-        let mut remaining = pages;
-
-        while remaining != 0 {
-            let word = page / BITS_PER_WORD;
-            let first_bit = page & (BITS_PER_WORD - 1);
-            let bits = remaining.min(BITS_PER_WORD - first_bit);
-            let bitmap_word = self.bitmap.add(word);
-
-            if bits == BITS_PER_WORD {
-                *bitmap_word = u64::MAX;
-            } else {
-                let mask = ((1u64 << bits) - 1) << first_bit;
-                *bitmap_word |= mask;
-            }
-
-            page += bits;
-            remaining -= bits;
-        }
-    }
 }
 
 struct NodeArenaState {
@@ -219,7 +135,6 @@ impl PageAllocator {
     #[inline(always)]
     pub unsafe fn alloc(&self, node_id: u16, size: usize) -> Option<*mut c_void> {
         let size = align_to(size.max(1), PAGE_SIZE);
-        let pages = size / PAGE_SIZE;
         let inner = &mut *self.inner.get();
 
         if inner.arenas.is_null() || inner.node_count == 0 {
@@ -235,39 +150,34 @@ impl PageAllocator {
         let node = &*inner.arenas.add(node);
         let mut state = node.state.lock().unwrap_or_else(|e| e.into_inner());
 
-        if let Some(ptr) = Self::allocate_bump(&mut state, pages) {
+        if let Some(ptr) = Self::allocate_bump(&mut state, size) {
             return Some(ptr);
         }
 
-        if let Some(ptr) = Self::allocate_bit(&mut state, pages, size) {
+        if let Some(ptr) = Self::allocate_bit(&mut state, size) {
             return Some(ptr);
         }
 
         Self::new_arena_locked(&mut state, node.node_id, size)?;
-        Self::allocate_bump(&mut state, pages)
+        Self::allocate_bump(&mut state, size)
     }
 
     #[inline(always)]
-    unsafe fn allocate_bump(state: &mut NodeArenaState, pages: usize) -> Option<*mut c_void> {
+    unsafe fn allocate_bump(state: &mut NodeArenaState, size: usize) -> Option<*mut c_void> {
         if state.current.is_null() {
             return None;
         }
 
         let arena = &mut *state.current;
-        let bytes = pages.checked_mul(PAGE_SIZE)?;
-        let next = arena.current.checked_add(bytes)?;
+        let next = arena.current.checked_add(size)?;
         if next > arena.end {
             return None;
         }
 
-        let start_page = (arena.current - arena.base) / PAGE_SIZE;
         let ptr = arena.current as *mut c_void;
-
-        arena.mark_range(start_page, pages);
         arena.current = next;
-        arena.search_hint = start_page.saturating_add(pages).min(arena.page_count);
 
-        if arena.current == arena.end {
+        if arena.end - arena.current < MIN_REFILL_BYTES {
             Self::remove_arena(state, arena);
         }
 
@@ -275,29 +185,20 @@ impl PageAllocator {
     }
 
     #[inline(always)]
-    unsafe fn allocate_bit(
-        state: &mut NodeArenaState,
-        pages: usize,
-        bytes: usize,
-    ) -> Option<*mut c_void> {
+    unsafe fn allocate_bit(state: &mut NodeArenaState, size: usize) -> Option<*mut c_void> {
         let mut arena = state.arenas;
 
         while !arena.is_null() {
             let arena_ref = &mut *arena;
 
             if arena != state.current {
-                if let Some(next) = arena_ref.current.checked_add(bytes)
+                if let Some(next) = arena_ref.current.checked_add(size)
                     && next <= arena_ref.end
                 {
-                    let start_page = (arena_ref.current - arena_ref.base) / PAGE_SIZE;
                     let ptr = arena_ref.current as *mut c_void;
-
-                    arena_ref.mark_range(start_page, pages);
                     arena_ref.current = next;
-                    arena_ref.search_hint =
-                        start_page.saturating_add(pages).min(arena_ref.page_count);
 
-                    if arena_ref.current == arena_ref.end {
+                    if arena_ref.end - arena_ref.current < MIN_REFILL_BYTES {
                         Self::remove_arena(state, arena);
                     }
 
@@ -328,15 +229,8 @@ impl PageAllocator {
             return true;
         }
 
-        let old_pages = old_size / PAGE_SIZE;
-        let new_pages = new_size / PAGE_SIZE;
         let inner = &mut *self.inner.get();
-
-        if old_pages == 0
-            || new_pages <= old_pages
-            || inner.arenas.is_null()
-            || inner.node_count == 0
-        {
+        if inner.arenas.is_null() || inner.node_count == 0 {
             return false;
         }
 
@@ -347,44 +241,39 @@ impl PageAllocator {
         };
 
         let node = &*inner.arenas.add(node);
-        let state = node.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = node.state.lock().unwrap_or_else(|e| e.into_inner());
         let addr = ptr as usize;
         let mut arena = state.arenas;
 
         while !arena.is_null() {
             let arena_ref = &mut *arena;
             if addr >= arena_ref.base && addr < arena_ref.end {
-                if (addr - arena_ref.base) & (PAGE_SIZE - 1) != 0 {
+                if (addr - arena_ref.base) % PAGE_SIZE != 0 {
                     return false;
                 }
 
-                let start_page = (addr - arena_ref.base) / PAGE_SIZE;
-                let Some(old_end) = start_page.checked_add(old_pages) else {
+                let Some(old_end) = addr.checked_add(old_size) else {
                     return false;
                 };
 
-                let Some(new_end) = start_page.checked_add(new_pages) else {
+                if old_end != arena_ref.current {
+                    return false;
+                }
+
+                let Some(new_end) = addr.checked_add(new_size) else {
                     return false;
                 };
 
-                if new_end > arena_ref.page_count {
+                if new_end > arena_ref.end {
                     return false;
                 }
 
-                if !arena_ref.all_used(start_page, old_end - start_page) {
-                    return false;
+                arena_ref.current = new_end;
+
+                if arena_ref.end - arena_ref.current < MIN_REFILL_BYTES {
+                    Self::remove_arena(&mut state, arena);
                 }
 
-                if !arena_ref.all_free(old_end, new_end - old_end) {
-                    return false;
-                }
-
-                arena_ref.mark_range(old_end, new_end - old_end);
-                let new_current = arena_ref.base + new_end * PAGE_SIZE;
-                if new_current > arena_ref.current {
-                    arena_ref.current = new_current;
-                }
-                arena_ref.search_hint = new_end.min(arena_ref.page_count);
                 return true;
             }
 
@@ -425,14 +314,7 @@ impl PageAllocator {
         // important for overall performance of the allocator;
         // we shouldnt stall too much even in the slowest path
         if ARENA_SIZE >= 1024 * 1024 * 16 {
-            let size = arena.end - arena.base;
-            let page_count = size / PAGE_SIZE;
-            let bitmap_words = (page_count + BITS_PER_WORD - 1) / BITS_PER_WORD;
-            let metadata_size = align_to(
-                size_of::<PageArena>() + bitmap_words * size_of::<u64>(),
-                PAGE_SIZE,
-            );
-
+            let metadata_size = align_to(size_of::<PageArena>(), PAGE_SIZE);
             let _ = madvise(arena_base as *mut c_void, metadata_size, Advice::DontNeed);
         }
     }
@@ -445,12 +327,7 @@ impl PageAllocator {
         requested: usize,
     ) -> Option<()> {
         let data_size = align_to(requested.max(ARENA_SIZE), PAGE_SIZE);
-        let page_count = data_size / PAGE_SIZE;
-        let bitmap_words = (page_count + BITS_PER_WORD - 1) / BITS_PER_WORD;
-        let metadata_size = align_to(
-            size_of::<PageArena>() + bitmap_words * size_of::<u64>(),
-            PAGE_SIZE,
-        );
+        let metadata_size = align_to(size_of::<PageArena>(), PAGE_SIZE);
         let map_size = metadata_size.checked_add(data_size)?;
 
         record_mmap_call(map_size);
@@ -478,7 +355,6 @@ impl PageAllocator {
 
         let arena = mem as *mut PageArena;
         let base = mem as usize + metadata_size;
-        let bitmap = (mem as usize + size_of::<PageArena>()) as *mut u64;
 
         write(
             arena,
@@ -488,9 +364,6 @@ impl PageAllocator {
                 base,
                 end: base.checked_add(data_size)?,
                 current: base,
-                page_count,
-                search_hint: 0,
-                bitmap,
             },
         );
 
@@ -509,31 +382,3 @@ impl PageAllocator {
 }
 
 pub static PAGE_ALLOCATOR: PageAllocator = PageAllocator::new();
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn test_arena(bitmap: &mut [u64; 3]) -> PageArena {
-        PageArena {
-            next: null_mut(),
-            prev: null_mut(),
-            base: 0,
-            end: PAGE_SIZE * BITS_PER_WORD * bitmap.len(),
-            current: 0,
-            page_count: BITS_PER_WORD * bitmap.len(),
-            search_hint: 0,
-            bitmap: bitmap.as_mut_ptr(),
-        }
-    }
-
-    #[test]
-    fn mark_range_batches_full_words_and_preserves_boundaries() {
-        let mut bitmap = [0u64; 3];
-        let mut arena = test_arena(&mut bitmap);
-
-        unsafe { arena.mark_range(63, 66) };
-
-        assert_eq!(bitmap, [1u64 << 63, u64::MAX, 1]);
-    }
-}

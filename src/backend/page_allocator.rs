@@ -150,20 +150,20 @@ impl PageAllocator {
         let node = &*inner.arenas.add(node);
         let mut state = node.state.lock().unwrap_or_else(|e| e.into_inner());
 
-        if let Some(ptr) = Self::allocate_bump(&mut state, size) {
+        if let Some(ptr) = Self::allocate_current(&mut state, size) {
             return Some(ptr);
         }
 
-        if let Some(ptr) = Self::allocate_bit(&mut state, size) {
+        if let Some(ptr) = Self::allocate_search(&mut state, size) {
             return Some(ptr);
         }
 
         Self::new_arena_locked(&mut state, node.node_id, size)?;
-        Self::allocate_bump(&mut state, size)
+        Self::allocate_current(&mut state, size)
     }
 
     #[inline(always)]
-    unsafe fn allocate_bump(state: &mut NodeArenaState, size: usize) -> Option<*mut c_void> {
+    unsafe fn allocate_current(state: &mut NodeArenaState, size: usize) -> Option<*mut c_void> {
         if state.current.is_null() {
             return None;
         }
@@ -185,7 +185,7 @@ impl PageAllocator {
     }
 
     #[inline(always)]
-    unsafe fn allocate_bit(state: &mut NodeArenaState, size: usize) -> Option<*mut c_void> {
+    unsafe fn allocate_search(state: &mut NodeArenaState, size: usize) -> Option<*mut c_void> {
         let mut arena = state.arenas;
 
         while !arena.is_null() {

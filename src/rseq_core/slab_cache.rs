@@ -229,7 +229,7 @@ impl SlabCache {
         }
     }
 
-    #[inline(always)]
+    #[inline(never)]
     unsafe fn try_mark_being_stolen(
         &self,
         inner: &SlabCacheInner,
@@ -249,7 +249,7 @@ impl SlabCache {
         true
     }
 
-    #[inline(always)]
+    #[inline(never)]
     unsafe fn clear_being_stolen(&self, inner: &SlabCacheInner, class: usize, cpu_id: usize) {
         let (word, bit) = self.cpu_word_bit(cpu_id);
         let ptr = inner
@@ -309,7 +309,7 @@ impl SlabCache {
                         continue;
                     }
 
-                    let result = self.transfer_pop(class, victim, batch_size);
+                    let result = self.transfer_pop_batch(class, victim, batch_size);
                     self.clear_being_stolen(inner, class, victim);
 
                     if let Some(block) = result {
@@ -513,6 +513,14 @@ impl SlabCache {
         list
     }
 
+    #[inline(never)]
+    unsafe fn numa_cpu(&self, inner: &SlabCacheInner, cpu_id: usize) -> (usize, usize, u16) {
+        let numa_id = *inner.numa.cpu_to_node.add(cpu_id);
+        let range = *inner.numa.cpu_ranges.add(numa_id as usize);
+
+        (range.start_cpu, range.end_cpu, numa_id)
+    }
+
     #[inline(always)]
     pub unsafe fn try_pop(
         &self,
@@ -520,7 +528,7 @@ impl SlabCache {
         batch_size: usize,
         cpu_id: usize,
     ) -> (UnsafePointer<Header>, UnsafePointer<Header>, usize) {
-        if let Some(popped) = self.transfer_pop(class, cpu_id, batch_size) {
+        if let Some(popped) = self.transfer_pop_batch(class, cpu_id, batch_size) {
             return (
                 UnsafePointer::new(popped.0),
                 UnsafePointer::new(popped.1),
@@ -528,12 +536,19 @@ impl SlabCache {
             );
         }
 
+        self.pop_slow(class, cpu_id, batch_size)
+    }
+
+    #[inline(always)]
+    unsafe fn pop_slow(
+        &self,
+        class: usize,
+        cpu_id: usize,
+        batch_size: usize,
+    ) -> (UnsafePointer<Header>, UnsafePointer<Header>, usize) {
         let inner = *self.inner.get();
         let (start, end, node_id) = if inner.is_numa {
-            let numa_id = *inner.numa.cpu_to_node.add(cpu_id);
-            let range = *inner.numa.cpu_ranges.add(numa_id as usize);
-
-            (range.start_cpu, range.end_cpu, numa_id)
+            self.numa_cpu(&inner, cpu_id)
         } else {
             (0, inner.numa.ncpu - 1, 0)
         };
@@ -543,31 +558,47 @@ impl SlabCache {
         {
             #[cfg(feature = "transfer-debug")]
             crate::TOTAL_TRANSFER_STEALS.fetch_add(1, Ordering::Relaxed);
-
             return block;
         }
 
         if inner.is_numa {
-            for i in 1..inner.numa.nranges {
-                let node_id = (i + node_id as usize) % inner.numa.nranges;
-                let (start, end) = {
-                    let cpu = *inner.numa.cpu_ranges.add(node_id);
-                    (cpu.start_cpu, cpu.end_cpu)
-                };
-
-                if let Some(block) =
-                    self.first_nonempty_cpu_in_range(&inner, class, cpu_id, batch_size, start, end)
-                {
-                    #[cfg(feature = "transfer-debug")]
-                    crate::TOTAL_TRANSFER_STEALS.fetch_add(1, Ordering::Relaxed);
-
-                    return block;
-                }
+            let pointer = self.slowest_numa_steal_path(class, &inner, cpu_id, node_id, batch_size);
+            if !pointer.0.is_null() {
+                return pointer;
             }
         }
 
         #[cfg(feature = "transfer-debug")]
         crate::DRY_TRANSFER_STEALS.fetch_add(1, Ordering::Relaxed);
+
+        (UnsafePointer::NULL, UnsafePointer::NULL, 0)
+    }
+
+    #[inline(never)]
+    pub unsafe fn slowest_numa_steal_path(
+        &self,
+        class: usize,
+        inner: &SlabCacheInner,
+        cpu_id: usize,
+        node_id: u16,
+        batch_size: usize,
+    ) -> (UnsafePointer<Header>, UnsafePointer<Header>, usize) {
+        for i in 1..inner.numa.nranges {
+            let node_id = (i + node_id as usize) % inner.numa.nranges;
+            let (start, end) = {
+                let cpu = *inner.numa.cpu_ranges.add(node_id);
+                (cpu.start_cpu, cpu.end_cpu)
+            };
+
+            if let Some(block) =
+                self.first_nonempty_cpu_in_range(&inner, class, cpu_id, batch_size, start, end)
+            {
+                #[cfg(feature = "transfer-debug")]
+                crate::TOTAL_TRANSFER_STEALS.fetch_add(1, Ordering::Relaxed);
+
+                return block;
+            }
+        }
 
         (UnsafePointer::NULL, UnsafePointer::NULL, 0)
     }
@@ -717,7 +748,7 @@ impl SlabCache {
     }
 
     #[inline(always)]
-    pub unsafe fn transfer_pop(
+    pub unsafe fn transfer_pop_batch(
         &self,
         class: usize,
         cpu_id: usize,

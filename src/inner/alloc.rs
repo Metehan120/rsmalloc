@@ -188,9 +188,7 @@ pub unsafe fn refill(class: usize, cpu_id: usize) -> UnsafePointer<Header> {
         match bulk_fill(class, cpu_id, bulk_batch) {
             Ok((start, tail, count)) => {
                 let observed = if count == bulk_batch && bulk_batch < ITERATIONS[class] {
-                    bulk_batch
-                        .saturating_add((bulk_batch / 4).max(1))
-                        .min(ITERATIONS[class])
+                    bulk_batch.saturating_add((bulk_batch / 4).max(1))
                 } else {
                     count
                 };
@@ -223,22 +221,20 @@ pub unsafe fn refill(class: usize, cpu_id: usize) -> UnsafePointer<Header> {
 #[unsafe(link_section = ".text.hot")]
 #[inline(never)]
 pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
-    let cache_batch = refill!(class);
-    let cpu_id = get_rseq().cpu_id as usize;
-
     #[cfg(feature = "debug")]
     {
         TOTAL_REFILL_CALLS.fetch_add(1, Ordering::Relaxed);
         REFILLS_BY_CLASS[class].fetch_add(1, Ordering::Relaxed);
     }
 
+    let cache_batch = refill!(class);
+    let cpu_id = get_rseq().cpu_id as usize;
+
     let (start, tail, count) = SLAB_CACHE.try_pop(class, cache_batch, cpu_id);
 
-    if count > 0 {
+    if !start.is_null() {
         let observed = if count == cache_batch && cache_batch < ITERATIONS[class] {
-            cache_batch
-                .saturating_add((cache_batch / 4).max(1))
-                .min(ITERATIONS[class])
+            cache_batch.saturating_add((cache_batch / 4).max(1))
         } else {
             count
         };

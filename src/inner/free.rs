@@ -43,14 +43,6 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
     // the supported user-address range follow the configured foreign-pointer
     // policy; addresses outside that range are rejected as invalid
     if !RADIX.is_owned(ptr.cast_usize()) {
-        if unlikely(!RADIX.is_valid_user_addr(ptr.cast_usize())) {
-            RSMallocError::InvalidPointer.log_and_abort(
-                ptr.as_ptr() as *mut c_void,
-                "invalid pointer address",
-                None,
-            );
-        }
-
         #[cfg(feature = "preload")]
         crate::inner::fallback::free_fallback(ptr.cast_as_ptr() as *mut _);
 

@@ -3,12 +3,12 @@
 // Namings were made by me at 3AM (in a sense, not exactly 3AM ofc) do not assume its AI because of clean namings its just me bored ;)
 // - Metehan
 
-use std::{hint::unlikely, os::raw::c_void, ptr::copy_nonoverlapping};
+use std::{os::raw::c_void, ptr::copy_nonoverlapping};
 
 use rustix::mm::{MremapFlags, mremap};
 
 use crate::{
-    BIG_MAGIC, BigAllocMeta, Header, MetaData, RSMallocError, add_slab_cached_va,
+    BIG_MAGIC, BigAllocMeta, Header, MetaData, add_slab_cached_va,
     backend::page_allocator::PAGE_ALLOCATOR,
     big_allocations::{
         big_allocation::estimate_and_align_2mb,
@@ -292,14 +292,6 @@ pub unsafe fn rs_realloc(ptr: UnsafePointer<Header>, new_size: usize) -> UnsafeP
         }
 
         return small_realloc(searched_safe, new_size);
-    }
-
-    if unlikely(!RADIX.is_valid_user_addr(ptr.cast_usize())) {
-        RSMallocError::InvalidPointer.log_and_abort(
-            ptr.as_ptr() as *mut c_void,
-            "invalid pointer address",
-            None,
-        );
     }
 
     #[cfg(feature = "preload")]

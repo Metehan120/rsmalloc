@@ -285,8 +285,16 @@ impl RadixTree {
 
     #[inline(always)]
     pub unsafe fn is_owned(&self, addr: usize) -> bool {
-        if unlikely(self.nodes.l0.is_null() || !Self::valid_user_addr(addr)) {
+        if unlikely(self.nodes.l0.is_null()) {
             return false;
+        }
+
+        if unlikely(!Self::valid_user_addr(addr)) {
+            RSMallocError::InvalidPointer.log_and_abort(
+                addr as *mut c_void,
+                "invalid pointer address",
+                None,
+            );
         }
 
         self.nodes.get(addr / CHUNK_SIZE)
@@ -353,11 +361,6 @@ impl RadixTree {
 
     #[inline(always)]
     const fn valid_user_addr(addr: usize) -> bool {
-        addr < MAX_ADDR
-    }
-
-    #[inline(always)]
-    pub const fn is_valid_user_addr(&self, addr: usize) -> bool {
         addr < MAX_ADDR
     }
 }

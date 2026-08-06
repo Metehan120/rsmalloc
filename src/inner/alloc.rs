@@ -1,5 +1,4 @@
 use std::hint::unlikely;
-use std::os::raw::c_void;
 use std::sync::atomic::AtomicBool;
 use std::{hint::likely, ptr::null_mut};
 
@@ -346,14 +345,6 @@ pub unsafe fn usable_size(ptr: UnsafePointer<Header>) -> usize {
         let total_payload = SIZE_CLASSES[header.class as usize];
 
         return total_payload.saturating_sub(offset);
-    }
-
-    if unlikely(!RADIX.is_valid_user_addr(ptr.cast_usize())) {
-        RSMallocError::InvalidPointer.log_and_abort(
-            ptr.as_ptr() as *mut c_void,
-            "invalid pointer address",
-            None,
-        );
     }
 
     #[cfg(feature = "preload")]

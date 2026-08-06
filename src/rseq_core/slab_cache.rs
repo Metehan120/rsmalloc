@@ -281,6 +281,10 @@ impl SlabCache {
                 let mut bits =
                     (*inner.nonempty_bitmap.add(base + word_idx)).load(Ordering::Relaxed);
 
+                if bits == 0 {
+                    continue;
+                }
+
                 if word_idx == start_word {
                     bits &= !0u64 << (start & 63);
                 }

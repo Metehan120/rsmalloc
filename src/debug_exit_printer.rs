@@ -1,6 +1,6 @@
 // Written by CODEX but should be good enough for use
 
-use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::Ordering::{self, Relaxed};
 
 #[cfg(feature = "debug-exact")]
 use crate::trim::{TOTAL_TRIMMED_BLOCKS, TOTAL_TRIMMED_TIME};
@@ -9,6 +9,7 @@ use crate::{
     HIGH_WATER_BUDDY_CACHED_VA, HIGH_WATER_SLAB_CACHED_VA, HIGH_WATER_TOTAL_CACHED_VA, NCPU,
     REFILL_OVER_PREDICTS, REFILL_UNDER_PREDICTS, REFILLS_BY_CLASS, START_TIME, TOTAL_CACHED_VA,
     TOTAL_MMAP_BYTES, TOTAL_MMAP_CALLS, TOTAL_REFILL_CALLS,
+    backend::page_allocator::{PAGE_ALLOCATOR, TOTAL_LIVED, TOTAL_REMOVED},
     big_allocations::buddy::{BIG_BUDDY_MIN_ORDER, BUDDY_BACKEND, BUDDY_TOTAL_CACHED_VA},
     internals::radix_tree::{CHUNK_SIZE, RADIX},
     rseq_core::slab_cache::SLAB_CACHE,
@@ -352,7 +353,10 @@ pub(crate) unsafe fn print_report() {
     item(
         &mut report,
         "avg buddy life",
-        format!("{} ms", BUDDY_AVERAGE_BLOCK_TIMES.load(Relaxed) as u64 * 100),
+        format!(
+            "{} ms",
+            BUDDY_AVERAGE_BLOCK_TIMES.load(Relaxed) as u64 * 100
+        ),
     );
     item(&mut report, "buddy disabled", DISABLE_BUDDY.load(Relaxed));
 
@@ -445,6 +449,25 @@ pub(crate) unsafe fn print_report() {
         &mut report,
         "metadata / chunk",
         format!("{:.2} bytes", metadata_per_owned),
+    );
+
+    section(&mut report, "page allocator");
+    let arena_counts = PAGE_ALLOCATOR.arena_counts();
+    let mut total_arenas = 0usize;
+    for (node, count) in arena_counts.iter().enumerate() {
+        item(&mut report, &format!("node {} arenas", node), *count);
+        total_arenas += count;
+    }
+    item(&mut report, "total arenas", total_arenas);
+    item(
+        &mut report,
+        "total lived",
+        TOTAL_LIVED.load(Ordering::Relaxed),
+    );
+    item(
+        &mut report,
+        "total removed",
+        TOTAL_REMOVED.load(Ordering::Relaxed),
     );
 
     eprintln!("{}", report);

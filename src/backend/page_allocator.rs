@@ -1,7 +1,3 @@
-// Audit PageAllocator later before Alpha-3 release
-//
-// - Metehan
-
 use std::{
     cell::UnsafeCell,
     mem::size_of,
@@ -10,18 +6,10 @@ use std::{
     sync::Mutex,
 };
 
-#[cfg(any(
-    all(
-        feature = "page-backend-no-huge-page",
-        not(feature = "page-backend-huge-page")
-    ),
-    all(
-        feature = "page-backend-huge-page",
-        not(feature = "page-backend-no-huge-page")
-    )
-))]
-use rustix::mm::{Advice, madvise};
-use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
+#[cfg(feature = "debug")]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use rustix::mm::{Advice, MapFlags, ProtFlags, madvise, mmap_anonymous};
 
 use crate::{
     internals::{binder::prefer_node, once::Once},
@@ -32,9 +20,14 @@ use crate::{
 const PAGE_SIZE: usize = 4096;
 pub static mut ARENA_SIZE: usize = 1024 * 1024 * 256;
 const BITS_PER_WORD: usize = 64;
+#[cfg(feature = "debug")]
+pub static TOTAL_REMOVED: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "debug")]
+pub static TOTAL_LIVED: AtomicUsize = AtomicUsize::new(0);
 
 struct PageArena {
     next: *mut PageArena,
+    prev: *mut PageArena,
     base: usize,
     end: usize,
     current: usize,
@@ -45,15 +38,59 @@ struct PageArena {
 
 impl PageArena {
     #[inline(always)]
-    unsafe fn page_ptr(&self, page: usize) -> *mut c_void {
-        (self.base + page * PAGE_SIZE) as *mut c_void
+    unsafe fn all_used(&self, start: usize, pages: usize) -> bool {
+        let mut page = start;
+        let mut remaining = pages;
+
+        while remaining != 0 {
+            let word = page / BITS_PER_WORD;
+            let first_bit = page & (BITS_PER_WORD - 1);
+            let bits = remaining.min(BITS_PER_WORD - first_bit);
+            let bitmap_word = *self.bitmap.add(word);
+
+            let mask = if bits == BITS_PER_WORD {
+                u64::MAX
+            } else {
+                ((1u64 << bits) - 1) << first_bit
+            };
+
+            if bitmap_word & mask != mask {
+                return false;
+            }
+
+            page += bits;
+            remaining -= bits;
+        }
+
+        true
     }
 
     #[inline(always)]
-    unsafe fn is_used(&self, page: usize) -> bool {
-        let word = page / BITS_PER_WORD;
-        let bit = 1u64 << (page & (BITS_PER_WORD - 1));
-        *self.bitmap.add(word) & bit != 0
+    unsafe fn all_free(&self, start: usize, pages: usize) -> bool {
+        let mut page = start;
+        let mut remaining = pages;
+
+        while remaining != 0 {
+            let word = page / BITS_PER_WORD;
+            let first_bit = page & (BITS_PER_WORD - 1);
+            let bits = remaining.min(BITS_PER_WORD - first_bit);
+            let bitmap_word = *self.bitmap.add(word);
+
+            let mask = if bits == BITS_PER_WORD {
+                u64::MAX
+            } else {
+                ((1u64 << bits) - 1) << first_bit
+            };
+
+            if bitmap_word & mask != 0 {
+                return false;
+            }
+
+            page += bits;
+            remaining -= bits;
+        }
+
+        true
     }
 
     #[inline(always)]
@@ -77,77 +114,6 @@ impl PageArena {
             page += bits;
             remaining -= bits;
         }
-    }
-
-    #[inline(always)]
-    unsafe fn clear_range(&mut self, start: usize, pages: usize) {
-        let mut page = start;
-        let mut remaining = pages;
-
-        while remaining != 0 {
-            let word = page / BITS_PER_WORD;
-            let first_bit = page & (BITS_PER_WORD - 1);
-            let bits = remaining.min(BITS_PER_WORD - first_bit);
-            let bitmap_word = self.bitmap.add(word);
-
-            if bits == BITS_PER_WORD {
-                *bitmap_word = 0;
-            } else {
-                let mask = ((1u64 << bits) - 1) << first_bit;
-                *bitmap_word &= !mask;
-            }
-
-            page += bits;
-            remaining -= bits;
-        }
-    }
-
-    #[inline(always)]
-    unsafe fn range_is_free(&self, start: usize, pages: usize) -> bool {
-        if start
-            .checked_add(pages)
-            .is_none_or(|end| end > self.page_count)
-        {
-            return false;
-        }
-
-        for page in start..start + pages {
-            if self.is_used(page) {
-                return false;
-            }
-        }
-
-        true
-    }
-
-    #[inline(always)]
-    unsafe fn find_free_run_in(&self, start: usize, end: usize, pages: usize) -> Option<usize> {
-        if pages == 0 || pages > self.page_count || start >= end {
-            return None;
-        }
-
-        let mut page = start;
-        let limit = end.saturating_sub(pages).saturating_add(1);
-
-        while page < limit {
-            if self.range_is_free(page, pages) {
-                return Some(page);
-            }
-            page += 1;
-        }
-
-        None
-    }
-
-    #[inline(always)]
-    unsafe fn find_free_run(&self, pages: usize) -> Option<usize> {
-        let hint = self.search_hint.min(self.page_count);
-
-        if let Some(page) = self.find_free_run_in(hint, self.page_count, pages) {
-            return Some(page);
-        }
-
-        self.find_free_run_in(0, hint, pages)
     }
 }
 
@@ -225,13 +191,33 @@ impl PageAllocator {
         });
     }
 
-    #[inline(always)]
-    pub unsafe fn alloc(&self, node_id: u16, size: usize) -> Option<*mut c_void> {
-        self.allocate(node_id, size)
+    #[cfg(feature = "debug")]
+    pub unsafe fn arena_counts(&self) -> Vec<usize> {
+        let inner = &*self.inner.get();
+        if inner.arenas.is_null() {
+            return Vec::new();
+        }
+
+        let mut counts = Vec::with_capacity(inner.node_count);
+        for node in 0..inner.node_count {
+            let node_ref = &*inner.arenas.add(node);
+            let state = node_ref.state.lock().unwrap_or_else(|e| e.into_inner());
+
+            let mut count = 0usize;
+            let mut arena = state.arenas;
+            while !arena.is_null() {
+                count += 1;
+                arena = (*arena).next;
+            }
+
+            counts.push(count);
+        }
+
+        counts
     }
 
     #[inline(always)]
-    unsafe fn allocate(&self, node_id: u16, size: usize) -> Option<*mut c_void> {
+    pub unsafe fn alloc(&self, node_id: u16, size: usize) -> Option<*mut c_void> {
         let size = align_to(size.max(1), PAGE_SIZE);
         let pages = size / PAGE_SIZE;
         let inner = &mut *self.inner.get();
@@ -245,6 +231,7 @@ impl PageAllocator {
         } else {
             node_id as usize
         };
+
         let node = &*inner.arenas.add(node);
         let mut state = node.state.lock().unwrap_or_else(|e| e.into_inner());
 
@@ -252,7 +239,7 @@ impl PageAllocator {
             return Some(ptr);
         }
 
-        if let Some(ptr) = Self::allocate_bit(&mut state, pages) {
+        if let Some(ptr) = Self::allocate_bit(&mut state, pages, size) {
             return Some(ptr);
         }
 
@@ -280,19 +267,42 @@ impl PageAllocator {
         arena.current = next;
         arena.search_hint = start_page.saturating_add(pages).min(arena.page_count);
 
+        if arena.current == arena.end {
+            Self::remove_arena(state, arena);
+        }
+
         Some(ptr)
     }
 
     #[inline(always)]
-    unsafe fn allocate_bit(state: &mut NodeArenaState, pages: usize) -> Option<*mut c_void> {
+    unsafe fn allocate_bit(
+        state: &mut NodeArenaState,
+        pages: usize,
+        bytes: usize,
+    ) -> Option<*mut c_void> {
         let mut arena = state.arenas;
 
         while !arena.is_null() {
             let arena_ref = &mut *arena;
-            if let Some(start_page) = arena_ref.find_free_run(pages) {
-                arena_ref.mark_range(start_page, pages);
-                arena_ref.search_hint = start_page.saturating_add(pages).min(arena_ref.page_count);
-                return Some(arena_ref.page_ptr(start_page));
+
+            if arena != state.current {
+                if let Some(next) = arena_ref.current.checked_add(bytes)
+                    && next <= arena_ref.end
+                {
+                    let start_page = (arena_ref.current - arena_ref.base) / PAGE_SIZE;
+                    let ptr = arena_ref.current as *mut c_void;
+
+                    arena_ref.mark_range(start_page, pages);
+                    arena_ref.current = next;
+                    arena_ref.search_hint =
+                        start_page.saturating_add(pages).min(arena_ref.page_count);
+
+                    if arena_ref.current == arena_ref.end {
+                        Self::remove_arena(state, arena);
+                    }
+
+                    return Some(ptr);
+                }
             }
 
             arena = arena_ref.next;
@@ -335,6 +345,7 @@ impl PageAllocator {
         } else {
             node_id as usize
         };
+
         let node = &*inner.arenas.add(node);
         let state = node.state.lock().unwrap_or_else(|e| e.into_inner());
         let addr = ptr as usize;
@@ -351,6 +362,7 @@ impl PageAllocator {
                 let Some(old_end) = start_page.checked_add(old_pages) else {
                     return false;
                 };
+
                 let Some(new_end) = start_page.checked_add(new_pages) else {
                     return false;
                 };
@@ -359,16 +371,12 @@ impl PageAllocator {
                     return false;
                 }
 
-                for page in start_page..old_end {
-                    if !arena_ref.is_used(page) {
-                        return false;
-                    }
+                if !arena_ref.all_used(start_page, old_end - start_page) {
+                    return false;
                 }
 
-                for page in old_end..new_end {
-                    if arena_ref.is_used(page) {
-                        return false;
-                    }
+                if !arena_ref.all_free(old_end, new_end - old_end) {
+                    return false;
                 }
 
                 arena_ref.mark_range(old_end, new_end - old_end);
@@ -386,54 +394,47 @@ impl PageAllocator {
         false
     }
 
-    #[allow(dead_code)]
-    pub unsafe fn release(&self, node_id: u16, ptr: *mut c_void, size: usize) -> bool {
-        if ptr.is_null() {
-            return false;
+    unsafe fn remove_arena(state: &mut NodeArenaState, arena_base: *mut PageArena) {
+        if arena_base.is_null() {
+            return;
         }
 
-        let size = align_to(size.max(1), PAGE_SIZE);
-        let pages = size / PAGE_SIZE;
-        let inner = &mut *self.inner.get();
+        let arena = &mut *arena_base;
 
-        if inner.arenas.is_null() || inner.node_count == 0 {
-            return false;
-        }
+        let next = arena.next;
+        let prev = arena.prev;
 
-        let node = if node_id as usize >= inner.node_count {
-            0
+        if !prev.is_null() {
+            (*prev).next = next;
         } else {
-            node_id as usize
-        };
-        let node = &*inner.arenas.add(node);
-        let state = node.state.lock().unwrap_or_else(|e| e.into_inner());
-        let addr = ptr as usize;
-        let mut arena = state.arenas;
-
-        while !arena.is_null() {
-            let arena_ref = &mut *arena;
-            if addr >= arena_ref.base && addr < arena_ref.end {
-                if (addr - arena_ref.base) & (PAGE_SIZE - 1) != 0 {
-                    return false;
-                }
-
-                let start_page = (addr - arena_ref.base) / PAGE_SIZE;
-                if start_page
-                    .checked_add(pages)
-                    .is_none_or(|end| end > arena_ref.page_count)
-                {
-                    return false;
-                }
-
-                arena_ref.clear_range(start_page, pages);
-                arena_ref.search_hint = arena_ref.search_hint.min(start_page);
-                return true;
-            }
-
-            arena = arena_ref.next;
+            state.arenas = next;
         }
 
-        false
+        if !next.is_null() {
+            (*next).prev = prev;
+        }
+
+        if state.current == arena_base {
+            state.current = next;
+        }
+
+        #[cfg(feature = "debug")]
+        TOTAL_REMOVED.fetch_add(1, Ordering::Relaxed);
+
+        // avoid too much madvise calls on small arena sizes
+        // important for overall performance of the allocator;
+        // we shouldnt stall too much even in the slowest path
+        if ARENA_SIZE >= 1024 * 1024 * 16 {
+            let size = arena.end - arena.base;
+            let page_count = size / PAGE_SIZE;
+            let bitmap_words = (page_count + BITS_PER_WORD - 1) / BITS_PER_WORD;
+            let metadata_size = align_to(
+                size_of::<PageArena>() + bitmap_words * size_of::<u64>(),
+                PAGE_SIZE,
+            );
+
+            let _ = madvise(arena_base as *mut c_void, metadata_size, Advice::DontNeed);
+        }
     }
 
     #[cold]
@@ -483,6 +484,7 @@ impl PageAllocator {
             arena,
             PageArena {
                 next: state.arenas,
+                prev: null_mut(),
                 base,
                 end: base.checked_add(data_size)?,
                 current: base,
@@ -492,8 +494,15 @@ impl PageAllocator {
             },
         );
 
+        if !state.arenas.is_null() {
+            (*state.current).prev = arena;
+        }
+
         state.arenas = arena;
         state.current = arena;
+
+        #[cfg(feature = "debug")]
+        TOTAL_LIVED.fetch_add(1, Ordering::Relaxed);
 
         Some(())
     }
@@ -508,6 +517,7 @@ mod tests {
     fn test_arena(bitmap: &mut [u64; 3]) -> PageArena {
         PageArena {
             next: null_mut(),
+            prev: null_mut(),
             base: 0,
             end: PAGE_SIZE * BITS_PER_WORD * bitmap.len(),
             current: 0,
@@ -525,15 +535,5 @@ mod tests {
         unsafe { arena.mark_range(63, 66) };
 
         assert_eq!(bitmap, [1u64 << 63, u64::MAX, 1]);
-    }
-
-    #[test]
-    fn clear_range_batches_full_words_and_preserves_boundaries() {
-        let mut bitmap = [u64::MAX; 3];
-        let mut arena = test_arena(&mut bitmap);
-
-        unsafe { arena.clear_range(63, 66) };
-
-        assert_eq!(bitmap, [u64::MAX >> 1, 0, u64::MAX & !1]);
     }
 }

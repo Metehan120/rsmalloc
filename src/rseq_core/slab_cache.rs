@@ -761,6 +761,20 @@ impl SlabCache {
         }
     }
 
+    #[inline(never)]
+    unsafe fn clear_hint(
+        &self,
+        ptr: &AtomicUsize,
+        inner: &SlabCacheInner,
+        class: usize,
+        cpu_id: usize,
+    ) {
+        self.clear_class_hint(inner, class, cpu_id);
+        if !unpack_ptr(ptr.load(Ordering::Acquire)).0.is_null() {
+            self.mark_class_nonempty(inner, class, cpu_id);
+        }
+    }
+
     #[inline(always)]
     pub unsafe fn transfer_pop_batch(
         &self,
@@ -786,11 +800,7 @@ impl SlabCache {
                     list_ptr = &trimmed_ptr;
                     continue;
                 }
-
-                self.clear_class_hint(inner, class, cpu_id);
-                if !unpack_ptr(normal_ptr.load(Ordering::Acquire)).0.is_null() {
-                    self.mark_class_nonempty(inner, class, cpu_id);
-                }
+                self.clear_hint(normal_ptr, inner, class, cpu_id);
                 return None;
             }
 
@@ -813,6 +823,8 @@ impl SlabCache {
             {
                 if !next.is_null() {
                     _mm_prefetch(next as *const i8, _MM_HINT_T0);
+                } else {
+                    self.clear_hint(normal_ptr, inner, class, cpu_id);
                 }
                 return Some((head, tail, count));
             }

@@ -229,6 +229,13 @@ impl SlabCache {
         }
     }
 
+    unsafe fn is_empty(&self, inner: &SlabCacheInner, class: usize, cpu_id: usize) -> bool {
+        let (word, bit) = self.cpu_word_bit(cpu_id);
+        let ptr = self.bitmap_word(inner, class, word);
+
+        (*ptr).load(Ordering::Relaxed) & bit == 0
+    }
+
     #[inline(never)]
     unsafe fn try_mark_being_stolen(
         &self,
@@ -531,25 +538,29 @@ impl SlabCache {
         batch_size: usize,
         cpu_id: usize,
     ) -> (UnsafePointer<Header>, UnsafePointer<Header>, usize) {
-        if let Some(popped) = self.transfer_pop_batch(class, cpu_id, batch_size) {
-            return (
-                UnsafePointer::new(popped.0),
-                UnsafePointer::new(popped.1),
-                popped.2,
-            );
+        let inner = &*self.inner.get();
+
+        if !self.is_empty(inner, class, cpu_id) {
+            if let Some(popped) = self.transfer_pop_batch(class, cpu_id, batch_size) {
+                return (
+                    UnsafePointer::new(popped.0),
+                    UnsafePointer::new(popped.1),
+                    popped.2,
+                );
+            }
         }
 
-        self.pop_slow(class, cpu_id, batch_size)
+        self.pop_slow(inner, class, cpu_id, batch_size)
     }
 
     #[inline(always)]
     unsafe fn pop_slow(
         &self,
+        inner: &SlabCacheInner,
         class: usize,
         cpu_id: usize,
         batch_size: usize,
     ) -> (UnsafePointer<Header>, UnsafePointer<Header>, usize) {
-        let inner = *self.inner.get();
         let (start, end, node_id) = if inner.is_numa {
             self.numa_cpu(&inner, cpu_id)
         } else {

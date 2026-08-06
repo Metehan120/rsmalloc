@@ -277,24 +277,23 @@ impl SlabCache {
         let end_word = end >> 6;
 
         for word_idx in start_word..=end_word {
-            let mut bits = (*inner.nonempty_bitmap.add(base + word_idx)).load(Ordering::Relaxed);
-
-            if word_idx == start_word {
-                bits &= !0u64 << (start & 63);
-            }
-
-            if word_idx == end_word {
-                let last = end & 63;
-                bits &= if last == 63 {
-                    !0u64
-                } else {
-                    (1u64 << (last + 1)) - 1
-                };
-            }
-
-            let word_bits = bits;
             for force_steal in [false, true] {
-                bits = word_bits;
+                let mut bits =
+                    (*inner.nonempty_bitmap.add(base + word_idx)).load(Ordering::Relaxed);
+
+                if word_idx == start_word {
+                    bits &= !0u64 << (start & 63);
+                }
+
+                if word_idx == end_word {
+                    let last = end & 63;
+                    bits &= if last == 63 {
+                        !0u64
+                    } else {
+                        (1u64 << (last + 1)) - 1
+                    };
+                }
+
                 while bits != 0 {
                     let bit = bits.trailing_zeros() as usize;
                     bits &= bits - 1;

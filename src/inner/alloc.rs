@@ -1,5 +1,7 @@
 use std::hint::unlikely;
 use std::sync::atomic::AtomicBool;
+#[cfg(feature = "debug-full-critic")]
+use std::sync::atomic::AtomicUsize;
 use std::{hint::likely, ptr::null_mut};
 
 use crate::ALLOCATED_FLAG;
@@ -278,10 +280,16 @@ macro_rules! is_owned {
     };
 }
 
+#[cfg(feature = "debug-full-critic")]
+pub static RS_ALLOC_CALLS_DEBUG: AtomicUsize = AtomicUsize::new(0);
+
 #[inline(always)]
 pub unsafe fn rs_alloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
     #[cfg(feature = "preload")]
     ONCE.call_once(|| crate::core_prim::bootstrap::bootstrap());
+
+    #[cfg(feature = "debug-full-critic")]
+    RS_ALLOC_CALLS_DEBUG.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     let class = match_size_class(size);
 

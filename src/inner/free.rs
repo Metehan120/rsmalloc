@@ -1,3 +1,5 @@
+#[cfg(feature = "debug-full-critic")]
+use std::sync::atomic::AtomicUsize;
 use std::{hint::unlikely, os::raw::c_void, ptr::read_unaligned, sync::atomic::Ordering};
 
 use crate::{
@@ -33,11 +35,17 @@ pub unsafe fn find_original_ptr(ptr: UnsafePointer<Header>) -> UnsafePointer<Hea
     header_search_ptr
 }
 
+#[cfg(feature = "debug-full-critic")]
+pub static RS_FREE_CALLS_DEBUG: AtomicUsize = AtomicUsize::new(0);
+
 #[inline(always)]
 pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
     if unlikely(ptr.is_null()) {
         return;
     }
+
+    #[cfg(feature = "debug-full-critic")]
+    RS_FREE_CALLS_DEBUG.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     // Classify ownership before reading allocator metadata unowned pointers within
     // the supported user-address range follow the configured foreign-pointer

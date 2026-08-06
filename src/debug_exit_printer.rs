@@ -2,6 +2,8 @@
 
 use std::sync::atomic::Ordering::{self, Relaxed};
 
+#[cfg(feature = "debug-full-critic")]
+use crate::inner::{alloc::RS_ALLOC_CALLS_DEBUG, free::RS_FREE_CALLS_DEBUG};
 #[cfg(feature = "debug-exact")]
 use crate::trim::{TOTAL_TRIMMED_BLOCKS, TOTAL_TRIMMED_TIME};
 use crate::{
@@ -9,7 +11,7 @@ use crate::{
     HIGH_WATER_BUDDY_CACHED_VA, HIGH_WATER_SLAB_CACHED_VA, HIGH_WATER_TOTAL_CACHED_VA, NCPU,
     REFILL_OVER_PREDICTS, REFILL_UNDER_PREDICTS, REFILLS_BY_CLASS, START_TIME, TOTAL_CACHED_VA,
     TOTAL_MMAP_BYTES, TOTAL_MMAP_CALLS, TOTAL_REFILL_CALLS,
-    backend::page_allocator::{PAGE_ALLOCATOR, TOTAL_LIVED, TOTAL_REMOVED},
+    backend::page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR, TOTAL_LIVED, TOTAL_REMOVED},
     big_allocations::buddy::{BIG_BUDDY_MIN_ORDER, BUDDY_BACKEND, BUDDY_TOTAL_CACHED_VA},
     internals::radix_tree::{CHUNK_SIZE, RADIX},
     rseq_core::slab_cache::SLAB_CACHE,
@@ -468,6 +470,22 @@ pub(crate) unsafe fn print_report() {
         &mut report,
         "total removed",
         TOTAL_REMOVED.load(Ordering::Relaxed),
+    );
+    item(&mut report, "arena size", ARENA_SIZE);
+
+    #[cfg(feature = "debug-full-critic")]
+    section(&mut report, "alloc / free traffic");
+    #[cfg(feature = "debug-full-critic")]
+    item(
+        &mut report,
+        "alloc calls",
+        RS_ALLOC_CALLS_DEBUG.load(Ordering::Relaxed),
+    );
+    #[cfg(feature = "debug-full-critic")]
+    item(
+        &mut report,
+        "free calls",
+        RS_FREE_CALLS_DEBUG.load(Ordering::Relaxed),
     );
 
     eprintln!("{}", report);

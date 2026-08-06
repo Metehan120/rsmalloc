@@ -53,6 +53,7 @@ pub struct SlabCacheInner {
     pub is_numa: bool,
     bitmap_words: usize,
     nonempty_bitmap: *mut AtomicU64,
+    being_stolen_bitmap: *mut AtomicU64,
 }
 
 pub struct SlabCache {
@@ -88,6 +89,7 @@ impl SlabCache {
                 },
                 is_numa: false,
                 nonempty_bitmap: null_mut(),
+                being_stolen_bitmap: null_mut(),
                 bitmap_words: 0,
             }),
             once: Once::new(),
@@ -169,6 +171,22 @@ impl SlabCache {
             inner.nonempty_bitmap = empty_bitmap;
             inner.bitmap_words = bitmap_words;
 
+            record_mmap_call(bitmap_bytes);
+            let stolen_bitmap = mmap_anonymous(
+                null_mut(),
+                bitmap_bytes,
+                ProtFlags::READ | ProtFlags::WRITE,
+                MapFlags::PRIVATE,
+            )
+            .unwrap_or_else(|err| {
+                RSMallocError::OutOfMemory.log_and_abort(
+                    null_mut(),
+                    "cannot initialize stolen bitmap",
+                    Some(err.raw_os_error()),
+                )
+            }) as *mut AtomicU64;
+            inner.being_stolen_bitmap = stolen_bitmap;
+
             PENDING_QUEUE.init(inner.numa.nranges, inner.is_numa);
             NCPU = ncpu;
         });
@@ -212,6 +230,38 @@ impl SlabCache {
     }
 
     #[inline(always)]
+    unsafe fn try_mark_being_stolen(
+        &self,
+        inner: &SlabCacheInner,
+        class: usize,
+        cpu_id: usize,
+    ) -> bool {
+        let (word, bit) = self.cpu_word_bit(cpu_id);
+        let ptr = inner
+            .being_stolen_bitmap
+            .add(class * inner.bitmap_words + word);
+
+        if (*ptr).load(Ordering::Relaxed) & bit != 0 {
+            return false;
+        }
+
+        (*ptr).fetch_or(bit, Ordering::Relaxed);
+        true
+    }
+
+    #[inline(always)]
+    unsafe fn clear_being_stolen(&self, inner: &SlabCacheInner, class: usize, cpu_id: usize) {
+        let (word, bit) = self.cpu_word_bit(cpu_id);
+        let ptr = inner
+            .being_stolen_bitmap
+            .add(class * inner.bitmap_words + word);
+
+        if (*ptr).load(Ordering::Relaxed) & bit != 0 {
+            (*ptr).fetch_and(!bit, Ordering::Relaxed);
+        }
+    }
+
+    #[inline(always)]
     unsafe fn first_nonempty_cpu_in_range(
         &self,
         inner: &SlabCacheInner,
@@ -242,22 +292,33 @@ impl SlabCache {
                 };
             }
 
-            while bits != 0 {
-                let bit = bits.trailing_zeros() as usize;
-                bits &= bits - 1;
+            let word_bits = bits;
+            for force_steal in [false, true] {
+                bits = word_bits;
+                while bits != 0 {
+                    let bit = bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
 
-                let victim = word_idx * 64 + bit;
+                    let victim = word_idx * 64 + bit;
 
-                if victim == cpu_id {
-                    continue;
-                }
+                    if victim == cpu_id {
+                        continue;
+                    }
 
-                if let Some(block) = self.transfer_pop(class, victim, batch_size) {
-                    return Some((
-                        UnsafePointer::new(block.0),
-                        UnsafePointer::new(block.1),
-                        block.2,
-                    ));
+                    if !self.try_mark_being_stolen(inner, class, victim) && !force_steal {
+                        continue;
+                    }
+
+                    let result = self.transfer_pop(class, victim, batch_size);
+                    self.clear_being_stolen(inner, class, victim);
+
+                    if let Some(block) = result {
+                        return Some((
+                            UnsafePointer::new(block.0),
+                            UnsafePointer::new(block.1),
+                            block.2,
+                        ));
+                    }
                 }
             }
         }

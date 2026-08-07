@@ -25,7 +25,12 @@ use crate::{
         once::Once,
     },
     record_mmap_call,
-    rseq_core::{pending_queue::PENDING_QUEUE, rseq_asm::RseqCore, rseq_offsets::get_rseq},
+    rseq_core::{
+        bitmap::{cpu_bit_clear, cpu_bit_set, cpu_is_empty, cpu_try_marking},
+        pending_queue::PENDING_QUEUE,
+        rseq_asm::RseqCore,
+        rseq_offsets::get_rseq,
+    },
     utility::{CACHE_HIGH_BLOCKS, NUM_SIZE_CLASSES},
 };
 
@@ -152,12 +157,13 @@ impl SlabCache {
 
             let alloc_size = ncpu + 1;
             let bitmap_words = ((alloc_size + 63) / 64).max(1);
-
             let bitmap_bytes = size_of::<AtomicU64>() * bitmap_words * NUM_SIZE_CLASSES;
-            record_mmap_call(bitmap_bytes);
-            let empty_bitmap = mmap_anonymous(
+            let bitmaps_each = bitmap_bytes / 8;
+
+            record_mmap_call(bitmap_bytes * 3);
+            let bitmap = mmap_anonymous(
                 null_mut(),
-                bitmap_bytes,
+                bitmap_bytes * 3,
                 ProtFlags::READ | ProtFlags::WRITE,
                 MapFlags::PRIVATE,
             )
@@ -168,24 +174,9 @@ impl SlabCache {
                     Some(err.raw_os_error()),
                 )
             }) as *mut AtomicU64;
-            inner.nonempty_bitmap = empty_bitmap;
+            inner.nonempty_bitmap = bitmap;
+            inner.being_stolen_bitmap = bitmap.add(bitmaps_each);
             inner.bitmap_words = bitmap_words;
-
-            record_mmap_call(bitmap_bytes);
-            let stolen_bitmap = mmap_anonymous(
-                null_mut(),
-                bitmap_bytes,
-                ProtFlags::READ | ProtFlags::WRITE,
-                MapFlags::PRIVATE,
-            )
-            .unwrap_or_else(|err| {
-                RSMallocError::OutOfMemory.log_and_abort(
-                    null_mut(),
-                    "cannot initialize stolen bitmap",
-                    Some(err.raw_os_error()),
-                )
-            }) as *mut AtomicU64;
-            inner.being_stolen_bitmap = stolen_bitmap;
 
             PENDING_QUEUE.init(inner.numa.nranges, inner.is_numa);
             NCPU = ncpu;
@@ -193,47 +184,17 @@ impl SlabCache {
     }
 
     #[inline(always)]
-    fn cpu_word_bit(&self, cpu_id: usize) -> (usize, u64) {
-        let word = cpu_id >> 6;
-        let bit = 1u64 << (cpu_id & 63);
-        (word, bit)
-    }
-
-    #[inline(always)]
-    unsafe fn bitmap_word(
-        &self,
-        inner: &SlabCacheInner,
-        class: usize,
-        word: usize,
-    ) -> *mut AtomicU64 {
-        inner.nonempty_bitmap.add(class * inner.bitmap_words + word)
-    }
-
-    #[inline(always)]
     unsafe fn mark_class_nonempty(&self, inner: &SlabCacheInner, class: usize, cpu_id: usize) {
-        let (word, bit) = self.cpu_word_bit(cpu_id);
-        let ptr = self.bitmap_word(inner, class, word);
-
-        if (*ptr).load(Ordering::Relaxed) & bit == 0 {
-            (*ptr).fetch_or(bit, Ordering::Relaxed);
-        }
+        cpu_bit_set(inner.nonempty_bitmap, class, cpu_id, inner.bitmap_words);
     }
 
     #[inline(always)]
     unsafe fn clear_class_hint(&self, inner: &SlabCacheInner, class: usize, cpu_id: usize) {
-        let (word, bit) = self.cpu_word_bit(cpu_id);
-        let ptr = self.bitmap_word(inner, class, word);
-
-        if (*ptr).load(Ordering::Relaxed) & bit != 0 {
-            (*ptr).fetch_and(!bit, Ordering::Relaxed);
-        }
+        cpu_bit_clear(inner.nonempty_bitmap, class, cpu_id, inner.bitmap_words);
     }
 
     unsafe fn is_empty(&self, inner: &SlabCacheInner, class: usize, cpu_id: usize) -> bool {
-        let (word, bit) = self.cpu_word_bit(cpu_id);
-        let ptr = self.bitmap_word(inner, class, word);
-
-        (*ptr).load(Ordering::Relaxed) & bit == 0
+        cpu_is_empty(inner.nonempty_bitmap, class, cpu_id, inner.bitmap_words)
     }
 
     #[inline(never)]
@@ -243,29 +204,12 @@ impl SlabCache {
         class: usize,
         cpu_id: usize,
     ) -> bool {
-        let (word, bit) = self.cpu_word_bit(cpu_id);
-        let ptr = inner
-            .being_stolen_bitmap
-            .add(class * inner.bitmap_words + word);
-
-        if (*ptr).load(Ordering::Relaxed) & bit != 0 {
-            return false;
-        }
-
-        (*ptr).fetch_or(bit, Ordering::Relaxed);
-        true
+        cpu_try_marking(inner.being_stolen_bitmap, class, cpu_id, inner.bitmap_words)
     }
 
     #[inline(never)]
     unsafe fn clear_being_stolen(&self, inner: &SlabCacheInner, class: usize, cpu_id: usize) {
-        let (word, bit) = self.cpu_word_bit(cpu_id);
-        let ptr = inner
-            .being_stolen_bitmap
-            .add(class * inner.bitmap_words + word);
-
-        if (*ptr).load(Ordering::Relaxed) & bit != 0 {
-            (*ptr).fetch_and(!bit, Ordering::Relaxed);
-        }
+        cpu_bit_clear(inner.being_stolen_bitmap, class, cpu_id, inner.bitmap_words);
     }
 
     #[inline(always)]

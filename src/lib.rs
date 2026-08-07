@@ -204,7 +204,10 @@ pub(crate) static mut START_TIME: Option<Instant> = None;
 pub(crate) fn get_clock() -> &'static Instant {
     TIME_STAMP.get_or_init(|| {
         let current = Instant::now();
-        CURRENT_STAMP.store((current.elapsed().as_millis() / 100) as u32, Ordering::Relaxed);
+        CURRENT_STAMP.store(
+            (current.elapsed().as_millis() / 100) as u32,
+            Ordering::Relaxed,
+        );
         current
     })
 }

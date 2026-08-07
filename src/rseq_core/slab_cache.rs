@@ -160,10 +160,10 @@ impl SlabCache {
             let bitmap_bytes = size_of::<AtomicU64>() * bitmap_words * NUM_SIZE_CLASSES;
             let bitmaps_each = bitmap_bytes / 8;
 
-            record_mmap_call(bitmap_bytes * 3);
+            record_mmap_call(bitmap_bytes * 2);
             let bitmap = mmap_anonymous(
                 null_mut(),
-                bitmap_bytes * 3,
+                bitmap_bytes * 2,
                 ProtFlags::READ | ProtFlags::WRITE,
                 MapFlags::PRIVATE,
             )

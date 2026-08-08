@@ -346,15 +346,15 @@ This model avoids a shared refill lock on the hot path while reducing stranded p
 
 ### Global Pending Metadata Queue
 
-`PENDING_QUEUE` is a global lock-free Treiber stack of pending `MetaData` pages, indexed by NUMA node and size class:
+`PENDING_QUEUE` is a global `SpinLock`-guarded linked stack of pending `MetaData` pages, indexed by NUMA node and size class:
 
 ```text
-[node_id][class] -> MetaData stack
+[node_id][class] -> SpinLock + MetaData stack
 ```
 
 The queue is initialized during `SLAB_CACHE` setup from the parsed NUMA topology. On non-NUMA systems, all traffic uses node slot `0`. On NUMA systems, each `MetaData` carries its original `node_id`, thread-exit drain pushes to that node's stack, and `alloc_metadata()` only pops from the current CPU's local node before mapping fresh memory.
 
-Queue heads are ABA-tagged in the low 12 bits. This relies on `MetaData` being placed at the base of an mmap-backed page-aligned mapping. The queue is a cold/slow refill structure, not part of the normal RSEQ block pop/push path.
+Each `[node_id][class]` slot has its own `SpinLock`, so contention is sharded rather than global; push and pop both take the slot's lock for the duration of the linked-list operation. The queue is a cold/slow refill structure, not part of the normal RSEQ block pop/push path, so lock overhead here doesn't touch the hot allocation path.
 
 ## Adaptive Refill Prediction
 

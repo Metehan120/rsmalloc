@@ -65,7 +65,7 @@ rusqlite = { version = "0.40.1", features = ["bundled"] }
 
 [lib]
 name = "rsmalloc"
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib", "rlib", "staticlib"]
 doctest = false
 
 [profile.release]

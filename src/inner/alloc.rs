@@ -11,7 +11,7 @@ use crate::{
     BIG_MAGIC, GenericCache, Header, MAGIC, RSMallocError,
     big_allocations::big_allocation::big_malloc,
     core_prim::{
-        predictor::{BULK_FILL_PREDICTOR, PREDICTOR},
+        predictor::{BULK_FILL_BATCHING, TRANSFER_BATCHING},
         wrappers::UnsafePointer,
     },
     inner::free::find_original_ptr,
@@ -139,13 +139,13 @@ unsafe fn take_one_from_batch(
 
 macro_rules! refill {
     ($class:expr) => {
-        PREDICTOR[$class].batch(ITERATIONS[$class])
+        TRANSFER_BATCHING[$class].batch(ITERATIONS[$class])
     };
 }
 
 macro_rules! bulk_refill {
     ($class:expr) => {
-        BULK_FILL_PREDICTOR[$class].batch(ITERATIONS[$class])
+        BULK_FILL_BATCHING[$class].batch(ITERATIONS[$class])
     };
 }
 
@@ -193,7 +193,7 @@ pub unsafe fn refill(class: usize, cpu_id: usize) -> UnsafePointer<Header> {
                     count
                 };
 
-                BULK_FILL_PREDICTOR[class].update_refill(observed, ITERATIONS[class]);
+                BULK_FILL_BATCHING[class].update_refill(observed, ITERATIONS[class]);
                 let result = take_one_from_batch(
                     class,
                     start,
@@ -239,7 +239,7 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
             count
         };
 
-        PREDICTOR[class].update_refill(observed, ITERATIONS[class]);
+        TRANSFER_BATCHING[class].update_refill(observed, ITERATIONS[class]);
         return take_one_from_batch(
             class,
             start.as_ptr(),

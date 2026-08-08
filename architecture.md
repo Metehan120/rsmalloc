@@ -73,7 +73,7 @@ Main source areas:
 | `src/backend` | Slab page backend arenas used by bulk refill metadata allocation. |
 | `src/big_allocations` | Big allocation path and NUMA-aware `BUDDY_BACKEND`, including cached-region reuse, trimming, and relief integration. |
 | `src/internals` | `RADIX` ownership map, `BIG_META_MAP`, NUMA parsing/binding helpers, locks, once primitives, env parsing. |
-| `src/core_prim` | Bootstrap, fork handling, predictor state, pointer wrappers. |
+| `src/core_prim` | Bootstrap, fork handling, adaptive-batching & EMA-smoothing state, pointer wrappers. |
 | `src/utility.rs` | Size classes, refill targets, lookup tables, shared helpers. |
 
 ## Allocation Classes
@@ -133,11 +133,11 @@ flowchart TD
     POP_SINGLE -- "empty" --> POP
     POP_RESULT -- "empty class cache" --> FILL["fill(class)"]
 
-    FILL --> PRED["cache predictor chooses batch"]
+    FILL --> PRED["transfer batching chooses batch"]
     PRED --> TRYPOP["SLAB_CACHE.try_pop(class, batch, cpu)"]
     TRYPOP --> LOCAL["pop local transfer cache"]
     LOCAL --> LOCAL_HIT{"local transfer hit?"}
-    LOCAL_HIT -- "yes" --> UPDATE_CACHE["update cache predictor"]
+    LOCAL_HIT -- "yes" --> UPDATE_CACHE["update transfer batching"]
     LOCAL_HIT -- "no" --> SAME_NODE["scan same-node class hint bitmap"]
     SAME_NODE --> SAME_HIT{"same-node victim hit?"}
     SAME_HIT -- "yes" --> STEAL["record transfer steal if debug"]
@@ -151,7 +151,7 @@ flowchart TD
     DRY --> REFILL["refill(class, cpu)"]
 
     REFILL --> RETRY{"under MAX_REFILL_RETRIES?"}
-    RETRY -- "yes" --> BULK_BATCH["bulk-fill predictor chooses batch"]
+    RETRY -- "yes" --> BULK_BATCH["bulk-fill batching chooses batch"]
     BULK_BATCH --> BULK["bulk_fill(class, cpu, bulk_batch)"]
     BULK --> TLS["check thread-local pending span"]
     TLS --> TLS_OK{"remaining blocks?"}
@@ -183,7 +183,7 @@ flowchart TD
     LEFT -- "yes" --> SAVE_TLS["save span in THREAD_BULK.free[class]"]
     LEFT -- "no" --> BULK_OK["bulk_fill returns batch"]
     SAVE_TLS --> BULK_OK
-    BULK_OK --> UPDATE_BULK["update bulk-fill predictor"]
+    BULK_OK --> UPDATE_BULK["update bulk-fill batching"]
     UPDATE_BULK --> TAKE["take one block from batch"]
     BULK_ERR --> RETRY_NEXT{"retry again?"}
     RETRY_NEXT -- "yes" --> RETRY
@@ -363,17 +363,17 @@ Small refill sizes are adaptive instead of fixed. The goal is to avoid two bad e
 - refilling too little, which causes repeated slow-path trips and extra RSEQ/transfer-cache traffic,
 - refilling too much, which increases virtual-memory retention, cache/TLB pressure, and cross-CPU spillover.
 
-There are two independent thread-local, per-size-class predictors:
+There are two independent thread-local, per-size-class adaptive batchers:
 
-- `PREDICTOR`: predicts how many blocks allocation code should try to pull from class-cache/transfer/victim sources before returning one block to the caller and pushing the rest locally.
-- `BULK_FILL_PREDICTOR`: predicts how many blocks a fresh or pending bulk-fill slab should initialize at once.
+- `TRANSFER_BATCHING`: predicts how many blocks allocation code should try to pull from class-cache/transfer/victim sources before returning one block to the caller and pushing the rest locally.
+- `BULK_FILL_BATCHING`: predicts how many blocks a fresh or pending bulk-fill slab should initialize at once.
 
 They are separate because the two costs are different. Pulling already-initialized blocks mostly changes cache pressure and local freelist depth; initializing from bulk metadata touches fresh memory, writes headers, and may expose more mapped pages to the working set.
 
-Current predictor state is intentionally small:
+Current adaptive-batching state is intentionally small:
 
 ```rust
-struct Predictor {
+struct AdaptiveBatching {
     batch: usize,
     low_count: u8,
     once: Once,
@@ -382,9 +382,9 @@ struct Predictor {
 }
 ```
 
-The predictor is initialized lazily on first use. Normal class-cache/transfer prediction starts from `PREDICTOR_INIT_BATCH` (`RS_PREDICTOR_INIT_BATCH` in runtime config paths). Bulk-fill prediction starts from `BULK_FILL_PREDICTOR_INIT_BATCH`.
+Each `AdaptiveBatching` instance is initialized lazily on first use. Normal class-cache/transfer prediction starts from `PREDICTOR_INIT_BATCH` (`RS_PREDICTOR_INIT_BATCH` in runtime config paths). Bulk-fill prediction starts from `BULK_FILL_PREDICTOR_INIT_BATCH`.
 
-The update rule is integer-only. If observed demand exceeds the current batch, the predictor grows immediately by roughly 1.5x or to the observed demand, whichever is larger. If observed demand stays below one quarter of the current batch for several refill observations, the predictor halves the batch.
+The update rule is integer-only. If observed demand exceeds the current batch, it grows immediately by roughly 1.5x or to the observed demand, whichever is larger. If observed demand stays below one quarter of the current batch for several refill observations, it halves the batch.
 
 ```text
 if observed > batch:
@@ -393,18 +393,18 @@ else if observed * 4 < batch for 4 refill observations:
     batch = (batch / 2).clamp(1, ITERATIONS[class])
 ```
 
-`ITERATIONS[class]` is the hard per-class maximum derived from refill target bytes and block size. This keeps predictor output bounded even if a workload keeps asking for more.
+`ITERATIONS[class]` is the hard per-class maximum derived from refill target bytes and block size. This keeps adaptive-batching output bounded even if a workload keeps asking for more.
 
 ### Observed Demand
 
-The predictor does not observe application allocation demand directly. It observes what the allocator managed to obtain during a refill step:
+Adaptive batching does not observe application allocation demand directly. It observes what the allocator managed to obtain during a refill step:
 
 - if only a few blocks were available, the observation is small and future batches shrink gradually,
 - if the requested batch was fully satisfied, that is treated as a signal that demand may be at least as large as the request.
 
-The second case matters because feeding the exact returned count back forever can keep the predictor stuck too low. Example: if `batch == 8` and every refill gets exactly 8 blocks, feeding `8` back forever never lets the predictor discover that the workload could use larger batches.
+The second case matters because feeding the exact returned count back forever can keep the batch stuck too low. Example: if `batch == 8` and every refill gets exactly 8 blocks, feeding `8` back forever never lets the batcher discover that the workload could use larger batches.
 
-To avoid that, when a refill returns exactly the requested batch and the class still has headroom, the observed value is lifted by `+25%` before updating the predictor:
+To avoid that, when a refill returns exactly the requested batch and the class still has headroom, the observed value is lifted by `+25%` before updating the batch:
 
 ```text
 if returned == requested && requested < ITERATIONS[class]:
@@ -413,7 +413,7 @@ else:
     observed = returned
 ```
 
-This is deliberately conservative. It lets the predictor climb out of too-small batches during sustained pressure, but avoids doubling into large over-refills after one successful refill.
+This is deliberately conservative. It lets the batcher climb out of too-small batches during sustained pressure, but avoids doubling into large over-refills after one successful refill.
 
 ### Why Gradual Shrink Instead Of Instant Batch Changes?
 
@@ -424,7 +424,7 @@ Refill behavior is noisy:
 - bursty workloads may allocate heavily for a short phase and then stop,
 - thread migration means CPU-local cache state is not a perfect demand signal.
 
-The predictor grows quickly on clear pressure because under-refilling causes repeated slow-path trips. It shrinks only after repeated low-demand observations so one odd refill does not immediately collapse the batch size.
+The batcher grows quickly on clear pressure because under-refilling causes repeated slow-path trips. It shrinks only after repeated low-demand observations so one odd refill does not immediately collapse the batch size.
 
 ### Debugging Prediction Quality
 
@@ -432,14 +432,14 @@ Debug features provide approximate and exact prediction miss accounting:
 
 - `debug` gives low-overhead approximate over/under-prediction counters suitable for normal benchmark runs,
 - `debug-predictor-exact` probes more aggressively to classify misses more accurately and is higher overhead,
-- `predictor-debug` can print predictor batch choices for direct inspection.
+- `predictor-debug` can print adaptive-batching decisions for direct inspection.
 
 The counters should be interpreted as tuning signals, not correctness requirements. Under-prediction usually means more refill trips. Over-prediction usually means more retained/free cached memory. The right balance depends on workload locality and whether the benchmark is latency-, throughput-, RSS-, or TLB-sensitive.
 
 ### Current Limitations
 
-- Predictors are thread-local, not global. This avoids atomics on the hot path but means new threads start from initial settings.
-- The predictor sees allocator-side refill results, not future application demand.
+- Adaptive batchers are thread-local, not global. This avoids atomics on the hot path but means new threads start from initial settings.
+- Adaptive batching sees allocator-side refill results, not future application demand.
 - The `+25%` uplift helps sustained full-batch pressure, while 1.5x growth avoids jumping as aggressively as a doubling strategy.
 - Very synchronized refill storms can still bottleneck in the refill path, but pending refill metadata stays thread-local by default to avoid shared refill locks.
 
@@ -714,7 +714,7 @@ Important architecture-affecting features:
 | `debug-printer-thread` | Enables `debug-print` and starts a live background report thread. |
 | `debug-exact` | Enables `debug-print` and adds higher-overhead lock counters for calls, retries, try-lock misses, and spin waits. |
 | `debug-predictor-exact` | Enables `debug-print` and uses higher-overhead exact refill prediction miss accounting. |
-| `predictor-debug` | Prints predictor batch decisions from the predictor path. |
+| `predictor-debug` | Prints adaptive-batching decisions from the batching path. |
 | `transfer-debug` | Enables `debug-exact` and records transfer-cache steals, dry steals, and CAS retries. |
 | `transfer-debug-exact` | Enables `transfer-debug` and also counts transfer-cache push/pop calls. |
 | `debug-full` | Convenience feature for broad transfer/debug instrumentation. |

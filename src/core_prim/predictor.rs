@@ -4,7 +4,7 @@ pub const DEFAULT_BATCH: usize = 128;
 pub static mut PREDICTOR_INIT_BATCH: usize = DEFAULT_BATCH;
 pub static mut BULK_FILL_PREDICTOR_INIT_BATCH: usize = 384;
 
-pub struct Predictor {
+pub struct AdaptiveBatching {
     batch: usize,
     low_count: u8,
     once: Once,
@@ -12,7 +12,7 @@ pub struct Predictor {
     _class: usize,
 }
 
-impl Predictor {
+impl AdaptiveBatching {
     pub const fn new(fill: bool, class: usize) -> Self {
         Self {
             batch: 1,
@@ -79,22 +79,22 @@ impl Predictor {
 }
 
 #[thread_local]
-pub static mut PREDICTOR: [Predictor; NUM_SIZE_CLASSES] = {
+pub static mut TRANSFER_BATCHING: [AdaptiveBatching; NUM_SIZE_CLASSES] = {
     let mut i = 0;
-    let mut result = [const { Predictor::new(false, 0) }; NUM_SIZE_CLASSES];
+    let mut result = [const { AdaptiveBatching::new(false, 0) }; NUM_SIZE_CLASSES];
     while i < NUM_SIZE_CLASSES {
-        result[i] = Predictor::new(false, i);
+        result[i] = AdaptiveBatching::new(false, i);
         i += 1;
     }
     result
 };
 
 #[thread_local]
-pub static mut BULK_FILL_PREDICTOR: [Predictor; NUM_SIZE_CLASSES] = {
+pub static mut BULK_FILL_BATCHING: [AdaptiveBatching; NUM_SIZE_CLASSES] = {
     let mut i = 0;
-    let mut result = [const { Predictor::new(true, 0) }; NUM_SIZE_CLASSES];
+    let mut result = [const { AdaptiveBatching::new(true, 0) }; NUM_SIZE_CLASSES];
     while i < NUM_SIZE_CLASSES {
-        result[i] = Predictor::new(true, i);
+        result[i] = AdaptiveBatching::new(true, i);
         i += 1;
     }
     result
@@ -102,12 +102,12 @@ pub static mut BULK_FILL_PREDICTOR: [Predictor; NUM_SIZE_CLASSES] = {
 
 pub const EMA_ALPHA: f32 = 0.25;
 
-pub struct EmaPredictor {
+pub struct EmaSmoothing {
     ema: f32,
     time: usize,
 }
 
-impl EmaPredictor {
+impl EmaSmoothing {
     pub const fn new() -> Self {
         Self {
             ema: 10.0,
@@ -131,5 +131,5 @@ impl EmaPredictor {
     }
 }
 
-pub static mut TRIM_PREDICTOR: [EmaPredictor; NUM_SIZE_CLASSES] =
-    [const { EmaPredictor::new() }; NUM_SIZE_CLASSES];
+pub static mut TRIM_SMOOTHING: [EmaSmoothing; NUM_SIZE_CLASSES] =
+    [const { EmaSmoothing::new() }; NUM_SIZE_CLASSES];

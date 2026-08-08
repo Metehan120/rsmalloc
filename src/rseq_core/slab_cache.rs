@@ -434,8 +434,10 @@ impl SlabCache {
         let mut out = String::with_capacity(ncpu);
 
         for cpu in 0..ncpu {
-            let (word, bit) = self.cpu_word_bit(cpu);
-            let ptr = self.bitmap_word(inner, class, word);
+            use crate::{bitmap_word, rseq_core::bitmap::cpu_word_bit};
+
+            let (word, bit) = cpu_word_bit(cpu);
+            let ptr = bitmap_word!(inner.nonempty_bitmap, class, word, inner.bitmap_words);
             let bits = (*ptr).load(Ordering::Relaxed);
             out.push(if bits & bit != 0 { '1' } else { '0' });
         }

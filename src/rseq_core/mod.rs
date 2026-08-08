@@ -8,12 +8,14 @@ pub mod bitmap {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     #[inline(always)]
-    fn cpu_word_bit(cpu_id: usize) -> (usize, u64) {
+    pub fn cpu_word_bit(cpu_id: usize) -> (usize, u64) {
         let word = cpu_id >> 6;
         let bit = 1u64 << (cpu_id & 63);
         (word, bit)
     }
 
+    #[doc(hidden)]
+    #[macro_export]
     macro_rules! bitmap_word {
         ($map:expr, $class:expr, $word:expr, $words:expr) => {
             $map.add($class * $words + $word)

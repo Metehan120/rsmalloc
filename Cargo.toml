@@ -43,6 +43,7 @@ abort-on-rseq-failure = []
 disable-magic-security-checks = []
 trim-aggressively = []
 explicit-zero = []
+semi-hardened = ["extended-header", "check-owned-on-alloc"]
 
 [[bench]]
 name = "book_speed"

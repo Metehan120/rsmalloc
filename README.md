@@ -106,14 +106,17 @@ Weakening magic-value checks (for debugging/reproducible tests/security research
 | Feature | Effect |
 |---|---|
 | `preload` | Builds the C ABI / `LD_PRELOAD` surface. |
-| `extended-header` | Wider per-allocation header metadata for experiments/stress testing. |
+| `extended-header` | Wider per-allocation header metadata. |
 | `page-backend-no-huge-page` | No-huge-page advice for slab arenas — cuts RSS on THP-aggressive systems (e.g. CachyOS), costs TLB pressure. |
 | `page-backend-huge-page` | Huge-page advice for slab arenas (ignored if the above is also set). |
 | `check-owned-on-alloc` | Semi-hardening: verifies popped allocations are still `RADIX`-owned before returning them. Adds a lookup to the alloc path. |
+| `semi-hardened` | Convenience bundle: `extended-header` + `check-owned-on-alloc`. |
 | `lazy-page-trim` | Lazy page-free advice for small-allocation trim instead of immediate `MADV_DONTNEED`. |
 | `trim-aggressively` | Skips the idle-class ceiling nudge in trim's average-lifetime tracking, keeping trim eligibility tighter. |
 | `disable-magic-security-checks` | Compile-time-only: disables magic-value double-free/corruption checks. |
 | `print-cpu-on-double-free` | Includes the current RSEQ CPU id in fatal double-free/corruption reports. |
+| `abort-on-rseq-failure` | Aborts if RSEQ reports an impossible CPU id (`u32::MAX`), signaling a kernel/hardware failure, instead of leaving it unchecked. |
+| `explicit-zero` | Zeroes `calloc` memory with `explicit_bzero` instead of a plain byte-fill, so the zeroing can't be optimized away. |
 
 ### Debug/diagnostic tiers
 

@@ -36,33 +36,36 @@ Major themes are: fewer mapping/VMA slow paths, NUMA-aware locality, lower refil
 - Marked `SlabCache::transfer_pop_single` `#[inline(never)]` to keep it out of `malloc`'s inlined body.
 - Split `rs_calloc`'s size/overflow computation into a separate `#[inline(never)] calc_and_get`, avoiding a second full inline of the `rs_alloc` fast path inside `calloc`.
 - Added `#[inline(never)]` wrappers (`alloc_non_inline`, `memalign_non_inline`) around the rare large-alignment paths in `GlobalAlloc::alloc` and `GlobalAlloc::alloc_zeroed`, keeping the common aligned fast path lean.
+- Extracted the shared clear-bit/recheck-and-remark sequence used after draining a transfer-cache mailbox into one `#[inline(never)] clear_hint` helper, instead of duplicating it inline at every call site.
+- Split the cold NUMA steal-fallback scan and the CPU-to-node lookup out of `try_pop` into separate `#[inline(never)]` functions, and added a cheap relaxed nonempty-bit check before attempting the CAS-based pop on a CPU's own mailbox, keeping `try_pop`'s hot inlined body leaner in the common own-cache-empty case.
 
 ### Transfer cache balancing
 
 - Added NUMA-aware transfer-cache victim stealing for batch `try_pop(...)`: local CPU transfer cache first, same-node CPU ranges next, then remote node ranges when NUMA is active.
 - Added relaxed per-class transfer-cache nonempty CPU hints, stored as CPU-word bitmaps, so batch stealing can skip ranges that have no nonempty hint for the requested class.
-- Updated hint maintenance to mark a class/CPU bit only on transfer-cache empty-to-nonempty transitions, and to clear/recheck the hint when a pop observes an empty transfer list.
+- Updated hint maintenance to mark a class/CPU bit only on transfer-cache empty-to-nonempty transitions, and to clear/recheck the hint whenever a pop leaves a mailbox empty, whether that pop returned nothing or successfully drained the list's last block.
 - Kept the hint bitmap deliberately approximate: correctness remains in the ABA-tagged transfer-list CAS path.
 - Expanded the transfer-list head generation to eight bits in the unused high byte of the allocator's 56-bit user-address representation. The pointer and generation remain in one 64-bit atomic word, preserving the existing CAS width and low pointer bits.
 - Each successful update advances the generation, rejecting a stale CAS across 1–255 intervening successful updates to the same CPU/class shard. The packed value can repeat after 256 updates; alpha-2 explicitly treats this as a bounded-tag limitation rather than claiming an unbounded ABA proof.
 - CPU/class sharding keeps ordinary mutations local. Reaching the wrap schedule requires exceptional cross-CPU activity such as stealing or trim handling, plus reuse of the same head pointer with a changed successor while an operation is stalled. This substantially reduces practical exposure without making the schedule formally impossible.
 - Added a cold `trimmed` transfer-cache list beside the normal transfer list. Normal transfer blocks are preferred; successfully madvised small blocks are returned through the trimmed list as a cold fallback. Transfer class hints deliberately prioritize the hot normal list and remain approximate.
+- Added a per-class "being stolen" bitmap alongside the nonempty hint bitmap. A stealer marks its candidate CPU busy before attempting the pop; other concurrent stealers skip busy CPUs and route to a different candidate instead of converging on the same lowest-numbered nonempty CPU, and the flag is cleared right after the attempt finishes either way.
+- Added a fallback second pass that ignores the "being stolen" flag once a full scan (local range, then NUMA fallback) comes up empty, so real contention degrades to the old best-effort behavior instead of returning nothing. The fallback pass re-reads the nonempty bitmap fresh instead of reusing the first pass's snapshot, so it doesn't retry CPUs that drained in the meantime or miss ones that just turned nonempty.
+- Moved the bit/word math for all per-CPU bitmaps into shared `rseq_core::bitmap` helpers (`cpu_bit_set`, `cpu_bit_clear`, `cpu_is_empty`, `cpu_try_marking`) instead of duplicating it per bitmap.
 
 ### Hybrid slab page backend and pending metadata
 
 - Added `src/backend/page_allocator.rs`, a hybrid page backend for bulk-fill/refill memory so small allocation refill spans are served from larger NUMA-preferred arenas instead of direct per-refill mappings.
-- The page backend allocation order is bump allocation from the current node arena first, bitmap-tracked reusable page runs second, and mapping a new arena only when needed.
-- Page-backend arenas store `PageArena` metadata and a bitmap at the front of the mapping, then expose a page-aligned data region for refill spans.
 - Set the default minimum page-backend arena data size to 256 MiB and made it configurable through Rust `RSMallocConfig::arena_min_size` or the preload `RS_ARENA_SIZE` byte value. Arena creation still grows beyond the minimum when required by a refill request.
-- Bump allocations also mark bitmap bits, so future bitmap reuse and release logic share one page-run ownership model.
-- Batched contiguous page-backend bitmap marking and clearing by 64-bit word. Full words now use one store, while leading and trailing partial words use masks that preserve neighboring page ownership bits.
-- Added `PAGE_ALLOCATOR.release(...)` as future span-reclaim scaffolding. It is not part of normal slab free yet; safe use still requires future span live-count/reclaim policy.
-- Added page-backend in-place growth support for single-block slab refill spans, replacing the old direct `mremap` shortcut for large small-class realloc growth under the new page-backend model.
+- Reworked page-backend arenas from bitmap-tracked reusable page runs to a pure bump allocator: each `PageArena` tracks only `base`/`end`/`current`, and a node's arenas form a doubly-linked list so an exhausted arena can be unlinked in O(1) from either the head or the middle of the chain.
+- Added `utility::MIN_REFILL_BYTES`, a compile-time constant mirroring the real refill-size formula across every size class and taking the minimum. An arena is proactively unlinked and `MADV_DONTNEED`'d once its remaining span drops below this floor, instead of waiting for it to hit exactly zero.
+- Replaced bitmap-based in-place growth with the classic "still last-bumped" bump-allocator check: `try_grow_inplace` only succeeds when the allocation being grown is still the most recent thing bumped in its arena (`ptr + old_size == arena.current`), and can then grow by any amount that fits in the remaining arena. No fixed growth cap and no memory reserved up front, falling back to a normal copy whenever anything else has been allocated after it.
+- Removed `PAGE_ALLOCATOR.release(...)`; the bump-only design has no bitmap to clear, so span reclaim now happens entirely through the `MIN_REFILL_BYTES`-driven arena eviction above.
+- Added `debug`-gated `TOTAL_LIVED`/`TOTAL_REMOVED` arena counters and an `arena_counts()` walk surfaced in the debug report, showing live arena counts per NUMA node alongside lifetime created/removed totals.
 - `bulk_fill()` still initializes headers lazily for only the requested adaptive batch and leaves remaining span space tracked by thread-local or pending `MetaData`.
 - `RADIX` ownership and cached-VA accounting still apply to the allocated metadata span, not to every byte of page-backend arena slack.
-- Added a locked per-node/per-class global pending metadata queue so thread-exit drained refill metadata can be reused by local-node threads.
-- Added thread-exit draining of thread-local pending refill metadata into the per-node global pending queue.
-- Added low-level TLS destructor registration for `ThreadBulk` cleanup and a regression test proving pending metadata is drained on thread exit.
+- Added a locked per-node/per-class global pending metadata queue, with thread-exit draining of thread-local pending refill metadata into it so abandoned metadata can be reused by local-node threads.
+- Added low-level TLS destructor registration for `ThreadBulk` cleanup on thread exit (regression test listed under Benchmarks, tests, and documentation).
 - Added page-backend THP advice knobs:
   - `page-backend-no-huge-page` asks Linux not to use huge pages for page-backend arenas, useful on THP-aggressive systems where arena slack inflates RSS.
   - `page-backend-huge-page` requests huge-page advice for TLB-sensitive experiments when `page-backend-no-huge-page` is not also enabled.
@@ -84,9 +87,8 @@ Major themes are: fewer mapping/VMA slow paths, NUMA-aware locality, lower refil
 - Added `internals::binder` for NUMA placement helpers:
   - `prefer_node(...)` using `MPOL_PREFERRED`
   - `bind_node(...)` using `MPOL_BIND`
-- Moved transfer-cache stealing, slab page-backend arenas, buddy allocation, and direct big mappings toward current-CPU node locality.
 - Bulk-bound contiguous per-CPU `SLAB_CACHE` / transfer-cache ranges to their NUMA node when topology is available, instead of issuing per-CPU binding calls.
-- Added preferred NUMA placement through `prefer_node(...)`, currently using the `syscalls` crate's `mbind` wrapper with `MPOL_PREFERRED | MPOL_F_STATIC_NODES`.
+- Added preferred NUMA placement through `prefer_node(...)`, currently using the `syscalls` crate's `mbind` wrapper with `MPOL_PREFERRED | MPOL_F_STATIC_NODES`; used for page-backend arena creation alongside buddy regions and direct big mappings (each detailed in their own sections).
 - Added `node_id` to small refill `MetaData` so abandoned pending metadata returns to the correct NUMA queue.
 - Added bootstrap allocation for the pending queue's node/class head table using parsed NUMA range count, with non-NUMA systems using node slot `0`.
 
@@ -129,7 +131,7 @@ Major themes are: fewer mapping/VMA slow paths, NUMA-aware locality, lower refil
 - Added `check-owned-on-alloc`, an opt-in semi-hardening diagnostic feature that verifies non-null popped small/big allocation pointers are still owned by `RADIX` before stamping them allocated.
 - The ownership check is intended to catch some freelist/transfer-cache metadata-injection style corruption earlier; it is not a full pointer-integrity or class/header validation proof.
 - Strengthened aligned-pointer recovery by checking that recovered original pointers are owned by `RADIX` before trusting aligned metadata.
-- Added a small free-path user-address-range check before handling unowned pointers as foreign.
+- Added an invalid-user-address abort, centralized into `RadixTree::is_owned` itself so every ownership check (`free`, `realloc`, `usable_size`) gets the same out-of-range abort for free instead of duplicating the range check at each call site; the standalone `is_valid_user_addr` method was removed.
 - Batched `RADIX` ownership range updates by 64-bit bitmap word and L3 leaf. Contiguous registration and removal now resolve the radix hierarchy once per 16 MiB leaf and update up to 64 adjacent 4 KiB ownership chunks with one Release atomic RMW, while masked boundary words preserve unrelated ownership bits.
 - Kept weakened magic-value modes behind explicit unsafe acknowledgement in the Rust configuration surface.
 - Fixed magic-value randomization to draw `MAGIC`, `FREED_MAGIC`, and `BIG_MAGIC` from independent `getrandom()` calls with uniqueness retries, instead of deriving `FREED_MAGIC`/`BIG_MAGIC` from `MAGIC` via `wrapping_sub(1)`, so leaking one magic value no longer trivially reveals the other two. Applies to both the standard and `extended-header` magic widths.

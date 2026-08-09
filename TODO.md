@@ -1,11 +1,14 @@
 ### TODO list for adding lacking features:
-1. Add buddy allocator for Big Allocation path - Done
-2. Check safety of AI written lines or rewrite entirely - Mostly complete
-3. Add ABA Tags for MailCache - Done
-4. Rewrite entire RSEQ path in Assembly - Planned after Trim
-5. Find other way than HashMap for big allocations, maybe RB-Trees
-6. Change L3 Radix with dynamic radix tree if possible - Done for alpha
-7. Add small-allocation/background trimming thread; requested-size buddy trim is done
+1. Add buddy backend for Big Allocation path - Done
+2. Check safety of AI written lines or rewrite entirely - only hashmap left
+3. Add ABA tags for TransferCache - Done
+4. Rewrite entire RSEQ path in Assembly - Cancelled
+5. Find other way than HashMap for big allocations, maybe RB-Trees - Done for Alpha-2, implemented RB-Tree
+6. Change RADIX with dynamic radix tree if possible - Done for alpha
+7. Add small-allocation/background trimming thread - Done for Alpha-2
 8. Add GlobalAlloc support - Done
-9. Add NUMA-aware allocation paths
-10. Audit entire allocator
+9. Add NUMA-aware allocation paths - Things like buddy paths left for cross numa free stability
+10. Lock-free RADIX tree - Done
+11. Lock-free buddy if possible / For stable release
+12. Add special benchmark to stress test every subsystem at once - Done
+13. Audit entire allocator before stable release

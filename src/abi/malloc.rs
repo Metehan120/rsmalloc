@@ -1,10 +1,11 @@
 use std::os::raw::{c_int, c_void};
 
 use crate::{
-    ENABLE_TRIM, Header,
-    big_allocations::buddy::BIG_BUDDY_ALLOCATOR,
+    Header,
+    big_allocations::buddy::BUDDY_BACKEND,
     core_prim::wrappers::UnsafePointer,
     inner::alloc::{rs_alloc, usable_size},
+    trim::trim_small,
 };
 
 #[unsafe(no_mangle)]
@@ -19,13 +20,12 @@ pub unsafe extern "C" fn malloc_usable_size(ptr: *mut c_void) -> usize {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn malloc_trim(requested_size: usize) -> c_int {
-    if ENABLE_TRIM {
-        if BIG_BUDDY_ALLOCATOR.trim(requested_size) >= requested_size {
-            1
-        } else {
-            0
-        }
-    } else {
-        0
+    let buddy_trim = BUDDY_BACKEND.trim_old(requested_size);
+    let mut small_trim = 0;
+    if requested_size.saturating_sub(buddy_trim) != 0 || requested_size == 0 {
+        small_trim = trim_small(requested_size.saturating_sub(buddy_trim));
     }
+    let total = buddy_trim.saturating_add(small_trim);
+
+    if total != 0 { 1 } else { 0 }
 }

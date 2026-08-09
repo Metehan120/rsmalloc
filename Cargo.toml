@@ -1,41 +1,71 @@
 [package]
 name = "rsmalloc"
-description = "An experimental RSEQ-based general-purpose memory allocator written in Rust"
+description = "An RSEQ-based general-purpose memory allocator written in Rust"
 license = "MIT"
-version = "0.1.1-alpha-1"
+version = "0.2.0-alpha"
 readme = "README.md"
 repository = "https://github.com/Metehan120/rsmalloc"
 edition = "2024"
 
 [dependencies]
-rustix = { version = "1.1.4", features = ["linux_latest", "mm", "rand"] }
+syscalls = { version = "0.8.1", default-features = false }
+rustix = { version = "1.1.4", features = [
+    "linux_latest",
+    "mm",
+    "rand",
+    "system",
+    "fs",
+    "thread",
+] }
 
 [features]
-default = ["rseq-thread-failure-fallback"]
+default = []
 preload = []
-canary = []
-legacy-glibc-support = []
+print-cpu-on-double-free = []
+check-owned-on-alloc = []
 debug-print = ["debug"]
+debug-printer-thread = ["debug-print"]
 debug = []
 debug-exact = ["debug", "debug-print"]
 debug-predictor-exact = ["debug", "debug-print"]
 predictor-debug = []
-extended-header = ["canary"]
-cpu-refill-paths = []
-disable-thread-pending = []
-rseq-thread-failure-fallback = []
+transfer-debug = ["debug-exact"]
+transfer-debug-exact = ["transfer-debug"]
+debug-full = ["transfer-debug-exact"]
+debug-full-critic = ["transfer-debug-exact", "debug-predictor-exact"]
+extended-header = []
+lazy-page-trim = []
+# Useful on systems (e.g. CachyOS) that aggressively promote transparent huge pages.
+# Can significantly reduce RSS at the cost of higher TLB pressure.
+page-backend-no-huge-page = []
+page-backend-huge-page = []
+abort-on-rseq-failure = []
+disable-magic-security-checks = []
+trim-aggressively = []
+explicit-zero = []
+semi-hardened = ["extended-header", "check-owned-on-alloc"]
 
 [[bench]]
-name = "speed"
+name = "book_speed"
+harness = false
+
+[[bench]]
+name = "rstress"
+harness = false
+
+[[bench]]
+name = "rstress_app"
 harness = false
 
 [dev-dependencies]
 criterion = "0.8.2"
+loom = "0.7.2"
 rand = "0.10.2"
+rusqlite = { version = "=0.40.1", features = ["bundled"] }
 
 [lib]
 name = "rsmalloc"
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib", "rlib", "staticlib"]
 doctest = false
 
 [profile.release]
@@ -44,3 +74,4 @@ panic = "abort"
 overflow-checks = false
 lto = "fat"
 codegen-units = 1
+debug = 2

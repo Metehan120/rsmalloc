@@ -1,33 +1,64 @@
-// Audit this file in near future
-//
-// TODO: Use pointer wrappers
+use std::{
+    mem::size_of,
+    os::raw::c_void,
+    ptr::null_mut,
+    sync::atomic::{AtomicU8, AtomicUsize, Ordering},
+};
 
-use std::{mem::size_of, os::raw::c_void, ptr::null_mut};
+use rustix::{
+    mm::{Advice, MapFlags, ProtFlags, madvise, mmap_anonymous, munmap},
+    thread::sched_getcpu,
+};
 
-use rustix::mm::{Advice, MapFlags, ProtFlags, madvise, mmap_anonymous, munmap};
-
+#[cfg(feature = "debug")]
+use crate::trim::{TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA};
 use crate::{
-    BUDDY_INIT,
+    BUDDY_AVERAGE_BLOCK_TIMES, BUDDY_INIT, CURRENT_STAMP, GLOBAL_TRIM_LOCK, add_buddy_cached_va,
+    core_prim::predictor::EMA_ALPHA,
     inner::alloc::MAX_REFILL_RETRIES,
-    internals::{l3_main_radix::L3_RADIX, lock::SerialLock, once::Once},
+    internals::{
+        binder::prefer_node, lock::SpinLock, numa_parser::NumaTopology, once::Once,
+        radix_tree::RADIX,
+    },
+    record_mmap_call,
+    rseq_core::slab_cache::{SLAB_CACHE, SlabCacheInner},
     utility::align_to,
 };
 
+pub static BUDDY_TOTAL_CACHED_VA: AtomicUsize = AtomicUsize::new(0);
+
 pub const BIG_BUDDY_MIN_ORDER: usize = 22; // 4 MiB
 pub const BIG_BUDDY_MAX_ORDER: usize = 26; // 64 MiB
-const NUM_ORDERS: usize = BIG_BUDDY_MAX_ORDER - BIG_BUDDY_MIN_ORDER + 1;
+pub const BUDDY_NUM_ORDERS: usize = BIG_BUDDY_MAX_ORDER - BIG_BUDDY_MIN_ORDER + 1;
+const NUM_ORDERS: usize = BUDDY_NUM_ORDERS;
 const PAGE_SIZE: usize = 4096;
+const BIG_BUDDY_MAX_BLOCK_SIZE: usize = 1 << BIG_BUDDY_MAX_ORDER;
+
+pub const BUDDY_TRIM_NOT_ALLOCATED: u8 = 0;
+const BUDDY_TRIM_ALLOCATED: u8 = 1;
+pub const BUDDY_TRIM_TRIMMED: u8 = 2;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct FreeBlock {
     next: *mut FreeBlock,
+    prev: *mut FreeBlock,
+    life_time: u32,
+    trim_state: u8,
 }
 
 impl FreeBlock {
-    unsafe fn new(addr: usize) -> *mut FreeBlock {
+    unsafe fn new(addr: usize, life_time: u32, trim_state: u8) -> *mut FreeBlock {
         let block = addr as *mut FreeBlock;
-        core::ptr::write(block, FreeBlock { next: null_mut() });
+        core::ptr::write(
+            block,
+            FreeBlock {
+                next: null_mut(),
+                prev: null_mut(),
+                life_time,
+                trim_state,
+            },
+        );
         block
     }
 }
@@ -38,9 +69,12 @@ struct BuddyRegion {
     base: usize,
     total_size: usize,
     order: usize,
+    node_id: u16,
+    nonempty_mask: AtomicU8,
     free: [*mut FreeBlock; NUM_ORDERS],
-    locks: SerialLock,
-    trim_lock: SerialLock,
+    free_bitmap: [*mut u64; NUM_ORDERS],
+    free_bitmap_words: [usize; NUM_ORDERS],
+    order_locks: [SpinLock; NUM_ORDERS],
 }
 
 impl BuddyRegion {
@@ -50,18 +84,37 @@ impl BuddyRegion {
             base: 0,
             total_size: 0,
             order: BIG_BUDDY_MIN_ORDER,
+            node_id: 0,
+            nonempty_mask: AtomicU8::new(0),
             free: [null_mut(); NUM_ORDERS],
-            locks: SerialLock::new(),
-            trim_lock: SerialLock::new(),
+            free_bitmap: [null_mut(); NUM_ORDERS],
+            free_bitmap_words: [0; NUM_ORDERS],
+            order_locks: [const { SpinLock::new() }; NUM_ORDERS],
         }
     }
+}
+
+#[cfg(feature = "debug")]
+pub struct BuddyBackendReport {
+    pub regions: usize,
+    pub total_region_bytes: usize,
+    pub free_bytes: usize,
+    pub free_blocks: [usize; BUDDY_NUM_ORDERS],
+    pub never_allocated_blocks: usize,
+    pub reused_blocks: usize,
+    pub trimmed_blocks: usize,
+    pub never_allocated_by_order: [usize; BUDDY_NUM_ORDERS],
+    pub reused_by_order: [usize; BUDDY_NUM_ORDERS],
+    pub trimmed_by_order: [usize; BUDDY_NUM_ORDERS],
+    pub grow_order: usize,
+    pub thp: bool,
 }
 
 pub struct BuddyAllocator {
     regions: *mut BuddyRegion,
     grow_order: usize,
     thp: bool,
-    spin: SerialLock,
+    spin: SpinLock,
     once: Once,
 }
 
@@ -71,7 +124,7 @@ impl BuddyAllocator {
             regions: null_mut(),
             grow_order: BIG_BUDDY_MIN_ORDER,
             thp: false,
-            spin: SerialLock::new(),
+            spin: SpinLock::new(),
             once: Once::new(),
         }
     }
@@ -82,20 +135,120 @@ impl BuddyAllocator {
     }
 
     #[inline(always)]
+    fn normalize_region_size(size: usize) -> usize {
+        size.checked_next_power_of_two()
+            .unwrap_or(BIG_BUDDY_MAX_BLOCK_SIZE)
+            .max(BIG_BUDDY_MAX_BLOCK_SIZE)
+    }
+
+    #[inline(always)]
     fn align_to_page(size: usize) -> usize {
         align_to(size, PAGE_SIZE)
     }
 
-    unsafe fn alloc_region_node() -> Option<*mut BuddyRegion> {
-        let node_size = Self::align_to_page(size_of::<BuddyRegion>());
+    #[inline(always)]
+    fn order_index(order: usize) -> usize {
+        order - BIG_BUDDY_MIN_ORDER
+    }
+
+    #[inline(always)]
+    fn order_bit(order: usize) -> u8 {
+        1 << Self::order_index(order)
+    }
+
+    #[inline(always)]
+    unsafe fn mark_order_nonempty(region: *mut BuddyRegion, order: usize) {
+        (*region)
+            .nonempty_mask
+            .fetch_or(Self::order_bit(order), Ordering::Release);
+    }
+
+    #[inline(always)]
+    unsafe fn mark_order_empty_if_needed(region: *mut BuddyRegion, order: usize) {
+        if (*region).free[Self::order_index(order)].is_null() {
+            (*region)
+                .nonempty_mask
+                .fetch_and(!Self::order_bit(order), Ordering::Release);
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn bitmap_location(
+        region: *mut BuddyRegion,
+        addr: usize,
+        order: usize,
+    ) -> (*mut u64, u64) {
+        let index = Self::order_index(order);
+        let block = (addr - (*region).base) >> order;
+        let word = block / u64::BITS as usize;
+        debug_assert!(word < (*region).free_bitmap_words[index]);
+        (
+            (*region).free_bitmap[index].add(word),
+            1u64 << (block & (u64::BITS as usize - 1)),
+        )
+    }
+
+    #[inline(always)]
+    unsafe fn block_is_free(region: *mut BuddyRegion, addr: usize, order: usize) -> bool {
+        let (word, bit) = Self::bitmap_location(region, addr, order);
+        *word & bit != 0
+    }
+
+    #[inline(always)]
+    unsafe fn push_free_block(region: *mut BuddyRegion, order: usize, block: *mut FreeBlock) {
+        let index = Self::order_index(order);
+        let head = &mut (*region).free[index];
+
+        (*block).prev = null_mut();
+        (*block).next = *head;
+        if !(*head).is_null() {
+            (**head).prev = block;
+        }
+        *head = block;
+
+        let (word, bit) = Self::bitmap_location(region, block as usize, order);
+        *word |= bit;
+        Self::mark_order_nonempty(region, order);
+    }
+
+    #[inline(always)]
+    unsafe fn remove_free_block(region: *mut BuddyRegion, order: usize, block: *mut FreeBlock) {
+        let index = Self::order_index(order);
+        let next = (*block).next;
+        let prev = (*block).prev;
+
+        if prev.is_null() {
+            (*region).free[index] = next;
+        } else {
+            (*prev).next = next;
+        }
+        if !next.is_null() {
+            (*next).prev = prev;
+        }
+
+        let (word, bit) = Self::bitmap_location(region, block as usize, order);
+        *word &= !bit;
+        Self::mark_order_empty_if_needed(region, order);
+    }
+
+    unsafe fn alloc_region_node(region_size: usize) -> Option<*mut BuddyRegion> {
+        let mut bitmap_bytes = 0usize;
+        for order in BIG_BUDDY_MIN_ORDER..=BIG_BUDDY_MAX_ORDER {
+            let blocks = region_size >> order;
+            let words = blocks.div_ceil(u64::BITS as usize);
+            bitmap_bytes = bitmap_bytes.checked_add(words.checked_mul(size_of::<u64>())?)?;
+        }
+        let node_size = Self::align_to_page(size_of::<BuddyRegion>().checked_add(bitmap_bytes)?);
 
         for _ in 0..MAX_REFILL_RETRIES {
+            record_mmap_call(node_size);
             if let Ok(region) = mmap_anonymous(
                 null_mut(),
                 node_size,
                 ProtFlags::READ | ProtFlags::WRITE,
                 MapFlags::PRIVATE,
             ) {
+                add_buddy_cached_va(node_size);
                 return Some(region as *mut BuddyRegion);
             }
         }
@@ -103,20 +256,24 @@ impl BuddyAllocator {
         None
     }
 
-    unsafe fn add_region(&mut self, size: usize, init: bool) -> bool {
-        let normalized_size = size
-            .next_power_of_two()
-            .clamp(1 << BIG_BUDDY_MIN_ORDER, 1 << BIG_BUDDY_MAX_ORDER);
+    #[inline(never)]
+    unsafe fn add_region(&mut self, size: usize, node_id: u16, init: bool, is_numa: bool) -> bool {
+        let normalized_size = Self::normalize_region_size(size);
 
         let mut retries = 0;
         let mut base = null_mut();
         while retries < MAX_REFILL_RETRIES {
+            record_mmap_call(normalized_size);
             if let Ok(region) = mmap_anonymous(
                 base,
                 normalized_size,
                 ProtFlags::READ | ProtFlags::WRITE,
                 MapFlags::PRIVATE,
             ) {
+                add_buddy_cached_va(normalized_size);
+                if is_numa {
+                    prefer_node(region, normalized_size, node_id);
+                }
                 base = region as *mut c_void;
                 break;
             }
@@ -128,7 +285,7 @@ impl BuddyAllocator {
         }
         let base = base as usize;
 
-        let region_ptr = match Self::alloc_region_node() {
+        let region_ptr = match Self::alloc_region_node(normalized_size) {
             Some(ptr) => ptr,
             None => {
                 let _ = munmap(base as *mut c_void, normalized_size);
@@ -140,17 +297,35 @@ impl BuddyAllocator {
             let _ = madvise(base as *mut c_void, normalized_size, Advice::LinuxHugepage);
         }
 
-        L3_RADIX.set_range(base, normalized_size, true);
+        RADIX.set_range(base, normalized_size, true);
 
         core::ptr::write(region_ptr, BuddyRegion::empty());
 
-        let top_order = Self::order_for_size(normalized_size);
+        let mut bitmap = (region_ptr as *mut u8).add(size_of::<BuddyRegion>()) as *mut u64;
+        for order in BIG_BUDDY_MIN_ORDER..=BIG_BUDDY_MAX_ORDER {
+            let index = Self::order_index(order);
+            let blocks = normalized_size >> order;
+            let words = blocks.div_ceil(u64::BITS as usize);
+            (*region_ptr).free_bitmap[index] = bitmap;
+            (*region_ptr).free_bitmap_words[index] = words;
+            bitmap = bitmap.add(words);
+        }
+
         (*region_ptr).base = base;
         (*region_ptr).total_size = normalized_size;
-        (*region_ptr).order = top_order;
+        (*region_ptr).order = BIG_BUDDY_MAX_ORDER;
+        (*region_ptr).node_id = node_id;
 
-        let block = FreeBlock::new(base);
-        (*region_ptr).free[top_order - BIG_BUDDY_MIN_ORDER] = block;
+        // A configured region may be larger than the largest allocation order
+        // represent it as independent maximum-order blocks so the fixed order
+        // tables and masks never need to index above BIG_BUDDY_MAX_ORDER
+        let current_lifetime = CURRENT_STAMP.load(Ordering::Relaxed);
+        let mut offset = 0;
+        while offset < normalized_size {
+            let block = FreeBlock::new(base + offset, current_lifetime, BUDDY_TRIM_NOT_ALLOCATED);
+            Self::push_free_block(region_ptr, BIG_BUDDY_MAX_ORDER, block);
+            offset += BIG_BUDDY_MAX_BLOCK_SIZE;
+        }
 
         {
             let _guard = self.spin.lock();
@@ -174,60 +349,66 @@ impl BuddyAllocator {
     }
 
     #[inline(always)]
-    unsafe fn find_region(&self, addr: usize) -> *mut BuddyRegion {
-        let mut region = self.regions_head();
-        while !region.is_null() {
-            let start = (*region).base;
-            let end = start + (*region).total_size;
-            if addr >= start && addr < end {
-                return region;
-            }
-            region = (*region).next;
-        }
-        null_mut()
-    }
-
-    #[inline(always)]
     unsafe fn buddy(region: *mut BuddyRegion, addr: usize, order: usize) -> usize {
         let rel = addr - (*region).base;
         (*region).base + (rel ^ (1 << order))
     }
 
     #[inline(always)]
-    unsafe fn alloc_from_region(region: *mut BuddyRegion, requested_order: usize) -> Option<usize> {
+    unsafe fn alloc_from_region(
+        region: *mut BuddyRegion,
+        requested_order: usize,
+    ) -> Option<(usize, u8)> {
         if requested_order > (*region).order {
             return None;
         }
 
-        let mut alloc_order = requested_order;
-        while alloc_order <= (*region).order
-            && (*region).free[alloc_order - BIG_BUDDY_MIN_ORDER] == null_mut()
-        {
-            alloc_order += 1;
-        }
-
-        if alloc_order > (*region).order {
+        let requested_index = Self::order_index(requested_order);
+        let mask = (*region).nonempty_mask.load(Ordering::Acquire) & (!0u8 << requested_index);
+        if mask == 0 {
             return None;
         }
 
-        let head = &mut (*region).free[alloc_order - BIG_BUDDY_MIN_ORDER];
-        let block = (*head as *mut FreeBlock).as_mut().unwrap();
-        let block_addr = block as *mut FreeBlock as usize;
-        *head = block.next;
+        let mut alloc_order = requested_order;
+        while alloc_order <= (*region).order {
+            let order_bit = Self::order_bit(alloc_order);
+            if mask & order_bit == 0 {
+                alloc_order += 1;
+                continue;
+            }
 
-        while alloc_order > requested_order {
-            alloc_order -= 1;
-            let block_size = 1 << alloc_order;
-            let buddy_addr = block_addr + block_size;
+            let order_index = Self::order_index(alloc_order);
+            let _guard = (*region).order_locks[order_index].lock();
+            let head = &mut (*region).free[order_index];
+            if (*head).is_null() {
+                Self::mark_order_empty_if_needed(region, alloc_order);
+                alloc_order += 1;
+                continue;
+            }
 
-            let buddy = FreeBlock::new(buddy_addr);
-            let head_ptr = &mut (*region).free[alloc_order - BIG_BUDDY_MIN_ORDER];
-            let buddy_block = buddy.as_mut().unwrap();
-            buddy_block.next = *head_ptr;
-            *head_ptr = buddy;
+            let block_ptr = *head;
+            let block = &mut *block_ptr;
+            let block_addr = block_ptr as usize;
+            let block_life_time = block.life_time;
+            let block_trim_state = block.trim_state;
+            Self::remove_free_block(region, alloc_order, block_ptr);
+            drop(_guard);
+
+            while alloc_order > requested_order {
+                alloc_order -= 1;
+                let block_size = 1 << alloc_order;
+                let buddy_addr = block_addr + block_size;
+
+                let buddy = FreeBlock::new(buddy_addr, block_life_time, block_trim_state);
+                let order_index = Self::order_index(alloc_order);
+                let _guard = (*region).order_locks[order_index].lock();
+                Self::push_free_block(region, alloc_order, buddy);
+            }
+
+            return Some((block_addr, block_trim_state));
         }
 
-        Some(block_addr)
+        None
     }
 
     pub unsafe fn init(&mut self, size: usize, thp: bool) {
@@ -235,37 +416,52 @@ impl BuddyAllocator {
         self.once.call_once(|| unsafe {
             let page = &mut *this;
             page.thp = thp;
-            let normalized_size = size
-                .next_power_of_two()
-                .clamp(1 << BIG_BUDDY_MIN_ORDER, 1 << BIG_BUDDY_MAX_ORDER);
+            let normalized_size = Self::normalize_region_size(size);
 
-            page.grow_order = Self::order_for_size(normalized_size);
-            page.add_region(normalized_size, true);
+            let (_, inner) = SLAB_CACHE.get_numa_and_inner();
+            let current_cpu = sched_getcpu();
+            let node_id = SLAB_CACHE.node_for_cpu(current_cpu as usize, inner);
+
+            page.grow_order = Self::order_for_size(normalized_size).min(BIG_BUDDY_MAX_ORDER);
+            page.add_region(normalized_size, node_id, true, inner.is_numa);
         });
     }
 
-    #[inline(always)]
-    pub fn is_in_pool(&self, addr: usize) -> bool {
-        unsafe { !self.find_region(addr).is_null() }
+    unsafe fn alloc_from_node(
+        &self,
+        requested_order: usize,
+        node_id: u16,
+    ) -> Option<(usize, usize, u8, usize)> {
+        let mut region = self.regions_head();
+
+        while !region.is_null() {
+            let next = (*region).next;
+
+            if (*region).node_id == node_id {
+                if let Some((addr, flag)) = Self::alloc_from_region(region, requested_order) {
+                    return Some((addr, requested_order, flag, region as usize));
+                }
+            }
+
+            region = next;
+        }
+
+        None
     }
 
-    pub unsafe fn alloc(&mut self, size: usize) -> Option<(usize, usize)> {
+    pub unsafe fn alloc(
+        &mut self,
+        size: usize,
+        node_id: u16,
+        numa_inner: (&NumaTopology, &SlabCacheInner),
+    ) -> Option<(usize, usize, u8, usize)> {
         let requested_order = Self::order_for_size(size).max(BIG_BUDDY_MIN_ORDER);
         if requested_order > BIG_BUDDY_MAX_ORDER {
             return None;
         }
 
-        let mut region = self.regions_head();
-        while !region.is_null() {
-            {
-                (*region).trim_lock.spin_until_unlock();
-                let _guard = (*region).locks.lock();
-
-                if let Some(addr) = Self::alloc_from_region(region, requested_order) {
-                    return Some((addr, requested_order));
-                }
-            }
-            region = (*region).next;
+        if let Some(block) = self.alloc_from_node(requested_order, node_id) {
+            return Some(block);
         }
 
         let expand_order = self
@@ -273,32 +469,40 @@ impl BuddyAllocator {
             .max(requested_order)
             .min(BIG_BUDDY_MAX_ORDER);
 
-        if !self.add_region(1 << expand_order, false) {
+        if self.add_region(1 << expand_order, node_id, false, numa_inner.1.is_numa) {
+            if let Some(block) = self.alloc_from_node(requested_order, node_id) {
+                return Some(block);
+            }
+        }
+
+        let (numa, inner) = numa_inner;
+        if inner.is_numa {
+            for i in 0..numa.nranges {
+                let node_id = (i + node_id as usize) % numa.nranges;
+
+                if let Some(block) = self.alloc_from_node(requested_order, node_id as u16) {
+                    return Some(block);
+                }
+            }
+
             return None;
         }
 
-        let region = self.regions_head();
-        if region.is_null() {
-            return None;
-        }
-
-        let _guard = (*region).locks.lock();
-        Self::alloc_from_region(region, requested_order).map(|addr| (addr, requested_order))
+        None
     }
 
-    pub unsafe fn free(&mut self, addr: usize, order: usize) {
+    pub unsafe fn free(&mut self, region: usize, addr: usize, order: usize) {
         if order < BIG_BUDDY_MIN_ORDER || order > BIG_BUDDY_MAX_ORDER {
             return;
         }
 
-        let region = self.find_region(addr);
+        let region = region as *mut BuddyRegion;
         if region.is_null() {
             return;
         }
-
-        (*region).trim_lock.spin_until_unlock();
-        let _guard = (*region).locks.lock();
-
+        if addr < (*region).base || addr >= (*region).base + (*region).total_size {
+            return;
+        }
         if order > (*region).order {
             return;
         }
@@ -313,59 +517,37 @@ impl BuddyAllocator {
                 break;
             }
 
-            let head = &mut (*region).free[current_order - BIG_BUDDY_MIN_ORDER];
-            let mut prev: *mut FreeBlock = null_mut();
-            let mut curr = *head;
-
-            let mut found = false;
-            while !curr.is_null() {
-                let curr_addr = curr as usize;
-                if curr_addr == buddy {
-                    found = true;
-                    let buddy_block = curr.as_ref().unwrap();
-                    if prev.is_null() {
-                        *head = buddy_block.next;
-                    } else {
-                        (*prev).next = buddy_block.next;
-                    }
-                    break;
-                }
-                prev = curr;
-                curr = curr.as_ref().unwrap().next;
-            }
-
-            if !found {
+            let order_index = Self::order_index(current_order);
+            let _guard = (*region).order_locks[order_index].lock();
+            if !Self::block_is_free(region, buddy, current_order) {
                 break;
             }
+            Self::remove_free_block(region, current_order, buddy as *mut FreeBlock);
 
             current = current.min(buddy);
             current_order += 1;
         }
 
-        let block = FreeBlock::new(current);
-        let head = &mut (*region).free[current_order - BIG_BUDDY_MIN_ORDER];
-        let block_mut = block.as_mut().unwrap();
-        block_mut.next = *head;
-        *head = block;
+        let block = FreeBlock::new(
+            current,
+            CURRENT_STAMP.load(Ordering::Relaxed),
+            BUDDY_TRIM_ALLOCATED,
+        );
+        let order_index = Self::order_index(current_order);
+        let _guard = (*region).order_locks[order_index].lock();
+        Self::push_free_block(region, current_order, block);
     }
 
     pub unsafe fn try_grow_inplace(
         &mut self,
+        region: usize,
         addr: usize,
         current_order: usize,
     ) -> Option<(usize, usize)> {
-        if self.regions_head().is_null() {
-            return None;
-        }
-
-        let region = self.find_region(addr);
+        let region = region as *mut BuddyRegion;
         if region.is_null() {
             return None;
         }
-
-        (*region).trim_lock.spin_until_unlock();
-        let _guard = (*region).locks.lock();
-
         if current_order >= (*region).order {
             return None;
         }
@@ -385,56 +567,172 @@ impl BuddyAllocator {
             return None;
         }
 
-        let head = &mut (*region).free[current_order - BIG_BUDDY_MIN_ORDER];
-        let mut prev: *mut FreeBlock = null_mut();
-        let mut curr = *head;
-
-        while !curr.is_null() {
-            let curr_addr = curr as usize;
-            if curr_addr == buddy_addr {
-                let buddy_block = curr.as_ref().unwrap();
-                if prev.is_null() {
-                    *head = buddy_block.next;
-                } else {
-                    (*prev).next = buddy_block.next;
-                }
-
-                return Some((addr, next_order));
-            }
-            prev = curr;
-            curr = curr.as_ref().unwrap().next;
+        let order_index = Self::order_index(current_order);
+        let _guard = (*region).order_locks[order_index].lock();
+        if Self::block_is_free(region, buddy_addr, current_order) {
+            Self::remove_free_block(region, current_order, buddy_addr as *mut FreeBlock);
+            return Some((addr, next_order));
         }
 
         None
     }
 
     pub unsafe fn trim(&mut self, requested_size: usize) -> usize {
-        let trim_all = requested_size == 0;
+        self.trim_inner(requested_size, true)
+    }
+
+    pub unsafe fn trim_old(&mut self, requested_size: usize) -> usize {
+        self.trim_inner(requested_size, false)
+    }
+
+    #[cfg(feature = "debug")]
+    pub unsafe fn report(&self) -> BuddyBackendReport {
+        let mut report = BuddyBackendReport {
+            regions: 0,
+            total_region_bytes: 0,
+            free_bytes: 0,
+            free_blocks: [0; BUDDY_NUM_ORDERS],
+            never_allocated_blocks: 0,
+            reused_blocks: 0,
+            trimmed_blocks: 0,
+            never_allocated_by_order: [0; BUDDY_NUM_ORDERS],
+            reused_by_order: [0; BUDDY_NUM_ORDERS],
+            trimmed_by_order: [0; BUDDY_NUM_ORDERS],
+            grow_order: self.grow_order,
+            thp: self.thp,
+        };
+
+        let mut region = self.regions_head();
+        while !region.is_null() {
+            report.regions += 1;
+            report.total_region_bytes = report
+                .total_region_bytes
+                .saturating_add((*region).total_size);
+
+            let mut order = BIG_BUDDY_MIN_ORDER;
+            while order <= (*region).order {
+                let index = Self::order_index(order);
+                let _guard = (*region).order_locks[index].lock();
+                let block_size = 1usize << order;
+                let mut curr = (*region).free[index];
+
+                while !curr.is_null() {
+                    report.free_blocks[index] += 1;
+                    report.free_bytes = report.free_bytes.saturating_add(block_size);
+
+                    match (*curr).trim_state {
+                        BUDDY_TRIM_NOT_ALLOCATED => {
+                            report.never_allocated_blocks += 1;
+                            report.never_allocated_by_order[index] += 1;
+                        }
+                        BUDDY_TRIM_TRIMMED => {
+                            report.trimmed_blocks += 1;
+                            report.trimmed_by_order[index] += 1;
+                        }
+                        _ => {
+                            report.reused_blocks += 1;
+                            report.reused_by_order[index] += 1;
+                        }
+                    }
+
+                    curr = (*curr).next;
+                }
+
+                order += 1;
+            }
+
+            region = (*region).next;
+        }
+
+        report
+    }
+
+    #[cfg(feature = "preload")]
+    pub unsafe fn reset_locks_on_fork(&self) {
+        self.spin.reset_at_fork();
+
+        let mut region = self.regions;
+        while !region.is_null() {
+            let mut index = 0;
+            while index < NUM_ORDERS {
+                (*region).order_locks[index].reset_at_fork();
+                index += 1;
+            }
+            region = (*region).next;
+        }
+    }
+
+    unsafe fn trim_inner(&mut self, requested_size: usize, force_trim: bool) -> usize {
+        let Some(_global_trim_guard) = GLOBAL_TRIM_LOCK.try_lock() else {
+            return 0;
+        };
+
+        #[cfg(feature = "debug")]
+        TOTAL_TRIM_CALLS.fetch_add(1, Ordering::Relaxed);
+
         let mut trimmed = 0usize;
+        let mut avg: u32 = 0;
+        let mut total = 0u32;
+        let stamp = CURRENT_STAMP.load(std::sync::atomic::Ordering::Relaxed);
+        let avg_life = BUDDY_AVERAGE_BLOCK_TIMES.load(std::sync::atomic::Ordering::Relaxed);
 
         let mut region = self.regions_head();
         while !region.is_null() {
             let next_region = (*region).next;
             {
-                let _trim_guard = (*region).trim_lock.lock();
-                let _region_guard = (*region).locks.lock();
-
                 let mut order = BIG_BUDDY_MIN_ORDER;
                 while order <= (*region).order {
+                    let order_index = Self::order_index(order);
+                    let _order_guard = (*region).order_locks[order_index].lock();
                     let block_size = 1 << order;
-                    let mut curr = (*region).free[order - BIG_BUDDY_MIN_ORDER];
+                    let mut curr = (*region).free[order_index];
 
                     while !curr.is_null() {
                         let next_block = (*curr).next;
-
-                        if block_size > PAGE_SIZE {
-                            let trim_addr = (curr as usize) + PAGE_SIZE;
-                            let trim_size = block_size - PAGE_SIZE;
-                            let _ = madvise(trim_addr as *mut c_void, trim_size, Advice::DontNeed);
-                            trimmed = trimmed.saturating_add(trim_size);
+                        if (*curr).trim_state == BUDDY_TRIM_NOT_ALLOCATED
+                            || (*curr).trim_state == BUDDY_TRIM_TRIMMED
+                        {
+                            curr = next_block;
+                            continue;
                         }
 
-                        if !trim_all && trimmed >= requested_size {
+                        let life_time = (*curr).life_time;
+                        let age = stamp.saturating_sub(life_time);
+
+                        avg = avg.saturating_add(age);
+                        total = total.saturating_add(1);
+
+                        if (force_trim || age > avg_life) && block_size > PAGE_SIZE {
+                            let trim_addr = (curr as usize) + PAGE_SIZE;
+                            let trim_size = block_size - PAGE_SIZE;
+
+                            #[cfg(feature = "lazy-page-trim")]
+                            let advice = Advice::LinuxFree;
+
+                            #[cfg(not(feature = "lazy-page-trim"))]
+                            let advice = Advice::LinuxDontNeed;
+
+                            if madvise(trim_addr as *mut c_void, trim_size, advice).is_ok() {
+                                #[cfg(feature = "debug")]
+                                TOTAL_TRIMMED_VA.fetch_add(block_size, Ordering::Relaxed);
+                                (*curr).trim_state = BUDDY_TRIM_TRIMMED;
+                                trimmed = trimmed.saturating_add(trim_size);
+                            }
+
+                            (*curr).life_time = stamp;
+                        }
+
+                        if force_trim && requested_size != 0 && trimmed >= requested_size {
+                            if total > 0 {
+                                let new_avg = (avg / total).clamp(10, 600);
+                                let blended = (EMA_ALPHA * new_avg as f32
+                                    + (1.0 - EMA_ALPHA) * avg_life as f32)
+                                    .round()
+                                    .clamp(10.0, 600.0)
+                                    as u32;
+                                BUDDY_AVERAGE_BLOCK_TIMES
+                                    .store(blended, std::sync::atomic::Ordering::Relaxed);
+                            }
                             return trimmed;
                         }
                         curr = next_block;
@@ -447,8 +745,103 @@ impl BuddyAllocator {
             region = next_region;
         }
 
+        if total > 0 {
+            let new_avg = (avg / total).clamp(10, 600);
+            let blended = (EMA_ALPHA * new_avg as f32 + (1.0 - EMA_ALPHA) * avg_life as f32)
+                .round()
+                .clamp(10.0, 600.0) as u32;
+            BUDDY_AVERAGE_BLOCK_TIMES.store(blended, std::sync::atomic::Ordering::Relaxed);
+        }
+
         trimmed
     }
 }
 
-pub static mut BIG_BUDDY_ALLOCATOR: BuddyAllocator = BuddyAllocator::new();
+pub static mut BUDDY_BACKEND: BuddyAllocator = BuddyAllocator::new();
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::mem::MaybeUninit;
+
+    #[test]
+    fn region_size_preserves_supported_values_above_max_order() {
+        assert_eq!(
+            BuddyAllocator::normalize_region_size(256 * 1024 * 1024),
+            256 * 1024 * 1024
+        );
+        assert_eq!(
+            BuddyAllocator::normalize_region_size(65 * 1024 * 1024),
+            128 * 1024 * 1024
+        );
+    }
+
+    #[test]
+    fn region_size_keeps_a_max_order_minimum_and_handles_overflow() {
+        assert_eq!(
+            BuddyAllocator::normalize_region_size(1),
+            BIG_BUDDY_MAX_BLOCK_SIZE
+        );
+        assert_eq!(
+            BuddyAllocator::normalize_region_size(usize::MAX),
+            BIG_BUDDY_MAX_BLOCK_SIZE
+        );
+    }
+
+    #[test]
+    fn free_bitmap_indexes_blocks_across_words() {
+        let mut bitmap = [0u64; 2];
+        let mut region = BuddyRegion::empty();
+        let index = BuddyAllocator::order_index(BIG_BUDDY_MIN_ORDER);
+        region.base = 0;
+        region.free_bitmap[index] = bitmap.as_mut_ptr();
+        region.free_bitmap_words[index] = bitmap.len();
+
+        unsafe {
+            let (word_63, bit_63) = BuddyAllocator::bitmap_location(
+                &raw mut region,
+                63usize << BIG_BUDDY_MIN_ORDER,
+                BIG_BUDDY_MIN_ORDER,
+            );
+            let (word_64, bit_64) = BuddyAllocator::bitmap_location(
+                &raw mut region,
+                64usize << BIG_BUDDY_MIN_ORDER,
+                BIG_BUDDY_MIN_ORDER,
+            );
+
+            assert_eq!(word_63, bitmap.as_mut_ptr());
+            assert_eq!(bit_63, 1u64 << 63);
+            assert_eq!(word_64, bitmap.as_mut_ptr().add(1));
+            assert_eq!(bit_64, 1);
+        }
+    }
+
+    #[test]
+    fn free_bitmap_and_list_membership_change_together() {
+        let mut bitmap = 0u64;
+        let mut block = MaybeUninit::<FreeBlock>::uninit();
+        let block_ptr = block.as_mut_ptr();
+        let mut region = BuddyRegion::empty();
+        let index = BuddyAllocator::order_index(BIG_BUDDY_MIN_ORDER);
+        region.base = block_ptr as usize;
+        region.total_size = 1usize << BIG_BUDDY_MIN_ORDER;
+        region.order = BIG_BUDDY_MIN_ORDER;
+        region.free_bitmap[index] = &raw mut bitmap;
+        region.free_bitmap_words[index] = 1;
+
+        unsafe {
+            FreeBlock::new(block_ptr as usize, 7, BUDDY_TRIM_ALLOCATED);
+            BuddyAllocator::push_free_block(&raw mut region, BIG_BUDDY_MIN_ORDER, block_ptr);
+            assert_eq!(region.free[index], block_ptr);
+            assert!(BuddyAllocator::block_is_free(
+                &raw mut region,
+                block_ptr as usize,
+                BIG_BUDDY_MIN_ORDER,
+            ));
+
+            BuddyAllocator::remove_free_block(&raw mut region, BIG_BUDDY_MIN_ORDER, block_ptr);
+            assert!(region.free[index].is_null());
+            assert_eq!(bitmap, 0);
+        }
+    }
+}

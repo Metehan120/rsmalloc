@@ -1,6 +1,4 @@
-use std::hint::unlikely;
-
-use crate::Header;
+use crate::{Header, internals::oncelock::OnceLock};
 
 pub const SIZE_CLASSES: [usize; 34] = [
     // Tiny (16-128) - 16 Byte steps
@@ -55,6 +53,38 @@ pub const ITERATIONS: [usize; NUM_SIZE_CLASSES] = {
     arr
 };
 
+const fn refill_total_bytes_for_payload(payload: usize) -> usize {
+    let block_size = align_to(payload + Header::SIZE, 16);
+    let num_blocks = refill_iterations_for_payload(payload);
+    let meta_size = core::mem::size_of::<crate::MetaData>();
+    let total = meta_size + block_size * num_blocks;
+
+    let pages = (total + 4095) / 4096;
+    let available_bytes = pages * 4096 - meta_size;
+    let max_blocks_in_pages = available_bytes / block_size;
+
+    if max_blocks_in_pages > num_blocks {
+        meta_size + block_size * max_blocks_in_pages
+    } else {
+        total
+    }
+}
+
+pub const MIN_REFILL_BYTES: usize = {
+    let mut min = usize::MAX;
+    let mut i = 0;
+
+    while i < NUM_SIZE_CLASSES {
+        let total = refill_total_bytes_for_payload(SIZE_CLASSES[i]);
+        if total < min {
+            min = total;
+        }
+        i += 1;
+    }
+
+    align_to(min, 4096)
+};
+
 pub const SIZE_LUT: [u8; 256] = {
     let mut lut = [0u8; 256];
     let mut i = 0;
@@ -70,6 +100,10 @@ pub const SIZE_LUT: [u8; 256] = {
     lut
 };
 
+// Classes between 4 KiB and 32 KiB are irregular, but fit in eight 4 KiB
+// buckets. Classes above 32 KiB are powers of two and are matched arithmetically.
+const LARGE_SIZE_LUT: [u8; 8] = [0, 23, 24, 25, 26, 26, 27, 27];
+
 #[must_use]
 #[inline(always)]
 pub const fn align_to(size: usize, align: usize) -> usize {
@@ -77,25 +111,25 @@ pub const fn align_to(size: usize, align: usize) -> usize {
     (size + al) & !al
 }
 
-pub const RSEQ_BIG_CLASS_BYTES: usize = 1024 * 96;
-pub const RSEQ_MEDIUM_CLASS_BYTES: usize = 1024 * 128;
-pub const RSEQ_SMALL_CLASS_BYTES: usize = 1024 * 196;
-pub const RSEQ_MAX_BLOCKS: [usize; NUM_SIZE_CLASSES] = {
+pub const BIG_CLASS_BYTES: usize = 1024 * 96;
+pub const MEDIUM_CLASS_BYTES: usize = 1024 * 96;
+pub const SMALL_CLASS_BYTES: usize = 1024 * 128;
+pub const CACHE_HIGH_BLOCKS: [usize; NUM_SIZE_CLASSES] = {
     let mut arr = [0; NUM_SIZE_CLASSES];
     let mut i = 0;
 
     while i < NUM_SIZE_CLASSES {
         let payload = SIZE_CLASSES[i];
         let block_size = align_to(payload + Header::SIZE, 16);
-        let mut blocks = if block_size > RSEQ_SMALL_CLASS_BYTES {
+        let mut blocks = if block_size > SMALL_CLASS_BYTES {
             1
         } else {
             if payload < 256 {
-                RSEQ_SMALL_CLASS_BYTES / block_size
+                SMALL_CLASS_BYTES / block_size
             } else if payload < 1024 * 16 {
-                RSEQ_MEDIUM_CLASS_BYTES / block_size
+                MEDIUM_CLASS_BYTES / block_size
             } else {
-                RSEQ_BIG_CLASS_BYTES / block_size
+                BIG_CLASS_BYTES / block_size
             }
         };
 
@@ -110,26 +144,65 @@ pub const RSEQ_MAX_BLOCKS: [usize; NUM_SIZE_CLASSES] = {
     arr
 };
 
-#[inline(always)]
-pub fn match_size_class(size: usize) -> Option<usize> {
-    if size <= 4096 && size > 0 {
-        let index = (size - 1) >> 4;
-        return Some(unsafe { *SIZE_LUT.get_unchecked(index) as usize });
+#[allow(dead_code)]
+pub const CACHE_LOW_BLOCKS: [usize; NUM_SIZE_CLASSES] = {
+    let mut arr = [0; NUM_SIZE_CLASSES];
+    let mut i = 0;
+
+    while i < NUM_SIZE_CLASSES {
+        let low = CACHE_HIGH_BLOCKS[i] / 2;
+        arr[i] = if low == 0 { 1 } else { low };
+        i += 1;
     }
 
-    if unlikely(size == 0 || size > 2097152) {
-        return None;
-    }
+    arr
+};
 
-    slow_path_match(size)
+pub static CLASS_4096_OFFSET: OnceLock<usize> = OnceLock::new();
+
+pub fn get_size_4096_class() -> usize {
+    *CLASS_4096_OFFSET.get_or_init(|| SIZE_CLASSES.iter().position(|&s| s >= 4096).unwrap_or(22))
 }
 
 #[inline(always)]
-fn slow_path_match(size: usize) -> Option<usize> {
-    for i in 0..NUM_SIZE_CLASSES {
-        if size <= SIZE_CLASSES[i] {
-            return Some(i);
+pub unsafe fn match_size_class(size: usize) -> Option<usize> {
+    if size == 0 {
+        return Some(0);
+    } else if size <= 4096 {
+        let index = (size - 1) >> 4;
+        return Some(*SIZE_LUT.get_unchecked(index) as usize);
+    }
+
+    if size > 2097152 {
+        return None;
+    }
+
+    if size <= 32768 {
+        let index = (size - 1) >> 12;
+        return Some(*LARGE_SIZE_LUT.get_unchecked(index) as usize);
+    }
+
+    let exponent = usize::BITS as usize - (size - 1).leading_zeros() as usize;
+    Some(exponent + 12)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NUM_SIZE_CLASSES, SIZE_CLASSES, match_size_class};
+
+    fn reference_match(size: usize) -> Option<usize> {
+        if size == 0 {
+            return Some(0);
+        }
+        SIZE_CLASSES
+            .iter()
+            .position(|&class_size| size <= class_size)
+    }
+
+    #[test]
+    fn fast_size_matching_matches_reference_for_every_slab_size() {
+        for size in 0..=SIZE_CLASSES[NUM_SIZE_CLASSES - 1] + 1 {
+            assert_eq!(unsafe { match_size_class(size) }, reference_match(size));
         }
     }
-    None
 }

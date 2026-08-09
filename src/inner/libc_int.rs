@@ -14,3 +14,9 @@ unsafe extern "C" {
 
 pub const NOMEM: i32 = Errno::NOMEM.raw_os_error();
 pub const RTLD_NEXT: *mut c_void = 0xFFFFFFFFFFFFFFFF as *mut c_void;
+
+#[cfg(feature = "preload")]
+#[inline(always)]
+pub unsafe fn set_nomem() {
+    *__errno_location() = Errno::NOMEM.raw_os_error();
+}

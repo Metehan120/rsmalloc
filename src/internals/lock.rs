@@ -1,10 +1,15 @@
 use std::{
     hint::spin_loop,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{
+        AtomicBool,
+        Ordering::{self},
+    },
 };
 
 #[cfg(feature = "debug-exact")]
-use crate::{GLOBAL_LOCK_RETRIES, GLOBAL_LOCKS};
+use crate::{
+    GLOBAL_LOCK_RETRIES, GLOBAL_LOCKS, GLOBAL_SPIN_WAITS, GLOBAL_TRY_LOCK_MISSES, GLOBAL_TRY_LOCKS,
+};
 
 #[repr(transparent)]
 pub struct LockGuard(*const AtomicBool);
@@ -19,14 +24,14 @@ impl Drop for LockGuard {
 }
 
 #[repr(align(64))]
-pub struct SerialLock {
+pub struct SpinLock {
     state: AtomicBool,
 }
 
-impl SerialLock {
+impl SpinLock {
     #[inline(always)]
     pub const fn new() -> Self {
-        SerialLock {
+        SpinLock {
             state: AtomicBool::new(false),
         }
     }
@@ -51,14 +56,40 @@ impl SerialLock {
     }
 
     #[inline(always)]
+    pub fn try_lock(&self) -> Option<LockGuard> {
+        #[cfg(feature = "debug-exact")]
+        GLOBAL_TRY_LOCKS.fetch_add(1, Ordering::Relaxed);
+
+        match self
+            .state
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        {
+            Ok(_) => Some(LockGuard(&self.state as *const AtomicBool)),
+            Err(_) => {
+                #[cfg(feature = "debug-exact")]
+                GLOBAL_TRY_LOCK_MISSES.fetch_add(1, Ordering::Relaxed);
+                None
+            }
+        }
+    }
+
+    #[inline(always)]
     pub fn spin_until_unlock(&self) {
         while self.get_lock() {
+            #[cfg(feature = "debug-exact")]
+            GLOBAL_SPIN_WAITS.fetch_add(1, Ordering::Relaxed);
             spin_loop();
         }
     }
 
     #[inline(always)]
     pub fn get_lock(&self) -> bool {
-        self.state.load(Ordering::Relaxed)
+        self.state.load(Ordering::Acquire)
+    }
+
+    #[cfg(feature = "preload")]
+    #[inline(always)]
+    pub fn reset_at_fork(&self) {
+        self.state.store(false, Ordering::Relaxed);
     }
 }

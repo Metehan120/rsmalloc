@@ -7,7 +7,7 @@ use crate::{
 };
 
 #[inline(always)]
-pub unsafe fn align_inner(memptr: *mut *mut c_void, alignment: usize, size: usize) -> i32 {
+pub unsafe fn posix_align_inner(memptr: *mut *mut c_void, alignment: usize, size: usize) -> i32 {
     if memptr.is_null() {
         return Errno::INVAL.raw_os_error();
     }
@@ -45,15 +45,28 @@ pub unsafe fn align_inner(memptr: *mut *mut c_void, alignment: usize, size: usiz
 #[inline(always)]
 pub unsafe fn memalign_inner(alignment: usize, size: usize) -> UnsafePointer<Header> {
     let mut ptr: *mut c_void = null_mut();
-    let adjusted_alignment = if alignment < 8 { 8 } else { alignment };
+    let adjusted_alignment = alignment.max(size_of::<*mut c_void>());
 
     if !adjusted_alignment.is_power_of_two() {
+        #[cfg(feature = "preload")]
+        {
+            use crate::inner::libc_int::__errno_location;
+            *__errno_location() = Errno::INVAL.raw_os_error();
+        }
         return UnsafePointer::NULL;
     }
 
-    if align_inner(&mut ptr, adjusted_alignment, size) == 0 {
+    let success = posix_align_inner(&mut ptr, adjusted_alignment, size);
+
+    if success == 0 {
         UnsafePointer::new(ptr as *mut Header)
     } else {
+        #[cfg(feature = "preload")]
+        {
+            use crate::inner::libc_int::__errno_location;
+            *__errno_location() = success;
+        }
+
         UnsafePointer::NULL
     }
 }

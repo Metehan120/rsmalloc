@@ -4,7 +4,7 @@ use crate::{
     Header,
     core_prim::wrappers::UnsafePointer,
     inner::{
-        calloc::rs_calloc,
+        calloc::{rs_calloc, zero},
         libc_int::{__errno_location, NOMEM},
         realloc::rs_realloc,
     },
@@ -65,7 +65,7 @@ pub unsafe extern "C" fn recallocarray(
     let new_ptr = (REALLOC)(ptr, new_size);
     if !new_ptr.is_null() {
         let grow_size = new_size - old_size;
-        std::ptr::write_bytes((new_ptr as *mut u8).add(old_size), 0, grow_size);
+        zero((new_ptr as *mut u8).add(old_size), grow_size);
     }
 
     new_ptr

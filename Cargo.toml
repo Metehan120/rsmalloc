@@ -61,7 +61,7 @@ harness = false
 criterion = "0.8.2"
 loom = "0.7.2"
 rand = "0.10.2"
-rusqlite = { version = "0.40.1", features = ["bundled"] }
+rusqlite = { version = "=0.40.1", features = ["bundled"] }
 
 [lib]
 name = "rsmalloc"

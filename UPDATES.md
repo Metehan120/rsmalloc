@@ -185,6 +185,10 @@ Debug mode behavior is a major part of `0.2.0-alpha` because several allocator s
 - Added radix range batching tests covering bitmap-word boundaries, L3-leaf boundaries, masked clearing, and unaligned byte ranges.
 - Updated README, TODO, and architecture documentation for current trim capabilities, NUMA-aware subsystems, hybrid slab page-backend behavior, transfer-cache behavior, pending metadata queue behavior, internal component naming, feature flags, and detailed allocation/free lifecycle diagrams.
 
+## v0.1.1-alpha
+
+- Hardened aligned pointer recovery: corrupted or forged aligned-allocation metadata that resolves to a non-rsmalloc-owned pointer now triggers a fatal corruption abort instead of being trusted.
+
 ## v0.1.0-alpha
 
 ### Release layout

@@ -34,6 +34,9 @@ for slab arenas). Those two are not part of the charts below; they exist to
 show the RSS/time delta THP handling makes on its own. See the raw file for
 those rows.
 
+`mimalloc-bench`'s `lean` test is currently broken in this environment and is
+excluded from this snapshot; it will be added back soon enough.
+
 ## Test Environment
 
 This snapshot was collected with `mimalloc-bench` on:
@@ -172,6 +175,35 @@ xychart-beta
     x-axis [rsmalloc, tcmalloc, mimalloc, jemalloc, rpmalloc]
     y-axis "MiB" 0 --> 340
     bar [171, 126, 249, 239, 321]
+```
+
+### Page-reclaim and sys-time behaviour
+
+These aren't part of the time/RSS charts above but stand out in the raw data.
+Totals are summed across all 19 tests.
+
+| allocator | total minor page-reclaims | total sys time (s) |
+|---|---|---|
+| rsmalloc  | 78,267    | 4.70  |
+| tcmalloc  | 371,609   | 44.39 |
+| mimalloc  | 97,032    | 5.60  |
+| jemalloc  | 1,217,941 | 7.26  |
+| rpmalloc  | 2,071,655 | 9.06  |
+
+```mermaid
+xychart-beta
+    title "Total minor page-reclaims across 19 tests, lower is better"
+    x-axis [rsmalloc, tcmalloc, mimalloc, jemalloc, rpmalloc]
+    y-axis "reclaims" 0 --> 2100000
+    bar [78267, 371609, 97032, 1217941, 2071655]
+```
+
+```mermaid
+xychart-beta
+    title "Total sys time across 19 tests (seconds), lower is better"
+    x-axis [rsmalloc, tcmalloc, mimalloc, jemalloc, rpmalloc]
+    y-axis "seconds" 0 --> 46
+    bar [4.7, 44.39, 5.6, 7.26, 9.06]
 ```
 
 For real evaluation, run the allocator against the target application with the

@@ -21,19 +21,32 @@ where rsmalloc currently looks strong or weak, then test with your own workload.
 
 The current snapshot compares:
 
-* `rsmalloc 0.1.0-alpha`
+* `rsmalloc 0.2.0-alpha`
 * `tcmalloc 4.6.5`
-* `mimalloc 3.3.2`
-* `jemalloc 5.3.0`
+* `mimalloc 3.4.4`
+* `jemalloc 5.3.1`
+* `rpmalloc` (default build, march native)
+
+`benchmark_overall.txt` also carries two extra rsmalloc runs for reference:
+`0.1.0-alpha` (THP could not be forced by the kernel at that point) and
+`0.2.0-alpha` built with `page-backend-no-huge-page` (THP explicitly disabled
+for slab arenas). Those two are not part of the charts below; they exist to
+show the RSS/time delta THP handling makes on its own. See the raw file for
+those rows.
 
 ## Test Environment
 
 This snapshot was collected with `mimalloc-bench` on:
 
-* Fedora 44
-* default Fedora kernel (Kernel 7.x)
-* AMD Ryzen 5 5600X
-* DDR4 3200 MT/s CL16 RAM
+* CPU: AMD Ryzen 5 5600X
+* RAM: 16GB RAM DDR4 3200MHz
+* OS: CachyOS 7.1.4-cachyos-bore
+* Desktop Environment: KDE Plasma 6.7.3
+* Environment Temperature: ~28-30C
+* CPU Cooler: Arctic Freezer 36
+* Motherboard: MSI B550M PRO-VDH
+* BIOS: 2.M0 (Reported by dmidecode)
+* GPU: ASUS ROG Strix OC RX 6600 XT
 
 The table records:
 
@@ -69,25 +82,30 @@ policy and workload/scheduler interaction with RSEQ.
 
 These column charts are parsed from [`benchmark_overall.txt`](benchmark_overall.txt). Lower is better
 for elapsed time, RSS, and relative-to-best scores. RSS values are converted from
-KiB to MiB for readability. When the raw snapshot contains alternate/noisy runs
-for the same allocator/test pair, the first listed run is used for these charts.
+KiB to MiB for readability. The `rsmalloc` series here is the
+`0.2.0-alpha (THP handled by kernel)` run.
 
 ### Per-test winner counts
 
+4 of the 19 tests land on an exact tie at the harness's reported precision
+(`gs`: rsmalloc/mimalloc/rpmalloc; `alloc-testN`: mimalloc/rpmalloc;
+`cache-scratch1`: all five; `cache-scratchN`: rsmalloc/tcmalloc). Ties are not
+counted as a win for anyone below, so the bars sum to 15, not 19.
+
 ```mermaid
 xychart-beta
-    title "Fastest-time wins across 20 tests"
-    x-axis [rsmalloc, tcmalloc, mimalloc, jemalloc]
-    y-axis "wins" 0 --> 20
-    bar [4, 3, 13, 0]
+    title "Fastest-time clean wins across 19 tests (4 ties excluded)"
+    x-axis [rsmalloc, tcmalloc, mimalloc, jemalloc, rpmalloc]
+    y-axis "wins" 0 --> 19
+    bar [3, 3, 3, 1, 5]
 ```
 
 ```mermaid
 xychart-beta
-    title "Lowest-RSS wins across 20 tests"
-    x-axis [rsmalloc, tcmalloc, mimalloc, jemalloc]
-    y-axis "wins" 0 --> 20
-    bar [6, 4, 0, 10]
+    title "Lowest-RSS wins across 19 tests"
+    x-axis [rsmalloc, tcmalloc, mimalloc, jemalloc, rpmalloc]
+    y-axis "wins" 0 --> 19
+    bar [4, 8, 2, 0, 5]
 ```
 
 ### Overall relative score
@@ -95,23 +113,23 @@ xychart-beta
 A score of `100` means matching the best observed allocator for every test.
 Higher values are worse. These are geometric means of each allocator's per-test
 ratio to the best result for that test, scaled by `100` for cleaner chart axes.
-For example, `138` means `1.38x` the per-test best.
+For example, `128` means `1.28x` the per-test best.
 
 
 ```mermaid
 xychart-beta
     title "Elapsed-time relative score, lower is better"
-    x-axis [rsmalloc, tcmalloc, mimalloc, jemalloc]
+    x-axis [rsmalloc, tcmalloc, mimalloc, jemalloc, rpmalloc]
     y-axis "score x100" 0 --> 220
-    bar [130, 140, 101, 130]
+    bar [128, 147, 108, 116, 113]
 ```
 
 ```mermaid
 xychart-beta
     title "RSS relative score, lower is better"
-    x-axis [rsmalloc, tcmalloc, mimalloc, jemalloc]
+    x-axis [rsmalloc, tcmalloc, mimalloc, jemalloc, rpmalloc]
     y-axis "score x100" 0 --> 220
-    bar [112, 142, 192, 116]
+    bar [118, 119, 143, 174, 177]
 ```
 
 ### `sh6benchN` stress case
@@ -121,38 +139,39 @@ xychart-beta
 ```mermaid
 xychart-beta
     title "sh6benchN elapsed time, lower is better"
-    x-axis [rsmalloc, tcmalloc, mimalloc, jemalloc]
-    y-axis "milliseconds" 0 --> 600
-    bar [520, 210, 190, 280]
+    x-axis [rsmalloc, tcmalloc, mimalloc, jemalloc, rpmalloc]
+    y-axis "milliseconds" 0 --> 400
+    bar [320, 190, 200, 270, 130]
 ```
 
 ```mermaid
 xychart-beta
     title "sh6benchN RSS, lower is better"
-    x-axis [rsmalloc, tcmalloc, mimalloc, jemalloc]
+    x-axis [rsmalloc, tcmalloc, mimalloc, jemalloc, rpmalloc]
     y-axis "MiB" 0 --> 400
-    bar [359, 214, 216, 217]
+    bar [361, 216, 213, 291, 293]
 ```
 
 ### `sh8benchN` stress case
 
-`sh8benchN` is a RSEQ worst case for rsmalloc in this snapshot. The values below
-come from the current [`benchmark_overall.txt`](benchmark_overall.txt) snapshot.
+`sh8benchN` is a RSEQ worst case for tcmalloc and, to a lesser extent, rsmalloc
+in this snapshot. The values below come from the current
+[`benchmark_overall.txt`](benchmark_overall.txt) snapshot.
 
 ```mermaid
 xychart-beta
     title "sh8benchN elapsed time, lower is better"
-    x-axis [rsmalloc, tcmalloc, mimalloc, jemalloc]
-    y-axis "milliseconds" 0 --> 4000
-    bar [1380, 3330, 470, 790]
+    x-axis [rsmalloc, tcmalloc, mimalloc, jemalloc, rpmalloc]
+    y-axis "milliseconds" 0 --> 4400
+    bar [1400, 4180, 440, 830, 540]
 ```
 
 ```mermaid
 xychart-beta
     title "sh8benchN RSS, lower is better"
-    x-axis [rsmalloc, tcmalloc, mimalloc, jemalloc]
-    y-axis "MiB" 0 --> 260
-    bar [135, 125, 246, 165]
+    x-axis [rsmalloc, tcmalloc, mimalloc, jemalloc, rpmalloc]
+    y-axis "MiB" 0 --> 340
+    bar [171, 126, 249, 239, 321]
 ```
 
 For real evaluation, run the allocator against the target application with the

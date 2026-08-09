@@ -1,6 +1,6 @@
 # test    alloc   time  rss    user  sys  page-faults page-reclaims
 
-rsmalloc alpha-2 (THP handled by kernel, expected higher RSS):
+rsmalloc alpha-2 (THP handled by kernel like most of the allocators, expected higher RSS):
 cfrac       sys   03.22 10488 3.21 0.00 0 265
 espresso    sys   03.02 10488 3.00 0.01 0 261
 barnes      sys   01.68 70332 1.67 0.00 0 769
@@ -49,7 +49,7 @@ barnes      sys   01.69 68096 1.68 0.00 0 797
 redis       sys   2.759 16456 0.10 0.02 0 1891
 # Expected slow down
 larsonN-sized sys   4.250 82836 59.23 0.12 0 18553
-mstressN    sys   01.01 290752 7.49 0.28 0 42362    
+mstressN    sys   01.01 290752 7.49 0.28 0 42362
 # Weird case where a benchmark speed up
 rptestN     sys   .641 57940 1.52 0.13 0 13788
 gs          sys   00.19 41312 0.18 0.01 0 5278

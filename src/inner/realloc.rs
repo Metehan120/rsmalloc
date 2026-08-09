@@ -214,8 +214,6 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
                     let _ = BIG_META_MAP.replace(old_ptr, new_meta);
 
                     return UnsafePointer::new(current_addr as *mut Header).walk_header();
-                } else {
-                    break;
                 }
             } else {
                 break;

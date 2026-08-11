@@ -96,6 +96,11 @@ impl RBTree {
     }
 
     #[cfg(feature = "preload")]
+    pub fn lock_for_fork(&self) {
+        core::mem::forget(self.lock.lock());
+    }
+
+    #[cfg(feature = "preload")]
     pub fn reset_lock_on_fork(&self) {
         self.lock.reset_at_fork();
     }

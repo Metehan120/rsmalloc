@@ -94,6 +94,36 @@ impl ThreadQueue {
         *head = node;
     }
 
+    #[cfg(feature = "preload")]
+    pub unsafe fn lock_all_for_fork(&self) {
+        let nodes = *self.nodes.get();
+        if nodes.is_null() {
+            return;
+        }
+
+        let node_count = self.node_count.load(Ordering::Acquire);
+        for node in 0..node_count {
+            for class in 0..NUM_SIZE_CLASSES {
+                core::mem::forget((*nodes.add(node))[class].lock.lock());
+            }
+        }
+    }
+
+    #[cfg(feature = "preload")]
+    pub unsafe fn reset_locks_on_fork(&self) {
+        let nodes = *self.nodes.get();
+        if nodes.is_null() {
+            return;
+        }
+
+        let node_count = self.node_count.load(Ordering::Acquire);
+        for node in 0..node_count {
+            for class in 0..NUM_SIZE_CLASSES {
+                (*nodes.add(node))[class].lock.reset_at_fork();
+            }
+        }
+    }
+
     #[inline(always)]
     pub unsafe fn pop(&self, node_id: u16, class: usize) -> *mut MetaData {
         let Some(slot) = self.slot(node_id, class) else {

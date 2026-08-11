@@ -7,10 +7,11 @@ use std::{
 use crate::rseq_core::rseq_offsets::__rseq_offset;
 use crate::{
     GLOBAL_TRIM_LOCK, RSMallocError,
+    backend::page_allocator::PAGE_ALLOCATOR,
     big_allocations::buddy::BUDDY_BACKEND,
     inner::{fallback::fallback_reinit_on_fork, libc_int::pthread_atfork},
     internals::{lock::LockGuard, rbtree::BIG_MAP},
-    rseq_core::rseq_offsets::__rseq_size,
+    rseq_core::{pending_queue::PENDING_QUEUE, rseq_offsets::__rseq_size},
 };
 
 pub static BOOTSTRAP_LOCK: Mutex<()> = Mutex::new(());
@@ -23,9 +24,19 @@ unsafe extern "C" fn fork_prepare() {
         guard,
     ));
     TRIM_ATFORK_GUARD = Some(GLOBAL_TRIM_LOCK.lock());
+
+    BUDDY_BACKEND.lock_all_for_fork();
+    BIG_MAP.lock_for_fork();
+    PAGE_ALLOCATOR.lock_all_for_fork();
+    PENDING_QUEUE.lock_all_for_fork();
 }
 
 unsafe extern "C" fn fork_parent() {
+    PENDING_QUEUE.reset_locks_on_fork();
+    PAGE_ALLOCATOR.reset_locks_on_fork();
+    BIG_MAP.reset_lock_on_fork();
+    BUDDY_BACKEND.reset_locks_on_fork();
+
     if let Some(guard) = TRIM_ATFORK_GUARD.take() {
         drop(guard);
     }
@@ -46,6 +57,8 @@ unsafe extern "C" fn fork_child() {
     fallback_reinit_on_fork();
     BUDDY_BACKEND.reset_locks_on_fork();
     BIG_MAP.reset_lock_on_fork();
+    PAGE_ALLOCATOR.reset_locks_on_fork();
+    PENDING_QUEUE.reset_locks_on_fork();
     GLOBAL_TRIM_LOCK.reset_at_fork();
 
     {

@@ -648,6 +648,21 @@ impl BuddyAllocator {
     }
 
     #[cfg(feature = "preload")]
+    pub unsafe fn lock_all_for_fork(&self) {
+        core::mem::forget(self.spin.lock());
+
+        let mut region = self.regions;
+        while !region.is_null() {
+            let mut index = 0;
+            while index < NUM_ORDERS {
+                core::mem::forget((*region).order_locks[index].lock());
+                index += 1;
+            }
+            region = (*region).next;
+        }
+    }
+
+    #[cfg(feature = "preload")]
     pub unsafe fn reset_locks_on_fork(&self) {
         self.spin.reset_at_fork();
 

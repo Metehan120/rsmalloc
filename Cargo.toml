@@ -43,7 +43,9 @@ abort-on-rseq-failure = []
 disable-magic-security-checks = []
 trim-aggressively = []
 explicit-zero = []
-semi-hardened = ["extended-header", "check-owned-on-alloc"]
+# Zeroes 16-32b allocations (cryptographic key sized) on free; good for security without big performance penalty
+zero-small-on-free = []
+semi-hardened = ["extended-header", "check-owned-on-alloc", "zero-small-on-free"]
 
 [[bench]]
 name = "book_speed"

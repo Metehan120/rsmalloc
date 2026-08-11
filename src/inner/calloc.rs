@@ -1,6 +1,8 @@
 use std::{alloc::Layout, hint::unlikely, os::raw::c_void};
 
-use crate::{ALLOCATED_FLAG, TRIMMED_FLAG};
+use crate::ALLOCATED_FLAG;
+#[cfg(not(feature = "lazy-page-trim"))]
+use crate::BIG_FLAG;
 
 #[cfg(feature = "preload")]
 use crate::inner::libc_int::set_nomem;
@@ -26,8 +28,18 @@ pub unsafe fn zero(pointer: *mut u8, len: usize) {
 
 macro_rules! calloc_zero {
     ($header:expr, $ptr:expr, $actual_size:expr, $effective_size:expr) => {
-        let flags = (*$header.as_ptr()).flags;
-        if flags == ALLOCATED_FLAG || flags == TRIMMED_FLAG {
+        let flags = unsafe { (*$header.as_ptr()).flags };
+
+        #[cfg(not(feature = "lazy-page-trim"))]
+        if flags == ALLOCATED_FLAG || flags == BIG_FLAG {
+            zero(
+                $ptr.cast_as_ptr() as *mut u8,
+                $actual_size.min($effective_size),
+            )
+        }
+
+        #[cfg(feature = "lazy-page-trim")]
+        if flags == ALLOCATED_FLAG || flags == TRIMMED_FLAG || flags == BIG_FLAG {
             zero(
                 $ptr.cast_as_ptr() as *mut u8,
                 $actual_size.min($effective_size),

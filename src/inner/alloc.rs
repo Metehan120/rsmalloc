@@ -151,6 +151,8 @@ macro_rules! bulk_refill {
 
 pub static TRIM_GUARD: AtomicBool = AtomicBool::new(false);
 
+#[cold]
+#[inline(never)]
 pub unsafe fn spawn(entry: unsafe fn() -> !) -> bool {
     std::thread::Builder::new()
         .name("rsmalloc-trimmer".into())

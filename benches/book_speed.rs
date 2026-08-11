@@ -40,9 +40,9 @@ fn bench_alloc_free(c: &mut Criterion) {
     let mut group = c.benchmark_group("alloc_free");
 
     // 64B
-    group.bench_function("64B", |b| {
+    group.bench_function("32B", |b| {
         b.iter(|| unsafe {
-            let ptr = black_box(malloc(64));
+            let ptr = black_box(malloc(32));
             black_box(free(ptr));
         });
     });

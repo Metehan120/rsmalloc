@@ -8,7 +8,7 @@ use std::{os::raw::c_void, ptr::copy_nonoverlapping};
 use rustix::mm::{MremapFlags, mremap};
 
 use crate::{
-    BIG_MAGIC, BigAllocMeta, Header, MetaData, add_slab_cached_va,
+    BIG_MAGIC, BigAllocMeta, Header, MAGIC, MetaData, RSMallocError, add_slab_cached_va,
     backend::page_allocator::PAGE_ALLOCATOR,
     big_allocations::{
         big_allocation::estimate_and_align_2mb,
@@ -150,6 +150,9 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
         return UnsafePointer::NULL;
     };
     let aligned_new = estimate_and_align_2mb(new_total);
+    if aligned_new < new_total {
+        return UnsafePointer::NULL;
+    }
 
     if is_in_buddy && old_mapped_size >= aligned_new {
         let new_meta = BigAllocMeta {
@@ -256,7 +259,18 @@ pub unsafe fn rs_realloc(ptr: UnsafePointer<Header>, new_size: usize) -> UnsafeP
 
     if RADIX.is_owned(ptr_addr) {
         let ptr_copy_for_search = UnsafePointer::new(ptr.cast_as_ptr::<Header>());
-        let searched = find_original_ptr(ptr_copy_for_search);
+        let searched = find_original_ptr(ptr_copy_for_search).apply_safe();
+        let searched_header = searched.get_actual_header();
+
+        if !cfg!(feature = "disable-magic-security-checks") {
+            if searched_header.magic != BIG_MAGIC && searched_header.magic != MAGIC {
+                RSMallocError::DoubleFree.log_and_abort(
+                    searched.cast_as_ptr(),
+                    "magic mismatch",
+                    None,
+                );
+            }
+        }
 
         if searched.cast_usize() != ptr_addr {
             let ptr_copy_for_usable = UnsafePointer::new(ptr.cast_as_ptr::<Header>());
@@ -282,7 +296,7 @@ pub unsafe fn rs_realloc(ptr: UnsafePointer<Header>, new_size: usize) -> UnsafeP
             return new_ptr;
         }
 
-        let searched_safe = searched.apply_safe();
+        let searched_safe = searched;
         let searched_header = searched_safe.get_actual_header();
 
         if searched_header.magic == BIG_MAGIC {

@@ -3,7 +3,6 @@ use std::{
     mem::size_of,
     os::raw::c_void,
     ptr::{null_mut, write},
-    sync::Mutex,
 };
 
 #[cfg(feature = "debug")]
@@ -12,7 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use rustix::mm::{Advice, MapFlags, ProtFlags, madvise, mmap_anonymous};
 
 use crate::{
-    internals::{binder::prefer_node, once::Once},
+    internals::{binder::prefer_node, lock::SpinLock, once::Once},
     record_mmap_call,
     utility::{MIN_REFILL_BYTES, align_to},
 };
@@ -40,9 +39,12 @@ struct NodeArenaState {
 
 #[repr(C, align(64))]
 struct NodeArena {
-    state: Mutex<NodeArenaState>,
+    state: UnsafeCell<NodeArenaState>,
+    lock: SpinLock,
     node_id: u16,
 }
+
+unsafe impl Sync for NodeArena {}
 
 struct InnerTable {
     arenas: *mut NodeArena,
@@ -91,10 +93,11 @@ impl PageAllocator {
                     write(
                         arenas.add(node),
                         NodeArena {
-                            state: Mutex::new(NodeArenaState {
+                            state: UnsafeCell::new(NodeArenaState {
                                 current: null_mut(),
                                 arenas: null_mut(),
                             }),
+                            lock: SpinLock::new(),
                             node_id: node as u16,
                         },
                     );
@@ -107,6 +110,30 @@ impl PageAllocator {
         });
     }
 
+    #[cfg(feature = "preload")]
+    pub unsafe fn lock_all_for_fork(&self) {
+        let inner = &*self.inner.get();
+        if inner.arenas.is_null() {
+            return;
+        }
+
+        for node in 0..inner.node_count {
+            core::mem::forget((*inner.arenas.add(node)).lock.lock());
+        }
+    }
+
+    #[cfg(feature = "preload")]
+    pub unsafe fn reset_locks_on_fork(&self) {
+        let inner = &*self.inner.get();
+        if inner.arenas.is_null() {
+            return;
+        }
+
+        for node in 0..inner.node_count {
+            (*inner.arenas.add(node)).lock.reset_at_fork();
+        }
+    }
+
     #[cfg(feature = "debug")]
     pub unsafe fn arena_counts(&self) -> Vec<usize> {
         let inner = &*self.inner.get();
@@ -117,7 +144,8 @@ impl PageAllocator {
         let mut counts = Vec::with_capacity(inner.node_count);
         for node in 0..inner.node_count {
             let node_ref = &*inner.arenas.add(node);
-            let state = node_ref.state.lock().unwrap_or_else(|e| e.into_inner());
+            let _guard = node_ref.lock.lock();
+            let state = &*node_ref.state.get();
 
             let mut count = 0usize;
             let mut arena = state.arenas;
@@ -148,18 +176,19 @@ impl PageAllocator {
         };
 
         let node = &*inner.arenas.add(node);
-        let mut state = node.state.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = node.lock.lock();
+        let state = &mut *node.state.get();
 
-        if let Some(ptr) = Self::allocate_current(&mut state, size) {
+        if let Some(ptr) = Self::allocate_current(state, size) {
             return Some(ptr);
         }
 
-        if let Some(ptr) = Self::allocate_search(&mut state, size) {
+        if let Some(ptr) = Self::allocate_search(state, size) {
             return Some(ptr);
         }
 
-        Self::new_arena_locked(&mut state, node.node_id, size)?;
-        Self::allocate_current(&mut state, size)
+        Self::new_arena_locked(state, node.node_id, size)?;
+        Self::allocate_current(state, size)
     }
 
     #[inline(always)]
@@ -241,7 +270,8 @@ impl PageAllocator {
         };
 
         let node = &*inner.arenas.add(node);
-        let mut state = node.state.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = node.lock.lock();
+        let state = &mut *node.state.get();
         let addr = ptr as usize;
         let mut arena = state.arenas;
 
@@ -271,7 +301,7 @@ impl PageAllocator {
                 arena_ref.current = new_end;
 
                 if arena_ref.end - arena_ref.current < MIN_REFILL_BYTES {
-                    Self::remove_arena(&mut state, arena);
+                    Self::remove_arena(state, arena);
                 }
 
                 return true;

@@ -9,6 +9,19 @@ use crate::{
     rseq_core::slab_cache::SLAB_CACHE,
 };
 
+#[cfg(feature = "zero-small-on-free")]
+#[inline(always)]
+unsafe fn zero_small_payload(header_ptr: *mut Header, class: usize) {
+    use crate::utility::SIZE_CLASSES;
+
+    let payload = header_ptr.add(1) as *mut u8;
+    match class {
+        0 => std::ptr::write_bytes(payload, 0, SIZE_CLASSES[0]),
+        1 => std::ptr::write_bytes(payload, 0, SIZE_CLASSES[1]),
+        _ => {}
+    }
+}
+
 #[inline(always)]
 pub unsafe fn find_original_ptr(ptr: UnsafePointer<Header>) -> UnsafePointer<Header> {
     let mut header_search_ptr = ptr;
@@ -74,6 +87,9 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
     if header.magic == MAGIC {
         header.life_time = CURRENT_STAMP.load(Ordering::Relaxed);
         header.magic = FREED_MAGIC;
+
+        #[cfg(feature = "zero-small-on-free")]
+        zero_small_payload(header.as_ptr(), header.class as usize);
 
         SLAB_CACHE.push(header.class as usize, header.as_ptr());
         return;

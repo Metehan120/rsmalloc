@@ -7,9 +7,9 @@ use std::{
 use rustix::mm::{Advice, MapFlags, ProtFlags, madvise, mmap_anonymous, munmap};
 
 use crate::{
-    ALLOCATED_FLAG, BIG_MAGIC, BUDDY_INIT, BigAllocMeta, Header, RS_DISABLE_THP, RSMallocError,
-    TRIMMED_FLAG, ZERO_FLAG,
-    big_allocations::buddy::{BUDDY_BACKEND, BUDDY_TRIM_NOT_ALLOCATED, BUDDY_TRIM_TRIMMED},
+    BIG_FLAG, BIG_MAGIC, BUDDY_INIT, BigAllocMeta, Header, RS_DISABLE_THP, RSMallocError,
+    ZERO_FLAG,
+    big_allocations::buddy::BUDDY_BACKEND,
     core_prim::wrappers::UnsafePointer,
     internals::{binder::prefer_node, radix_tree::RADIX, rbtree::BIG_MAP},
     record_mmap_call,
@@ -42,7 +42,7 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
     let mut mapped_total = aligned_total;
     let mut actual_ptr: *mut u8 = null_mut();
     let mut buddy_region = 0usize;
-    let mut flag = 100;
+    let mut flags = 100;
     let cpu_id = get_rseq().cpu_id as usize;
     let (numa, inner) = SLAB_CACHE.get_numa_and_inner();
     let node_id = SLAB_CACHE.node_for_cpu(cpu_id, inner);
@@ -50,17 +50,13 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
     if size <= 1024 * 1024 * 64 && BUDDY_INIT && !DISABLE_BUDDY.load(Relaxed) {
         let buddy = BUDDY_BACKEND.alloc(aligned_total, node_id, (numa, inner));
 
-        if let Some((addr, order, trim_state, region)) = buddy {
+        if let Some((addr, order, _, region)) = buddy {
             actual_ptr = addr as *mut u8;
             buddy_region = region;
             registered = true;
             mapped_total = 1 << order;
 
-            flag = match trim_state {
-                BUDDY_TRIM_NOT_ALLOCATED => ZERO_FLAG,
-                BUDDY_TRIM_TRIMMED => TRIMMED_FLAG,
-                _ => ALLOCATED_FLAG,
-            };
+            flags = BIG_FLAG;
         }
     }
 
@@ -76,7 +72,7 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
                 prefer_node(pointer, mapped_total, node_id);
             }
 
-            flag = ZERO_FLAG;
+            flags = ZERO_FLAG;
             actual_ptr = pointer as *mut u8;
         } else {
             return UnsafePointer::NULL;
@@ -98,7 +94,7 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
             class: 100,
             magic: BIG_MAGIC,
             life_time: 0,
-            flags: flag,
+            flags,
         },
     );
 

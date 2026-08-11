@@ -218,6 +218,7 @@ pub(crate) const TAG_SIZE: usize = OFFSET_SIZE * 2;
 pub(crate) const ZERO_FLAG: u8 = 1;
 pub(crate) const ALLOCATED_FLAG: u8 = 2;
 pub(crate) const TRIMMED_FLAG: u8 = 3;
+pub(crate) const BIG_FLAG: u8 = 4;
 
 #[cfg(feature = "preload")]
 pub(crate) mod abi;

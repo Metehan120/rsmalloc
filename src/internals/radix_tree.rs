@@ -199,9 +199,6 @@ impl Radix {
 
     #[inline(always)]
     pub unsafe fn get(&self, chunk_idx: usize) -> bool {
-        if unlikely(chunk_idx >= RADIX_MAX_CHUNKS) {
-            return false;
-        }
         let (i0, i1, i2, i3) = Self::split(chunk_idx);
 
         let l1 = (*self.l0.as_ptr().add(i0)).load(Acquire) as *mut AtomicUsize;

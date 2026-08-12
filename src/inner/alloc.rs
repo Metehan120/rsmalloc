@@ -8,7 +8,7 @@ use crate::ALLOCATED_FLAG;
 #[cfg(feature = "preload")]
 use crate::inner::libc_int::set_nomem;
 use crate::{
-    BIG_MAGIC, GenericCache, Header, MAGIC, RSMallocError,
+    BIG_MAGIC, Header, MAGIC, RSMallocError,
     big_allocations::big_allocation::big_malloc,
     core_prim::{
         predictor::{BULK_FILL_BATCHING, TRANSFER_BATCHING},
@@ -17,6 +17,7 @@ use crate::{
     inner::free::find_original_ptr,
     internals::{radix_tree::RADIX, rbtree::BIG_META_MAP},
     rseq_core::{bulk_fill::bulk_fill, rseq_offsets::get_rseq, slab_cache::SLAB_CACHE},
+    traits::GenericCache,
     utility::{ITERATIONS, SIZE_CLASSES, match_size_class},
 };
 #[cfg(feature = "debug")]

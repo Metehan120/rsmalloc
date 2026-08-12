@@ -51,9 +51,7 @@ use std::{
     time::Instant,
 };
 
-use crate::{
-    core_prim::wrappers::UnsafePointer, internals::lock::SpinLock, rseq_core::rseq_offsets::rseq,
-};
+use crate::internals::lock::SpinLock;
 
 #[cfg(not(target_arch = "x86_64"))]
 compile_error!(
@@ -184,7 +182,7 @@ pub(crate) static TIME_STAMP: OnceLock<Instant> = OnceLock::new();
 pub(crate) static CURRENT_STAMP: AtomicU32 = AtomicU32::new(0);
 pub(crate) static AVERAGE_BLOCK_TIMES: AtomicU32 = AtomicU32::new(10);
 pub(crate) static BUDDY_AVERAGE_BLOCK_TIMES: AtomicU32 = AtomicU32::new(10);
-pub(crate) static GLOBAL_TRIM_LOCK: SpinLock = SpinLock::new();
+pub(crate) static GLOBAL_TRIM_LOCK: SpinLock<()> = SpinLock::new(());
 pub(crate) static mut NCPU: usize = 0;
 
 #[cfg(feature = "transfer-debug")]
@@ -234,6 +232,7 @@ pub(crate) mod global_alloc;
 pub(crate) mod inner;
 pub(crate) mod internals;
 pub(crate) mod rseq_core;
+pub(crate) mod traits;
 pub(crate) mod trim;
 pub(crate) mod utility;
 
@@ -361,44 +360,4 @@ impl RSMallocError {
 
         abort();
     }
-}
-
-pub(crate) trait GenericCache {
-    unsafe fn push(&self, class: usize, header: *mut Header);
-    unsafe fn pop(&self, class: usize) -> UnsafePointer<Header>;
-    unsafe fn push_tailed(
-        &self,
-        class: usize,
-        header: *mut Header,
-        tail: *mut Header,
-        batch_size: usize,
-    );
-}
-
-pub(crate) trait RseqCoreTrait {
-    unsafe fn push(
-        &self,
-        list_ptr: *mut *mut Header,
-        rseq: &rseq,
-        cpu_id: usize,
-        header: *mut Header,
-        usage_ptr: *mut usize,
-    ) -> usize;
-    unsafe fn push_tailed(
-        &self,
-        list_ptr: *mut *mut Header,
-        rseq: &rseq,
-        cpu_id: usize,
-        header: *mut Header,
-        tail: *mut Header,
-        usage_ptr: *mut usize,
-        batch_total: usize,
-    ) -> usize;
-    unsafe fn pop(
-        &self,
-        list_ptr: *mut *mut Header,
-        rseq: &rseq,
-        cpu_id: usize,
-        usage_ptr: *mut usize,
-    ) -> *mut Header;
 }

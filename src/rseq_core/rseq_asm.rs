@@ -3,8 +3,9 @@
 use std::{arch::asm, ptr::addr_of, usize};
 
 use crate::{
-    Header, RseqCoreTrait,
+    Header,
     rseq_core::rseq_offsets::{get_cs_ptr, rseq},
+    traits::RseqCoreTrait,
 };
 
 pub struct RseqCore;

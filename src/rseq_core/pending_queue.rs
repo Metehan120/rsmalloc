@@ -8,7 +8,10 @@ use std::{
 use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 
 use crate::{
-    MetaData, internals::lock::SpinLock, internals::once::Once, record_mmap_call,
+    MetaData,
+    internals::{lock::SpinLock, once::Once},
+    record_mmap_call,
+    traits::Lock,
     utility::NUM_SIZE_CLASSES,
 };
 
@@ -16,8 +19,7 @@ use crate::{
 pub static GLOBAL_QUEUE_REPORTS: AtomicUsize = AtomicUsize::new(0);
 
 struct Slot {
-    head: UnsafeCell<*mut MetaData>,
-    lock: SpinLock,
+    lock: SpinLock<*mut MetaData>,
 }
 
 pub struct ThreadQueue {
@@ -88,8 +90,7 @@ impl ThreadQueue {
         #[cfg(feature = "debug")]
         GLOBAL_QUEUE_REPORTS.fetch_add(1, Ordering::Relaxed);
 
-        let _guard = slot.lock.lock();
-        let head = slot.head.get();
+        let head = &mut *slot.lock.lock();
         (*node).next_page = *head;
         *head = node;
     }
@@ -130,13 +131,11 @@ impl ThreadQueue {
             return null_mut();
         };
 
-        let _guard = slot.lock.lock();
-        let head = slot.head.get();
+        let head = &mut *slot.lock.lock();
         let node = *head;
         if node.is_null() {
             return null_mut();
         }
-
         *head = (*node).next_page;
         (*node).next_page = null_mut();
         node

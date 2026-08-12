@@ -17,11 +17,15 @@ use crate::{
     core_prim::predictor::EMA_ALPHA,
     inner::alloc::MAX_REFILL_RETRIES,
     internals::{
-        binder::prefer_node, lock::SpinLock, numa_parser::NumaTopology, once::Once,
+        binder::prefer_node,
+        lock::{LockGuard, SpinLock},
+        numa_parser::NumaTopology,
+        once::Once,
         radix_tree::RADIX,
     },
     record_mmap_call,
     rseq_core::slab_cache::{SLAB_CACHE, SlabCacheInner},
+    traits::Lock,
     utility::align_to,
 };
 
@@ -74,7 +78,7 @@ struct BuddyRegion {
     free: [*mut FreeBlock; NUM_ORDERS],
     free_bitmap: [*mut u64; NUM_ORDERS],
     free_bitmap_words: [usize; NUM_ORDERS],
-    order_locks: [SpinLock; NUM_ORDERS],
+    order_locks: [SpinLock<()>; NUM_ORDERS],
 }
 
 impl BuddyRegion {
@@ -89,7 +93,7 @@ impl BuddyRegion {
             free: [null_mut(); NUM_ORDERS],
             free_bitmap: [null_mut(); NUM_ORDERS],
             free_bitmap_words: [0; NUM_ORDERS],
-            order_locks: [const { SpinLock::new() }; NUM_ORDERS],
+            order_locks: [const { SpinLock::new(()) }; NUM_ORDERS],
         }
     }
 }
@@ -114,7 +118,7 @@ pub struct BuddyAllocator {
     regions: *mut BuddyRegion,
     grow_order: usize,
     thp: bool,
-    spin: SpinLock,
+    spin: SpinLock<()>,
     once: Once,
 }
 
@@ -124,7 +128,7 @@ impl BuddyAllocator {
             regions: null_mut(),
             grow_order: BIG_BUDDY_MIN_ORDER,
             thp: false,
-            spin: SpinLock::new(),
+            spin: SpinLock::new(()),
             once: Once::new(),
         }
     }
@@ -678,7 +682,7 @@ impl BuddyAllocator {
     }
 
     unsafe fn trim_inner(&mut self, requested_size: usize, force_trim: bool) -> usize {
-        let Some(_global_trim_guard) = GLOBAL_TRIM_LOCK.try_lock() else {
+        let LockGuard::Free(_global_trim_guard) = GLOBAL_TRIM_LOCK.try_lock() else {
             return 0;
         };
 

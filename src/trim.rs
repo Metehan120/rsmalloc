@@ -19,7 +19,9 @@ use crate::{
     Header, NCPU, TRIMMED_FLAG,
     big_allocations::buddy::BUDDY_BACKEND,
     core_prim::predictor::TRIM_SMOOTHING,
+    internals::lock::LockGuard,
     rseq_core::slab_cache::{SLAB_CACHE, pack, unpack_ptr},
+    traits::Lock,
     utility::{NUM_SIZE_CLASSES, SIZE_CLASSES, get_size_4096_class},
 };
 
@@ -115,7 +117,7 @@ pub unsafe fn trimmer_main() -> ! {
 const TRIM_REPUSH_BATCH: usize = 16;
 
 pub unsafe fn trim_small(requested_size: usize) -> usize {
-    let Some(_global_trim_guard) = GLOBAL_TRIM_LOCK.try_lock() else {
+    let LockGuard::Free(_global_trim_guard) = GLOBAL_TRIM_LOCK.try_lock() else {
         return 0;
     };
 

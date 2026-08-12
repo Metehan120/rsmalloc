@@ -17,7 +17,7 @@ use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 #[cfg(feature = "debug")]
 use crate::ABORTS;
 use crate::{
-    GenericCache, Header, NCPU, RSMallocError, RseqCoreTrait,
+    Header, NCPU, RSMallocError,
     core_prim::wrappers::UnsafePointer,
     internals::{
         binder::bind_node,
@@ -31,6 +31,8 @@ use crate::{
         rseq_asm::RseqCore,
         rseq_offsets::get_rseq,
     },
+    traits::GenericCache,
+    traits::RseqCoreTrait,
     utility::{CACHE_HIGH_BLOCKS, NUM_SIZE_CLASSES},
 };
 
@@ -534,6 +536,7 @@ impl SlabCache {
         (UnsafePointer::NULL, UnsafePointer::NULL, 0)
     }
 
+    #[cold]
     #[inline(never)]
     pub unsafe fn slowest_numa_steal_path(
         &self,

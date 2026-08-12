@@ -13,6 +13,7 @@ use rustix::mm::{Advice, MapFlags, ProtFlags, madvise, mmap_anonymous};
 use crate::{
     internals::{binder::prefer_node, lock::SpinLock, once::Once},
     record_mmap_call,
+    traits::Lock,
     utility::{MIN_REFILL_BYTES, align_to},
 };
 
@@ -39,8 +40,7 @@ struct NodeArenaState {
 
 #[repr(C, align(64))]
 struct NodeArena {
-    state: UnsafeCell<NodeArenaState>,
-    lock: SpinLock,
+    lock: SpinLock<NodeArenaState>,
     node_id: u16,
 }
 
@@ -93,11 +93,10 @@ impl PageAllocator {
                     write(
                         arenas.add(node),
                         NodeArena {
-                            state: UnsafeCell::new(NodeArenaState {
+                            lock: SpinLock::new(NodeArenaState {
                                 current: null_mut(),
                                 arenas: null_mut(),
                             }),
-                            lock: SpinLock::new(),
                             node_id: node as u16,
                         },
                     );
@@ -144,8 +143,7 @@ impl PageAllocator {
         let mut counts = Vec::with_capacity(inner.node_count);
         for node in 0..inner.node_count {
             let node_ref = &*inner.arenas.add(node);
-            let _guard = node_ref.lock.lock();
-            let state = &*node_ref.state.get();
+            let state = node_ref.lock.lock();
 
             let mut count = 0usize;
             let mut arena = state.arenas;
@@ -176,8 +174,7 @@ impl PageAllocator {
         };
 
         let node = &*inner.arenas.add(node);
-        let _guard = node.lock.lock();
-        let state = &mut *node.state.get();
+        let state = &mut *node.lock.lock();
 
         if let Some(ptr) = Self::allocate_current(state, size) {
             return Some(ptr);
@@ -270,8 +267,8 @@ impl PageAllocator {
         };
 
         let node = &*inner.arenas.add(node);
-        let _guard = node.lock.lock();
-        let state = &mut *node.state.get();
+        let state = &mut *node.lock.lock();
+
         let addr = ptr as usize;
         let mut arena = state.arenas;
 

@@ -4,19 +4,19 @@ use std::{
     sync::{Mutex, MutexGuard},
 };
 
-use crate::rseq_core::rseq_offsets::__rseq_offset;
 use crate::{
     GLOBAL_TRIM_LOCK, RSMallocError,
     backend::page_allocator::PAGE_ALLOCATOR,
     big_allocations::buddy::BUDDY_BACKEND,
     inner::{fallback::fallback_reinit_on_fork, libc_int::pthread_atfork},
-    internals::{lock::LockGuard, rbtree::BIG_MAP},
+    internals::{lock::SpinLockGuard, rbtree::BIG_MAP},
     rseq_core::{pending_queue::PENDING_QUEUE, rseq_offsets::__rseq_size},
 };
+use crate::{rseq_core::rseq_offsets::__rseq_offset, traits::Lock};
 
 pub static BOOTSTRAP_LOCK: Mutex<()> = Mutex::new(());
 static mut ATFORK_GUARD: Option<MutexGuard<'static, ()>> = None;
-static mut TRIM_ATFORK_GUARD: Option<LockGuard> = None;
+static mut TRIM_ATFORK_GUARD: Option<SpinLockGuard<()>> = None;
 
 unsafe extern "C" fn fork_prepare() {
     let guard = BOOTSTRAP_LOCK.lock().unwrap_or_else(|e| e.into_inner());

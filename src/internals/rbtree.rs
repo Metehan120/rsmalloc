@@ -9,7 +9,9 @@
 
 use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 
-use crate::{BigAllocMeta, RSMallocError, internals::lock::SpinLock, record_mmap_call};
+use crate::{
+    BigAllocMeta, RSMallocError, internals::lock::SpinLock, record_mmap_call, traits::Lock,
+};
 use std::{
     mem::size_of,
     ptr::null_mut,
@@ -47,7 +49,7 @@ unsafe fn color_of(n: *mut Node) -> Color {
 pub struct RBTree {
     root: AtomicPtr<Node>,
     free_list: AtomicPtr<Node>,
-    lock: SpinLock,
+    lock: SpinLock<()>,
 }
 
 pub static BIG_META_MAP: RBTree = RBTree::new();
@@ -58,7 +60,7 @@ impl RBTree {
         RBTree {
             root: AtomicPtr::new(null_mut()),
             free_list: AtomicPtr::new(null_mut()),
-            lock: SpinLock::new(),
+            lock: SpinLock::new(()),
         }
     }
 

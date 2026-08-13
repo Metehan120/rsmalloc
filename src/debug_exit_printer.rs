@@ -250,7 +250,11 @@ pub(crate) unsafe fn print_report() {
             for (bucket, counter) in hist.iter().enumerate() {
                 seen += counter.load(Relaxed);
                 if seen >= target {
-                    return if bucket == 0 { 0 } else { 1usize << (bucket - 1) };
+                    return if bucket == 0 {
+                        0
+                    } else {
+                        1usize << (bucket - 1)
+                    };
                 }
             }
             (1usize << (LATENCY_BUCKETS - 1)).saturating_sub(1)
@@ -258,10 +262,20 @@ pub(crate) unsafe fn print_report() {
 
         line(
             &mut report,
-            "\nwarning: p50/p99 report the *lower bound* of a log2 bucket, not a\nmeasured value; they reflect estimated worst-case overhead per bucket,\nnot the actual cost. \"hit\" times only try_pop's local per-cpu-cache\nfast path; \"steal\" times pop_slow's cross-cpu scan, which is the\nactual source of tail latency and is measured separately so it can't\ninflate the hit-path numbers.",
+            "\nwarning: p50/p99 report the *lower bound* of a log2 bucket, not a \
+             measured value; they reflect estimated worst-case overhead per bucket, \
+             not the actual cost. \"hit\" times only try_pop's local per-cpu-cache \
+             fast path; \"steal\" times pop_slow's cross-cpu scan, which is the \
+             actual source of tail latency and is measured separately so it can't \
+             inflate the hit-path numbers. In practice the steal path only fires on \
+             a small fraction of total allocations, so its cost is mostly amortized \
+             across the run rather than showing up as sustained overhead.",
         );
 
-        section(&mut report, "fill() hit-path latency (cycles, log2-bucketed)");
+        section(
+            &mut report,
+            "fill() hit-path latency (cycles, log2-bucketed)",
+        );
         line(
             &mut report,
             "  cls  size       samples     p50        p99        local hits",

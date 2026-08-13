@@ -17,6 +17,8 @@ unsafe fn zero_small_payload(header_ptr: *mut Header, class: usize) {
     match class {
         0 => std::ptr::write_bytes(payload, 0, SIZE_CLASSES[0]),
         1 => std::ptr::write_bytes(payload, 0, SIZE_CLASSES[1]),
+        2 => std::ptr::write_bytes(payload, 0, SIZE_CLASSES[2]),
+        3 => std::ptr::write_bytes(payload, 0, SIZE_CLASSES[3]),
         _ => {}
     }
 }

@@ -23,6 +23,8 @@ default = []
 preload = []
 print-cpu-on-double-free = []
 check-owned-on-alloc = []
+
+# Debug options
 debug-print = ["debug"]
 debug-printer-thread = ["debug-print"]
 debug = []
@@ -34,6 +36,7 @@ transfer-debug = ["debug-exact"]
 transfer-debug-exact = ["transfer-debug"]
 debug-full = ["transfer-debug-exact"]
 debug-full-critic = ["transfer-debug-exact", "debug-predictor-exact"]
+
 extended-header = []
 lazy-page-trim = []
 # Useful on systems (e.g. CachyOS) that aggressively promote transparent huge pages.

@@ -8,9 +8,9 @@ use std::{
     },
 };
 
+use crate::traits::Lock;
 #[cfg(feature = "debug-exact")]
 use crate::{GLOBAL_LOCK_RETRIES, GLOBAL_LOCKS, GLOBAL_SPIN_WAITS, GLOBAL_TRY_LOCK_MISSES};
-use crate::traits::Lock;
 
 #[derive(Debug, PartialEq)]
 pub enum LockState {
@@ -63,8 +63,8 @@ pub struct SpinLock<T> {
     data: UnsafeCell<T>,
 }
 
-unsafe impl<T> Send for SpinLock<T> {}
-unsafe impl<T> Sync for SpinLock<T> {}
+unsafe impl<T: Send> Send for SpinLock<T> {}
+unsafe impl<T: Sync> Sync for SpinLock<T> {}
 
 impl<T> SpinLock<T> {
     #[inline(always)]

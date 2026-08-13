@@ -149,40 +149,6 @@ pub(crate) static TOTAL_REFILL_CALLS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static REFILLS_BY_CLASS: [AtomicUsize; utility::NUM_SIZE_CLASSES] =
     [const { AtomicUsize::new(0) }; utility::NUM_SIZE_CLASSES];
 
-#[cfg(feature = "debug-exact")]
-pub(crate) const LATENCY_BUCKETS: usize = 64;
-
-#[cfg(feature = "debug-exact")]
-pub(crate) static FILL_HIT_LATENCY_HIST: [[AtomicUsize; LATENCY_BUCKETS];
-    utility::NUM_SIZE_CLASSES] =
-    [const { [const { AtomicUsize::new(0) }; LATENCY_BUCKETS] }; utility::NUM_SIZE_CLASSES];
-#[cfg(feature = "debug-exact")]
-pub(crate) static FILL_STEAL_LATENCY_HIST: [[AtomicUsize; LATENCY_BUCKETS];
-    utility::NUM_SIZE_CLASSES] =
-    [const { [const { AtomicUsize::new(0) }; LATENCY_BUCKETS] }; utility::NUM_SIZE_CLASSES];
-
-#[cfg(feature = "debug-exact")]
-#[inline(always)]
-fn latency_bucket(cycles: u64) -> usize {
-    (64 - cycles.max(1).leading_zeros() as usize).min(LATENCY_BUCKETS - 1)
-}
-
-#[cfg(feature = "debug-exact")]
-#[inline(always)]
-pub(crate) fn record_fill_hit_latency(class: usize, cycles: u64) {
-    FILL_HIT_LATENCY_HIST[class][latency_bucket(cycles)].fetch_add(1, Ordering::Relaxed);
-}
-
-#[cfg(feature = "debug-exact")]
-#[inline(always)]
-pub(crate) fn record_fill_steal_latency(class: usize, cycles: u64) {
-    FILL_STEAL_LATENCY_HIST[class][latency_bucket(cycles)].fetch_add(1, Ordering::Relaxed);
-}
-
-#[cfg(feature = "debug-exact")]
-pub(crate) static LOCAL_FILL_HITS: [AtomicUsize; utility::NUM_SIZE_CLASSES] =
-    [const { AtomicUsize::new(0) }; utility::NUM_SIZE_CLASSES];
-
 #[cfg(feature = "debug")]
 pub(crate) static ABORTS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "debug")]

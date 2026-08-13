@@ -489,18 +489,7 @@ impl SlabCache {
         let inner = &*self.inner.get();
 
         if !self.is_empty(inner, class, cpu_id) {
-            #[cfg(feature = "debug-exact")]
-            let mut aux = 0;
-            #[cfg(feature = "debug-exact")]
-            let timer = std::arch::x86_64::__rdtscp(&mut aux);
-
             if let Some(popped) = self.transfer_pop_batch(class, cpu_id, batch_size) {
-                #[cfg(feature = "debug-exact")]
-                {
-                    crate::LOCAL_FILL_HITS[class].fetch_add(1, Ordering::Relaxed);
-                    let elapsed = std::arch::x86_64::__rdtscp(&mut aux) - timer;
-                    crate::record_fill_hit_latency(class, elapsed);
-                }
                 return (
                     UnsafePointer::new(popped.0),
                     UnsafePointer::new(popped.1),
@@ -509,20 +498,7 @@ impl SlabCache {
             }
         }
 
-        #[cfg(feature = "debug-exact")]
-        let mut aux = 0;
-        #[cfg(feature = "debug-exact")]
-        let timer = std::arch::x86_64::__rdtscp(&mut aux);
-
-        let result = self.pop_slow(inner, class, cpu_id, batch_size);
-
-        #[cfg(feature = "debug-exact")]
-        {
-            let elapsed = std::arch::x86_64::__rdtscp(&mut aux) - timer;
-            crate::record_fill_steal_latency(class, elapsed);
-        }
-
-        result
+        self.pop_slow(inner, class, cpu_id, batch_size)
     }
 
     #[inline(always)]

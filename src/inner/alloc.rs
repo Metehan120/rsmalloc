@@ -243,7 +243,7 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
         };
 
         TRANSFER_BATCHING[class].update_refill(observed, ITERATIONS[class]);
-        return take_one_from_batch(
+        let one = take_one_from_batch(
             class,
             start.as_ptr(),
             tail.as_ptr(),
@@ -255,6 +255,8 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
             #[cfg(feature = "debug")]
             true,
         );
+
+        return one;
     }
 
     refill(class, cpu_id)

@@ -267,9 +267,11 @@ pub(crate) unsafe fn print_report() {
              not the actual cost. \"hit\" times only try_pop's local per-cpu-cache \
              fast path; \"steal\" times pop_slow's cross-cpu scan, which is the \
              actual source of tail latency and is measured separately so it can't \
-             inflate the hit-path numbers. In practice the steal path only fires on \
-             a small fraction of total allocations, so its cost is mostly amortized \
-             across the run rather than showing up as sustained overhead.",
+             inflate the hit-path numbers. Whether that cost is amortized depends on \
+             the workload: for classes with mostly same-cpu alloc/free, steal samples \
+             are a small minority and the cost washes out; for cross-cpu producer/ \
+             consumer patterns (freed-elsewhere, allocated-here), steal samples can \
+             outnumber hits for that class, meaning most fills pay the cross-cpu cost.",
         );
 
         section(

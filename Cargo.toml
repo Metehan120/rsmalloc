@@ -51,7 +51,7 @@ abort-on-rseq-failure = []
 disable-magic-security-checks = []
 trim-aggressively = []
 explicit-zero = []
-# Zeroes 16-32b allocations (cryptographic key sized) on free; good for security without big performance penalty
+# Zeroes 16~64b sized allocations (cryptographic key sized) on free; good for security without big performance penalty
 zero-small-on-free = []
 semi-hardened = ["extended-header", "check-owned-on-alloc", "zero-small-on-free"]
 

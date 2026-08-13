@@ -3,7 +3,7 @@ use std::hint::likely;
 use std::ptr::null_mut;
 
 use crate::backend::page_allocator::ARENA_SIZE;
-use crate::big_allocations::buddy::BUDDY_BACKEND;
+use crate::big_allocations::buddy::{BIG_BUDDY_MAX_ORDER, BIG_BUDDY_MIN_ORDER, BUDDY_BACKEND};
 use crate::core_prim::predictor::{DEFAULT_BATCH, PREDICTOR_INIT_BATCH};
 use crate::core_prim::random::{init_align, init_magic};
 use crate::core_prim::wrappers::UnsafePointer;
@@ -1143,7 +1143,7 @@ impl RSMalloc {
     }
 }
 
-pub const RSMALLOC_BUDDY_NUM_ORDERS: usize = 5;
+pub const RSMALLOC_BUDDY_NUM_ORDERS: usize = BIG_BUDDY_MAX_ORDER - BIG_BUDDY_MIN_ORDER + 1;
 
 #[cfg(any(feature = "debug", doc))]
 unsafe fn alloc_usize_array(count: usize) -> UnsafePointer<Header> {

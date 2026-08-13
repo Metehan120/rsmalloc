@@ -880,9 +880,11 @@ impl RSMalloc {
     #[cfg(feature = "debug")]
     pub fn get_stats(&self) -> RSMallocStats {
         use crate::{
-            ABORTS, BUDDY_AVERAGE_BLOCK_TIMES, HIGH_WATER_BUDDY_CACHED_VA,
+            ABORTS, BUDDY_AVERAGE_BLOCK_TIMES, CURRENT_STAMP, HIGH_WATER_BUDDY_CACHED_VA,
             HIGH_WATER_SLAB_CACHED_VA, HIGH_WATER_TOTAL_CACHED_VA, NCPU, REFILL_OVER_PREDICTS,
-            REFILL_UNDER_PREDICTS, REFILLS_BY_CLASS, TOTAL_CACHED_VA, TOTAL_REFILL_CALLS,
+            REFILL_UNDER_PREDICTS, REFILLS_BY_CLASS, START_TIME, TOTAL_CACHED_VA, TOTAL_MMAP_BYTES,
+            TOTAL_MMAP_CALLS, TOTAL_REFILL_CALLS,
+            backend::page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR, TOTAL_LIVED, TOTAL_REMOVED},
             big_allocations::buddy::{BIG_BUDDY_MIN_ORDER, BUDDY_BACKEND, BUDDY_TOTAL_CACHED_VA},
             internals::radix_tree::{CHUNK_SIZE, RADIX},
             rseq_core::slab_cache::SLAB_CACHE,
@@ -892,6 +894,14 @@ impl RSMalloc {
         use std::sync::atomic::Ordering::{self, Relaxed};
 
         unsafe { self.init() };
+
+        let uptime_ms = unsafe { START_TIME }
+            .map(|start| start.elapsed().as_millis() as usize)
+            .unwrap_or(0);
+        let clock_ms = CURRENT_STAMP.load(Relaxed) as u64 * 100;
+
+        let arena_counts = unsafe { PAGE_ALLOCATOR.arena_counts() };
+        let total_arenas: usize = arena_counts.iter().sum();
 
         let under = REFILL_UNDER_PREDICTS.load(Ordering::Relaxed);
         let over = REFILL_OVER_PREDICTS.load(Ordering::Relaxed);
@@ -998,6 +1008,15 @@ impl RSMalloc {
         };
 
         RSMallocStats {
+            pid: std::process::id(),
+            uptime_ms,
+            clock_ms,
+            mmap_calls: TOTAL_MMAP_CALLS.load(Relaxed),
+            mmap_bytes_requested: TOTAL_MMAP_BYTES.load(Relaxed),
+            total_arenas,
+            arenas_lived: TOTAL_LIVED.load(Relaxed),
+            arenas_removed: TOTAL_REMOVED.load(Relaxed),
+            arena_size: unsafe { ARENA_SIZE },
             total_refills: total,
             refill_under_predicts: under,
             refill_over_predicts: over,
@@ -1064,6 +1083,8 @@ impl RSMalloc {
 
     #[cfg(feature = "debug-exact")]
     pub fn get_exact_stats(&self) -> RSMallocExactStats {
+        #[cfg(feature = "debug-full-critic")]
+        use crate::inner::{alloc::RS_ALLOC_CALLS_DEBUG, free::RS_FREE_CALLS_DEBUG};
         #[cfg(feature = "transfer-debug-exact")]
         use crate::{
             DRY_TRANSFER_STEALS, TOTAL_TRANSFER_POP_CALLS, TOTAL_TRANSFER_PUSH_CALLS,
@@ -1072,10 +1093,12 @@ impl RSMalloc {
         use crate::{
             GLOBAL_LOCK_RETRIES, GLOBAL_LOCKS, GLOBAL_SPIN_WAITS, GLOBAL_TRY_LOCK_MISSES,
             GLOBAL_TRY_LOCKS,
+            trim::{TOTAL_TRIMMED_BLOCKS, TOTAL_TRIMMED_TIME},
         };
         use std::sync::atomic::Ordering::Relaxed;
 
         let stats = self.get_stats();
+        let trimmed_blocks_small = TOTAL_TRIMMED_BLOCKS.load(Relaxed);
         let total_locks = GLOBAL_LOCKS.load(Relaxed);
         let total_lock_retries = GLOBAL_LOCK_RETRIES.load(Relaxed);
         let aborts_vs_locks = if total_locks == 0 {
@@ -1106,6 +1129,13 @@ impl RSMalloc {
             total_transfer_retries: TOTAL_TRANSFER_RETRIES.load(Relaxed),
             #[cfg(feature = "transfer-debug-exact")]
             dry_transfer_steals: DRY_TRANSFER_STEALS.load(Relaxed),
+            #[cfg(feature = "debug-full-critic")]
+            alloc_calls: RS_ALLOC_CALLS_DEBUG.load(Relaxed),
+            #[cfg(feature = "debug-full-critic")]
+            free_calls: RS_FREE_CALLS_DEBUG.load(Relaxed),
+            trimmed_blocks_small,
+            avg_madvise_cycles_small: TOTAL_TRIMMED_TIME.load(Relaxed)
+                / trimmed_blocks_small.max(1),
             aborts_vs_locks,
             capabilities: self.get_capabilities(),
             stats,
@@ -1127,6 +1157,18 @@ unsafe fn alloc_usize_array(count: usize) -> UnsafePointer<Header> {
 #[cfg(any(feature = "debug", doc))]
 /// rsmalloc structured debug stats.
 pub struct RSMallocStats {
+    pub pid: u32,
+    pub uptime_ms: usize,
+    pub clock_ms: u64,
+
+    pub mmap_calls: usize,
+    pub mmap_bytes_requested: usize,
+
+    pub total_arenas: usize,
+    pub arenas_lived: usize,
+    pub arenas_removed: usize,
+    pub arena_size: usize,
+
     pub total_refills: usize,
     pub refill_under_predicts: usize,
     pub refill_over_predicts: usize,
@@ -1227,6 +1269,12 @@ pub struct RSMallocExactStats {
     pub total_transfer_retries: usize,
     #[cfg(feature = "transfer-debug-exact")]
     pub dry_transfer_steals: usize,
+    #[cfg(feature = "debug-full-critic")]
+    pub alloc_calls: usize,
+    #[cfg(feature = "debug-full-critic")]
+    pub free_calls: usize,
+    pub trimmed_blocks_small: usize,
+    pub avg_madvise_cycles_small: usize,
     pub aborts_vs_locks: f64,
     pub under_vs_over: usize,
     pub over_vs_under: usize,

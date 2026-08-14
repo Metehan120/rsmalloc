@@ -182,7 +182,7 @@ pub(crate) static GLOBAL_SPIN_WAITS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static TIME_STAMP: OnceLock<Instant> = OnceLock::new();
 pub(crate) static CURRENT_STAMP: AtomicU32 = AtomicU32::new(0);
 pub(crate) static AVERAGE_BLOCK_TIMES: AtomicU32 = AtomicU32::new(10);
-pub(crate) static BUDDY_AVERAGE_BLOCK_TIMES: AtomicU32 = AtomicU32::new(10);
+pub(crate) static BUDDY_AVERAGE_BLOCK_TIMES: AtomicU32 = AtomicU32::new(100);
 pub(crate) static GLOBAL_TRIM_LOCK: SpinLock<()> = SpinLock::new(());
 pub(crate) static mut NCPU: usize = 0;
 

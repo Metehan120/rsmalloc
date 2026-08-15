@@ -111,8 +111,8 @@ Weakening magic-value checks (for debugging/reproducible tests/security research
 | `page-backend-huge-page` | Huge-page advice for slab arenas (ignored if the above is also set). |
 | `check-owned-on-alloc` | Semi-hardening: verifies popped allocations are still `RADIX`-owned before returning them. Adds a lookup to the alloc path. |
 | `zero-small-on-free` | Zeroes 16–64B allocations (cryptographic-key sized) on free; cheap enough for security without a big performance penalty. |
-| `guard-pages-thp` | Opportunistically places a `PROT_NONE` guard page at the last 4KB of every 2MB-aligned page-allocator block. Catches some OOB bugs; supports size classes up to 1MB (larger requests can't fit within one 2MB segment, so they skip guarding). Doesn't split THP by default (pages aren't huge unless `page-backend-huge-page` requests it), but can still hurt physical-memory-access performance by fragmenting page tables and blocking opportunistic huge-page promotion for that block. |
-| `guard-pages-ignore-thp` | Shrinks `guard-pages-thp`'s interval from 2MB to 64KB for denser coverage (supports size classes up to 32KB); fragments page tables more often. |
+| `guard-pages-thp` | Lazily places a `PROT_NONE` guard page at the last 4KB of every **2MB-aligned** page-allocator block, materialized only as the bump pointer reaches it. Catches some OOB bugs; size classes up to 1MB are guaranteed never to straddle a guard (denied outright if they would), while larger requests only get a guard consumed at their leading edge, not dense coverage through their body. |
+| `guard-pages-ignore-thp` | Shrinks `guard-pages-thp`'s interval from 2MB to 64KB for denser coverage; fragments page tables more often. |
 | `semi-hardened` | Convenience bundle: `extended-header` + `check-owned-on-alloc` + `zero-small-on-free` + `guard-pages-ignore-thp`. |
 | `lazy-page-trim` | Lazy page-free advice for small-allocation trim instead of immediate `MADV_DONTNEED`. |
 | `trim-aggressively` | Skips the idle-class ceiling nudge in trim's average-lifetime tracking, keeping trim eligibility tighter. |

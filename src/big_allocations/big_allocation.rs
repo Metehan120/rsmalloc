@@ -9,12 +9,12 @@ use rustix::mm::{Advice, MapFlags, ProtFlags, madvise, mmap_anonymous, munmap};
 use crate::{
     BIG_FLAG, BIG_MAGIC, BUDDY_INIT, BigAllocMeta, Header, RS_DISABLE_THP, RSMallocError,
     ZERO_FLAG,
+    backend::trim::DISABLE_BUDDY,
     big_allocations::buddy::BUDDY_BACKEND,
     core_prim::wrappers::UnsafePointer,
     internals::{binder::prefer_node, radix_tree::RADIX, rbtree::BIG_MAP},
     record_mmap_call,
     rseq_core::{rseq_offsets::get_rseq, slab_cache::SLAB_CACHE},
-    trim::DISABLE_BUDDY,
     utility::align_to,
 };
 

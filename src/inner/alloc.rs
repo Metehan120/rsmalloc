@@ -22,7 +22,7 @@ use crate::{
 };
 #[cfg(feature = "debug")]
 use crate::{REFILLS_BY_CLASS, TOTAL_REFILL_CALLS};
-use crate::{TOTAL_CACHED_VA, TRIM_THRESHOLD, trim::trimmer_main};
+use crate::{TOTAL_CACHED_VA, TRIM_THRESHOLD, backend::trim::trimmer_main};
 #[cfg(feature = "debug")]
 use std::sync::atomic::Ordering;
 

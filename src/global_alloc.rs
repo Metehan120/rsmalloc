@@ -3,6 +3,9 @@ use std::hint::likely;
 use std::ptr::null_mut;
 
 use crate::backend::page_allocator::ARENA_SIZE;
+use crate::backend::trim::{
+    BUDDY_DISABLE_PERCENTAGE, BUDDY_ENABLE_PERCENTAGE, DISABLE_RELIEF, trim_small,
+};
 use crate::big_allocations::buddy::{BIG_BUDDY_MAX_ORDER, BIG_BUDDY_MIN_ORDER, BUDDY_BACKEND};
 use crate::core_prim::predictor::{DEFAULT_BATCH, PREDICTOR_INIT_BATCH};
 use crate::core_prim::random::{init_align, init_magic};
@@ -17,7 +20,6 @@ use crate::internals::radix_tree::{RADIX, RadixTree};
 use crate::rseq_core::rseq_offsets::__rseq_offset;
 use crate::rseq_core::rseq_offsets::__rseq_size;
 use crate::rseq_core::slab_cache::SLAB_CACHE;
-use crate::trim::{BUDDY_DISABLE_PERCENTAGE, BUDDY_ENABLE_PERCENTAGE, DISABLE_RELIEF, trim_small};
 use crate::{
     ALIGN_TAG, BUDDY_ATTEMPT_HUGE, BUDDY_MAX_CACHE, DISABLE_TRIM_THREAD, FOREIGN_POINTER_ABORT,
     Header, RS_DISABLE_THP, RSMallocError, TRIM_THRESHOLD, get_clock,

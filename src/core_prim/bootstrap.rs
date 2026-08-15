@@ -9,6 +9,7 @@ use crate::rseq_core::rseq_offsets::__rseq_offset;
 use crate::{
     ALIGN_TAG, BUDDY_ATTEMPT_HUGE, BUDDY_MAX_CACHE, DISABLE_TRIM_THREAD, RS_DISABLE_THP,
     RSMallocError, TRIM_THRESHOLD,
+    backend::trim::{BUDDY_DISABLE_PERCENTAGE, BUDDY_ENABLE_PERCENTAGE, DISABLE_RELIEF},
     big_allocations::buddy::BUDDY_BACKEND,
     core_prim::predictor::{DEFAULT_BATCH, PREDICTOR_INIT_BATCH},
     inner::alloc::MAX_REFILL_RETRIES,
@@ -17,7 +18,6 @@ use crate::{
         radix_tree::{RADIX, RadixTree},
     },
     rseq_core::{rseq_offsets::__rseq_size, slab_cache::SLAB_CACHE},
-    trim::{BUDDY_DISABLE_PERCENTAGE, BUDDY_ENABLE_PERCENTAGE, DISABLE_RELIEF},
 };
 
 #[inline(never)]

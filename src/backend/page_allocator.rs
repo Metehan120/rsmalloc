@@ -9,6 +9,8 @@ use std::{
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rustix::mm::{Advice, MapFlags, ProtFlags, madvise, mmap_anonymous};
+#[cfg(feature = "guard-pages-thp")]
+use rustix::mm::{MprotectFlags, mprotect};
 
 use crate::{
     internals::{binder::prefer_node, lock::SpinLock, once::Once},
@@ -19,6 +21,42 @@ use crate::{
 
 const PAGE_SIZE: usize = 4096;
 pub static mut ARENA_SIZE: usize = 1024 * 1024 * 256;
+
+#[cfg(all(feature = "guard-pages-thp", not(feature = "guard-pages-ignore-thp")))]
+const GUARD_ALIGN: usize = 2 * 1024 * 1024;
+#[cfg(all(feature = "guard-pages-thp", feature = "guard-pages-ignore-thp"))]
+const GUARD_ALIGN: usize = 1024 * 64;
+
+#[cfg(feature = "guard-pages-thp")]
+const GUARD_OFFSET: usize = GUARD_ALIGN - PAGE_SIZE;
+
+#[cfg(feature = "guard-pages-thp")]
+#[inline(always)]
+unsafe fn skip_guard_page(addr: usize, end: usize) -> usize {
+    if addr % GUARD_ALIGN == GUARD_OFFSET && addr < end {
+        let _ = mprotect(addr as *mut c_void, PAGE_SIZE, MprotectFlags::empty());
+        return addr + PAGE_SIZE;
+    }
+    addr
+}
+
+#[cfg(feature = "guard-pages-thp")]
+#[inline(always)]
+fn guard_page_in_range(start: usize, size: usize) -> Option<usize> {
+    let end = start.checked_add(size)?;
+    let block_base = start - (start % GUARD_ALIGN);
+    let mut guard = block_base + GUARD_OFFSET;
+    if guard < start {
+        guard += GUARD_ALIGN;
+    }
+    if guard < end { Some(guard) } else { None }
+}
+
+#[cfg(feature = "guard-pages-thp")]
+#[inline(always)]
+fn fits_within_guard_segment(size: usize) -> bool {
+    size <= GUARD_OFFSET
+}
 
 #[cfg(feature = "debug")]
 pub static TOTAL_REMOVED: AtomicUsize = AtomicUsize::new(0);
@@ -195,8 +233,23 @@ impl PageAllocator {
         }
 
         let arena = &mut *state.current;
+
+        #[cfg(feature = "guard-pages-thp")]
+        if fits_within_guard_segment(size) {
+            eprintln!("guard page for size: {}", size);
+            arena.current = skip_guard_page(arena.current, arena.end);
+            if let Some(guard) = guard_page_in_range(arena.current, size) {
+                arena.current = skip_guard_page(guard, arena.end);
+            }
+        }
+
         let next = arena.current.checked_add(size)?;
         if next > arena.end {
+            return None;
+        }
+
+        #[cfg(feature = "guard-pages-thp")]
+        if fits_within_guard_segment(size) && guard_page_in_range(arena.current, size).is_some() {
             return None;
         }
 
@@ -218,8 +271,24 @@ impl PageAllocator {
             let arena_ref = &mut *arena;
 
             if arena != state.current {
+                #[cfg(feature = "guard-pages-thp")]
+                if fits_within_guard_segment(size) {
+                    eprintln!("guard page for size: {}", size);
+                    arena_ref.current = skip_guard_page(arena_ref.current, arena_ref.end);
+                    if let Some(guard) = guard_page_in_range(arena_ref.current, size) {
+                        arena_ref.current = skip_guard_page(guard, arena_ref.end);
+                    }
+                }
+
+                #[cfg(feature = "guard-pages-thp")]
+                let blocked_by_guard = fits_within_guard_segment(size)
+                    && guard_page_in_range(arena_ref.current, size).is_some();
+                #[cfg(not(feature = "guard-pages-thp"))]
+                let blocked_by_guard = false;
+
                 if let Some(next) = arena_ref.current.checked_add(size)
                     && next <= arena_ref.end
+                    && !blocked_by_guard
                 {
                     let ptr = arena_ref.current as *mut c_void;
                     arena_ref.current = next;
@@ -295,6 +364,13 @@ impl PageAllocator {
                     return false;
                 }
 
+                #[cfg(feature = "guard-pages-thp")]
+                if fits_within_guard_segment(new_size - old_size)
+                    && guard_page_in_range(old_end, new_size - old_size).is_some()
+                {
+                    return false;
+                }
+
                 arena_ref.current = new_end;
 
                 if arena_ref.end - arena_ref.current < MIN_REFILL_BYTES {
@@ -354,6 +430,9 @@ impl PageAllocator {
         requested: usize,
     ) -> Option<()> {
         let data_size = align_to(requested.max(ARENA_SIZE), PAGE_SIZE);
+
+        #[cfg(feature = "guard-pages-thp")]
+        let data_size = data_size.checked_add(PAGE_SIZE)?;
         let metadata_size = align_to(size_of::<PageArena>(), PAGE_SIZE);
         let map_size = metadata_size.checked_add(data_size)?;
 

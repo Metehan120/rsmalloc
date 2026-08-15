@@ -53,7 +53,15 @@ trim-aggressively = []
 explicit-zero = []
 # Zeroes 16~64b sized allocations (cryptographic key sized) on free; good for security without big performance penalty
 zero-small-on-free = []
-semi-hardened = ["extended-header", "check-owned-on-alloc", "zero-small-on-free"]
+# Opportunistically places a PROT_NONE guard page at the last 4KB of every 2MB-aligned block
+# (not enforced for allocations that don't fit within one segment); catches some OOB bugs.
+# support up to 1mb size classes
+guard-pages-thp = []
+# Shrinks the guard interval from 2MB to 64KB for denser coverage; fragments page tables more often than guard-pages-thp,
+# so only combine with page-backend-huge-page if you're fine losing THP eligibility there
+# supports up to 32kb size classes
+guard-pages-ignore-thp = ["guard-pages-thp"]
+semi-hardened = ["extended-header", "check-owned-on-alloc", "zero-small-on-free", "guard-pages-ignore-thp"]
 
 [[bench]]
 name = "book_speed"

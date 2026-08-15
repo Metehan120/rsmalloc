@@ -2,10 +2,10 @@ use std::os::raw::{c_int, c_void};
 
 use crate::{
     Header,
+    backend::trim::trim_small,
     big_allocations::buddy::BUDDY_BACKEND,
     core_prim::wrappers::UnsafePointer,
     inner::alloc::{rs_alloc, usable_size},
-    trim::trim_small,
 };
 
 #[unsafe(no_mangle)]

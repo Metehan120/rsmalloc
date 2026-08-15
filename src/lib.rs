@@ -234,7 +234,6 @@ pub(crate) mod inner;
 pub(crate) mod internals;
 pub(crate) mod rseq_core;
 pub(crate) mod traits;
-pub(crate) mod trim;
 pub(crate) mod utility;
 
 #[cfg(any(all(feature = "debug-exact", not(feature = "preload")), doc))]

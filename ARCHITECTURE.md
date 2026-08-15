@@ -331,6 +331,12 @@ The bitmap is protected by the per-node page-backend lock and is intentionally n
 
 The optional Cargo feature `page-backend-no-huge-page` applies Linux no-huge-page advice to these page-backend arenas. It is intended for systems that aggressively promote transparent huge pages, where slab arena slack can make RSS look much larger than expected. Enabling it can reduce RSS substantially, but may increase TLB pressure because the arenas are backed by normal pages. The opposite `page-backend-huge-page` feature requests huge-page advice for TLB-sensitive experiments when `page-backend-no-huge-page` is not also enabled; enabling both advice features intentionally results in no explicit page-backend THP advice.
 
+#### Guard Pages
+
+The optional `guard-pages-thp`/`guard-pages-ignore-thp` features add opportunistic `PROT_NONE` guard pages to the bump-allocated region. Absolute virtual addresses landing on the last 4KB of a fixed-size aligned block (2MB for `guard-pages-thp`, matching the THP unit; 64KB for `guard-pages-ignore-thp`, for denser coverage at the cost of always fragmenting page tables in that block) get `mprotect`ed to `PROT_NONE` and skipped by the bump pointer the moment allocation reaches them, so no request is ever handed out spanning one.
+
+This is opportunistic, not enforced end-to-end: a request that is itself larger than one guard segment can never be placed without straddling a guard page no matter where it starts, so such requests silently skip guarding rather than being denied — `guard-pages-thp` covers size classes up to 1MB (the 2MB class is never guarded), `guard-pages-ignore-thp` covers up to 32KB. `new_arena_locked` maps one extra page per arena so a snugly-sized single request still leaves room for its own trailing/segment guard rather than failing outright — an earlier version without this padding could return null for a legitimate allocation purely because a guard page ate the arena's last few KB.
+
 ### Thread-Local Pending Metadata
 
 Default refill behavior uses thread-local pending metadata:
@@ -708,6 +714,9 @@ Important architecture-affecting features:
 | `page-backend-no-huge-page` | Applies no-huge-page advice to slab page-backend arenas to reduce RSS on systems with aggressive transparent huge-page promotion, trading that for higher TLB pressure. Ignored if `page-backend-huge-page` is also enabled. |
 | `page-backend-huge-page` | Applies huge-page advice to slab page-backend arenas when `page-backend-no-huge-page` is not enabled. This can reduce TLB pressure but may increase RSS on aggressive THP systems. |
 | `check-owned-on-alloc` | Semi-hardening diagnostic mode: verifies non-null popped allocation pointers are still owned by `RADIX` before returning them to callers. |
+| `zero-small-on-free` | Zeroes 16–64B allocations (cryptographic-key sized) on free using a plain byte-fill; cheap enough to leave the compiler free to optimize the surrounding code. |
+| `guard-pages-thp` | Opportunistically places a `PROT_NONE` guard page at the last 4KB of every 2MB-aligned page-allocator block (`src/backend/page_allocator.rs`), and the bump allocator skips over it. Not enforced for requests that don't fit within one 2MB segment — supports size classes up to 1MB, so the largest class (2MB) is never guarded. Doesn't split THP by default (arenas aren't huge-page-backed unless `page-backend-huge-page` also requests it), but can still hurt physical-memory-access performance by fragmenting page tables and blocking opportunistic huge-page promotion for that block. |
+| `guard-pages-ignore-thp` | Shrinks `guard-pages-thp`'s interval from 2MB to 64KB for denser guard coverage (supports size classes up to 32KB). Fragments page tables more often than the 2MB variant. |
 | `extended-header` | Uses wider metadata. |
 | `debug` | Enables base stats/debug counters, including RSEQ/refill debug signals. |
 | `debug-print` | Enables `debug` and emits an exit-time allocator report through `.fini_array`/`eprintln!`. |

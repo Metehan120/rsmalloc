@@ -236,7 +236,6 @@ impl PageAllocator {
 
         #[cfg(feature = "guard-pages-thp")]
         if fits_within_guard_segment(size) {
-            eprintln!("guard page for size: {}", size);
             arena.current = skip_guard_page(arena.current, arena.end);
             if let Some(guard) = guard_page_in_range(arena.current, size) {
                 arena.current = skip_guard_page(guard, arena.end);
@@ -273,7 +272,6 @@ impl PageAllocator {
             if arena != state.current {
                 #[cfg(feature = "guard-pages-thp")]
                 if fits_within_guard_segment(size) {
-                    eprintln!("guard page for size: {}", size);
                     arena_ref.current = skip_guard_page(arena_ref.current, arena_ref.end);
                     if let Some(guard) = guard_page_in_range(arena_ref.current, size) {
                         arena_ref.current = skip_guard_page(guard, arena_ref.end);

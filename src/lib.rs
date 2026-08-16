@@ -219,8 +219,6 @@ pub(crate) const ALLOCATED_FLAG: u8 = 2;
 pub(crate) const TRIMMED_FLAG: u8 = 3;
 pub(crate) const BIG_FLAG: u8 = 4;
 
-#[cfg(feature = "preload")]
-pub(crate) mod abi;
 pub(crate) mod backend;
 pub(crate) mod big_allocations;
 pub(crate) mod core_prim;
@@ -228,8 +226,7 @@ pub(crate) mod core_prim;
 mod debug_exit_printer;
 #[cfg(feature = "debug-printer-thread")]
 mod debug_printer_thread;
-#[cfg(not(feature = "preload"))]
-pub(crate) mod global_alloc;
+pub(crate) mod frontend;
 pub(crate) mod inner;
 pub(crate) mod internals;
 pub(crate) mod rseq_core;
@@ -237,12 +234,12 @@ pub(crate) mod traits;
 pub(crate) mod utility;
 
 #[cfg(any(all(feature = "debug-exact", not(feature = "preload")), doc))]
-pub use global_alloc::RSMallocExactStats;
+pub use frontend::global_alloc::RSMallocExactStats;
 #[cfg(any(all(feature = "debug", not(feature = "preload")), doc))]
-pub use global_alloc::RSMallocStats;
+pub use frontend::global_alloc::RSMallocStats;
 
 #[cfg(not(feature = "preload"))]
-pub use global_alloc::*;
+pub use frontend::global_alloc::*;
 
 pub(crate) enum Err {
     OutOfMemory,

@@ -11,7 +11,7 @@ use rustix::{
 };
 
 #[cfg(feature = "debug")]
-use crate::trim::{TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA};
+use crate::backend::trim::{TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA};
 use crate::{
     BUDDY_AVERAGE_BLOCK_TIMES, BUDDY_INIT, CURRENT_STAMP, GLOBAL_TRIM_LOCK, add_buddy_cached_va,
     core_prim::predictor::EMA_ALPHA,

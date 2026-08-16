@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering::{self, Relaxed};
 #[cfg(feature = "debug-full-critic")]
 use crate::inner::{alloc::RS_ALLOC_CALLS_DEBUG, free::RS_FREE_CALLS_DEBUG};
 #[cfg(feature = "debug-exact")]
-use crate::trim::{TOTAL_TRIMMED_BLOCKS, TOTAL_TRIMMED_TIME};
+use crate::backend::trim::{TOTAL_TRIMMED_BLOCKS, TOTAL_TRIMMED_TIME};
 use crate::{
     ABORTS, AVERAGE_BLOCK_TIMES, BUDDY_AVERAGE_BLOCK_TIMES, CURRENT_STAMP,
     HIGH_WATER_BUDDY_CACHED_VA, HIGH_WATER_SLAB_CACHED_VA, HIGH_WATER_TOTAL_CACHED_VA, NCPU,
@@ -15,7 +15,7 @@ use crate::{
     big_allocations::buddy::{BIG_BUDDY_MIN_ORDER, BUDDY_BACKEND, BUDDY_TOTAL_CACHED_VA},
     internals::radix_tree::{CHUNK_SIZE, RADIX},
     rseq_core::slab_cache::SLAB_CACHE,
-    trim::{DISABLE_BUDDY, TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA},
+    backend::trim::{DISABLE_BUDDY, TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA},
     utility::SIZE_CLASSES,
 };
 

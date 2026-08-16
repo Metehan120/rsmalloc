@@ -890,7 +890,7 @@ impl RSMalloc {
             big_allocations::buddy::{BIG_BUDDY_MIN_ORDER, BUDDY_BACKEND, BUDDY_TOTAL_CACHED_VA},
             internals::radix_tree::{CHUNK_SIZE, RADIX},
             rseq_core::slab_cache::SLAB_CACHE,
-            trim::{DISABLE_BUDDY, TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA},
+            backend::trim::{DISABLE_BUDDY, TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA},
             utility::{NUM_SIZE_CLASSES, SIZE_CLASSES},
         };
         use std::sync::atomic::Ordering::{self, Relaxed};
@@ -1095,7 +1095,7 @@ impl RSMalloc {
         use crate::{
             GLOBAL_LOCK_RETRIES, GLOBAL_LOCKS, GLOBAL_SPIN_WAITS, GLOBAL_TRY_LOCK_MISSES,
             GLOBAL_TRY_LOCKS,
-            trim::{TOTAL_TRIMMED_BLOCKS, TOTAL_TRIMMED_TIME},
+            backend::trim::{TOTAL_TRIMMED_BLOCKS, TOTAL_TRIMMED_TIME},
         };
         use std::sync::atomic::Ordering::Relaxed;
 

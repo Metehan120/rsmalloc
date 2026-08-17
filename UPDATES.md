@@ -1,5 +1,49 @@
 # Updates
 
+## v0.2.1-alpha
+
+v0.2.1-alpha is an architectural cleanup pass over `0.2.0-alpha`, targeting weaknesses that showed up once alpha-2 saw real use: fork-safety gaps in the newer page-backend/pending-queue locks, an untrustworthy latency-profiling attempt, incomplete debug-stats coverage relative to the exit-time text report, and a module layout that mixed public-surface code in with internals. It also adds opt-in guard-page hardening and closes out a couple of real correctness bugs found while chasing benchmark numbers.
+
+### Module layout
+
+- Split public-surface code out of the crate root into `frontend/`: `global_alloc.rs` (Rust `GlobalAlloc` impl) and `abi/` (C ABI) now live under `frontend/global_alloc.rs` and `frontend/abi/`, mirroring the existing `backend/` (page arenas) naming. `global_alloc` compiles only without `preload`; `abi` only with it.
+- Moved `trim.rs` under `backend/`, alongside the page allocator and buddy backend it services.
+
+### Guard pages
+
+- Added `guard-pages-thp` and `guard-pages-ignore-thp` Cargo features to `src/backend/page_allocator.rs`, the bump allocator backing every small-class refill. A `PROT_NONE` guard page is placed at the last 4KB of each fixed-size aligned block — 2MB intervals for `guard-pages-thp` (matched to the THP unit, so only the specific 2MB block hosting a guard loses THP eligibility), 64KB for `guard-pages-ignore-thp` (denser coverage, always fragments page tables).
+- Placement is lazy and reactive: a guard boundary is only actually `mprotect`ed the moment the bump pointer's address reaches it, not pre-mapped across the arena up front. Requests that fit within one guard segment (up to 1MB for `guard-pages-thp`, 32KB for `guard-pages-ignore-thp`) are guaranteed to never straddle a guard — denied outright and retried elsewhere if the arithmetic says they would. Larger requests consume one leading guard on the way in but don't get dense coverage through their body, since nothing else `mprotect`s the remaining guard-aligned positions in their span.
+- Fixed a real NULL-return bug found via a production crash report (`malloc` failing for a large, legitimate request): the original guard-check logic could permanently deny any request `>= GUARD_ALIGN`, since such a request can never avoid straddling a guard regardless of start address. `new_arena_locked` also now maps one extra page per arena so a snugly-sized request still leaves room for its own trailing guard, instead of a guard page eating the arena's last few KB and returning null for an otherwise-legitimate allocation.
+- Bundled into `semi-hardened` as `guard-pages-ignore-thp`, alongside the existing `extended-header` + `check-owned-on-alloc` + `zero-small-on-free`.
+
+### Debug/stats API parity
+
+- Added `alloc_calls`/`free_calls` counters (`debug-full-critic`) to `RSMallocExactStats`, closing a gap where the text-based exit report had allocation/free call counts but the structured Rust stats API didn't.
+- Added `pid` (not sure if this is really important), `uptime_ms`, `clock_ms`, `mmap_calls`, `mmap_bytes_requested`, `total_arenas`, `arenas_lived`, `arenas_removed`, and `arena_size` to `RSMallocStats`, and `trimmed_blocks_small`/`avg_madvise_cycles_small` (`debug-exact`) to `RSMallocExactStats` — bringing the structured stats API closer to parity with what the exit-time text report already exposed.
+
+### Lock redesign 
+
+- Reworked `SpinLock` from a bare `AtomicBool` plus separately-managed data into a generic `SpinLock<T>` that owns its data behind an `UnsafeCell`, guarded by a `SpinLockGuard<'a, T>` implementing `Deref`/`DerefMut`. Introduced a shared `Lock` trait (`lock`, `try_lock`, `spin_until_unlock`, `get_lock`) so lock types can be used more uniformly across the allocator, and a `LockState`/`LockGuard<G>` pair for `try_lock` call sites.
+
+### Fork safety
+
+- Added `PAGE_ALLOCATOR` and `PENDING_QUEUE` to the fork-prepare/parent/child lock handling (`lock_all_for_fork`/`reset_locks_on_fork`), alongside the existing buddy backend and `BIG_MAP` handling. Previously these two lock sets weren't included in fork handling at all, so a fork happening while either was held could leave a forked child with a permanently stuck lock.
+
+### Realloc hardening
+
+- Added a magic-value check (`MAGIC`/`BIG_MAGIC`) on the header found via `find_original_ptr` during `rs_realloc`'s owned-pointer path, aborting as a double-free/corruption if it doesn't match either expected value, instead of trusting whatever the search returned.
+- Added an overflow guard in `big_realloc`'s 2MB-aligned size estimate (`estimate_and_align_2mb`), returning null instead of proceeding with a wrapped/undersized aligned size when the estimate overflows.
+
+### Small branch/overhead cleanups
+
+- Removed a now-redundant bounds check in `Radix::get` (`radix_tree.rs`) — `chunk_idx` is already guaranteed in range by its callers.
+- Raised `BUDDY_AVERAGE_BLOCK_TIMES`'s initial seed (10 -> 100, in 100ms ticks) so buddy trim eligibility doesn't start from an unrealistically short assumed block lifetime at cold start.
+
+### Benchmarks
+
+- Added `size_class_matching_*` cases to `book_speed`'s `alloc_free` group, covering both fixed repeated sizes and a genuinely randomized-size variant, for measuring `match_size_class` dispatch cost in isolation.
+- Added `malloc_only` and `free_only` benchmark groups using `iter_custom` to separate untimed setup/teardown from the timed operation, instead of only measuring paired `malloc`+`free` round trips.
+- 
 ## v0.2.0-alpha
 
 v0.2.0-alpha is a full allocator overhaul relative to the `main` branch's `0.1.0-alpha` line. It reworks the RSEQ/slab path, transfer-cache reuse, refill metadata ownership, NUMA placement, buddy backend, trimming and relief, preload ABI behavior, debug reporting, benchmarks, and the public Rust configuration surface.

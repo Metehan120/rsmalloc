@@ -92,7 +92,7 @@ fn bench_alloc_free(c: &mut Criterion) {
     }
 
     // 64B
-    group.bench_function("32B", |b| {
+    group.bench_function("32B_malloc_free", |b| {
         b.iter(|| unsafe {
             let ptr = black_box(malloc(32));
             black_box(free(ptr));
@@ -100,7 +100,7 @@ fn bench_alloc_free(c: &mut Criterion) {
     });
 
     // 4KB
-    group.bench_function("4KB", |b| {
+    group.bench_function("4KB_malloc_free", |b| {
         b.iter(|| unsafe {
             let ptr = black_box(malloc(4096));
             black_box(free(ptr));
@@ -108,7 +108,7 @@ fn bench_alloc_free(c: &mut Criterion) {
     });
 
     // 1MB
-    group.bench_function("1MB", |b| {
+    group.bench_function("1MB_malloc_free", |b| {
         b.iter(|| unsafe {
             let ptr = black_box(malloc(1024 * 1024));
             black_box(free(ptr));
@@ -116,7 +116,7 @@ fn bench_alloc_free(c: &mut Criterion) {
     });
 
     // 3MB
-    group.bench_function("3MB", |b| {
+    group.bench_function("3MB_malloc_free", |b| {
         b.iter(|| unsafe {
             let ptr = black_box(malloc(3 * 1024 * 1024));
             black_box(free(ptr));

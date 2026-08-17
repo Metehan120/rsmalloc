@@ -78,6 +78,64 @@ fn bench_alloc_free(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_malloc_only(c: &mut Criterion) {
+    let mut group = c.benchmark_group("malloc_only");
+
+    for (name, size) in [
+        ("32B", 32usize),
+        ("4KB", 4096),
+        ("1MB", 1024 * 1024),
+        ("3MB", 3 * 1024 * 1024),
+    ] {
+        group.bench_function(name, |b| {
+            b.iter_custom(|iters| {
+                let mut ptrs = Vec::with_capacity(iters as usize);
+
+                let start = Instant::now();
+                for _ in 0..iters {
+                    unsafe { ptrs.push(black_box(malloc(size))) };
+                }
+                let elapsed = start.elapsed();
+
+                // untimed: give the memory back so repeated samples don't pile up
+                for ptr in ptrs {
+                    unsafe { free(ptr) };
+                }
+
+                elapsed
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_free_only(c: &mut Criterion) {
+    let mut group = c.benchmark_group("free_only");
+
+    for (name, size) in [
+        ("32B", 32usize),
+        ("4KB", 4096),
+        ("1MB", 1024 * 1024),
+        ("3MB", 3 * 1024 * 1024),
+    ] {
+        group.bench_function(name, |b| {
+            b.iter_custom(|iters| {
+                // untimed: pre-allocate everything this sample will free
+                let ptrs: Vec<_> = (0..iters).map(|_| unsafe { malloc(size) }).collect();
+
+                let start = Instant::now();
+                for ptr in ptrs {
+                    unsafe { black_box(free(ptr)) };
+                }
+                start.elapsed()
+            });
+        });
+    }
+
+    group.finish();
+}
+
 fn bench_alloc_free_mt(c: &mut Criterion) {
     let mut group = c.benchmark_group("alloc_free_mt");
 
@@ -128,6 +186,12 @@ fn bench_alloc_free_mt(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_alloc_free, bench_alloc_free_mt,);
+criterion_group!(
+    benches,
+    bench_alloc_free,
+    bench_malloc_only,
+    bench_free_only,
+    bench_alloc_free_mt,
+);
 
 criterion_main!(benches);

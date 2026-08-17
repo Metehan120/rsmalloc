@@ -362,7 +362,6 @@ impl GenericCache for SlabCache {
     unsafe fn pop(&self, class: usize) -> UnsafePointer<Header> {
         let inner = &mut *self.inner.get();
         let rseq = get_rseq();
-        let mut loop_count = 0;
 
         loop {
             let current_cpu = read_volatile(&rseq.cpu_id) as usize;
@@ -372,18 +371,6 @@ impl GenericCache for SlabCache {
             let header = RseqCore.pop(list_ptr, rseq, current_cpu, usage_ptr.as_ptr());
 
             if header as isize == -1 {
-                if loop_count == 3 {
-                    let mail = self.transfer_pop_single(class, current_cpu);
-                    if !mail.is_null() {
-                        return mail;
-                    }
-                    loop_count = 0;
-                }
-
-                #[cfg(feature = "debug")]
-                ABORTS.fetch_add(1, Relaxed);
-
-                loop_count += 1;
                 continue;
             }
 
@@ -662,52 +649,6 @@ impl SlabCache {
         let list_ptr = &list.trimmed;
 
         self.transfer_push_single_to(list_ptr, class, header, cpu_id, inner);
-    }
-
-    #[inline(never)]
-    pub unsafe fn transfer_pop_single(&self, class: usize, cpu_id: usize) -> UnsafePointer<Header> {
-        #[cfg(feature = "transfer-debug-exact")]
-        crate::TOTAL_TRANSFER_POP_CALLS.fetch_add(1, Ordering::Relaxed);
-
-        let inner = &mut *self.inner.get();
-        let list = &mut (*inner.cache.add(cpu_id)).mail[class];
-        let normal_ptr = &list.list;
-        let trimmed_ptr = &list.trimmed;
-        let mut list_ptr = normal_ptr;
-
-        loop {
-            let old = list_ptr.load(Ordering::Acquire);
-            let (head, tag) = unpack_ptr(old);
-
-            if head.is_null() {
-                if eq(list_ptr, normal_ptr) {
-                    list_ptr = &trimmed_ptr;
-                    continue;
-                }
-
-                self.clear_class_hint(inner, class, cpu_id);
-                if !unpack_ptr(normal_ptr.load(Ordering::Acquire)).0.is_null() {
-                    self.mark_class_nonempty(inner, class, cpu_id);
-                }
-                return UnsafePointer::NULL;
-            }
-
-            let next = (*head).next;
-            if list_ptr
-                .compare_exchange(old, pack(next, tag), Ordering::Acquire, Ordering::Relaxed)
-                .is_ok()
-            {
-                if !next.is_null() {
-                    _mm_prefetch(next as *const i8, _MM_HINT_T0);
-                }
-                return UnsafePointer::new(head);
-            }
-
-            #[cfg(feature = "transfer-debug")]
-            crate::TOTAL_TRANSFER_RETRIES.fetch_add(1, Ordering::Relaxed);
-
-            spin_loop();
-        }
     }
 
     #[inline(never)]

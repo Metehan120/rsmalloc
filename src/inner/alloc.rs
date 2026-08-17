@@ -297,7 +297,7 @@ pub unsafe fn rs_alloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
     if let Some(class) = class {
         let cache = SLAB_CACHE.pop(class);
 
-        let cache = if cache.is_null() {
+        let cache = if unlikely(cache.is_null()) {
             let class = fill(class);
 
             if unlikely(class.is_null()) {

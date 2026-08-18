@@ -2,7 +2,7 @@
 
 ## v0.2.1-alpha
 
-v0.2.1-alpha is an architectural cleanup pass over `0.2.0-alpha`, targeting weaknesses that showed up once alpha-2 saw real use: fork-safety gaps in the newer page-backend/pending-queue locks, an untrustworthy latency-profiling attempt, incomplete debug-stats coverage relative to the exit-time text report, and a module layout that mixed public-surface code in with internals. It also adds opt-in guard-page hardening and closes out a couple of real correctness bugs found while chasing benchmark numbers.
+v0.2.1-alpha is an architectural cleanup pass over `0.2.0-alpha`, targeting weaknesses that showed up once alpha-2 saw real use: fork-safety gaps in the newer page-backend/pending-queue locks, incomplete debug-stats coverage relative to the exit-time text report, and a module layout that mixed public-surface code in with internals. It also adds opt-in guard-page hardening and closes out a couple of real correctness bugs found while chasing benchmark numbers.
 
 ### Module layout
 

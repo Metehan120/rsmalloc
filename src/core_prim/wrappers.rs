@@ -46,18 +46,23 @@ macro_rules! impl_conversions {
     };
 }
 
-#[repr(transparent)]
-#[derive(Debug, Clone, Copy)]
 #[must_use]
+#[repr(transparent)]
 pub struct SafePointer<T>(*mut T);
 
 unsafe impl<T> Sync for SafePointer<T> {}
 unsafe impl<T> Send for SafePointer<T> {}
 
 impl<T> SafePointer<T> {
+    pub const NULL: Self = Self(null_mut());
+
     #[inline(always)]
     pub const fn get_actual_header(&self) -> Self {
         Self(unsafe { self.0.sub(1) })
+    }
+
+    pub const fn get_offset(&self, offset: usize) -> Self {
+        Self(unsafe { self.0.add(offset) })
     }
 
     #[inline(always)]
@@ -107,9 +112,8 @@ impl<T> DerefMut for SafePointer<T> {
 
 impl_conversions!(SafePointer);
 
-#[repr(transparent)]
-#[derive(Debug, Clone, Copy)]
 #[must_use]
+#[repr(transparent)]
 pub struct UnsafePointer<T>(*mut T);
 
 unsafe impl<T> Sync for UnsafePointer<T> {}

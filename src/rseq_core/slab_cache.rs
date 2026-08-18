@@ -18,7 +18,7 @@ use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 use crate::ABORTS;
 use crate::{
     Header, NCPU, RSMallocError,
-    core_prim::wrappers::UnsafePointer,
+    core_prim::wrappers::{SafePointer, UnsafePointer},
     internals::{
         binder::NumaBind,
         numa_parser::{NumaTopology, parse_numa_topology},
@@ -52,14 +52,17 @@ pub struct MainCache {
     mail: [TransferCache; NUM_SIZE_CLASSES],
 }
 
-#[derive(Debug, Clone, Copy)]
+pub struct Bitmap {
+    pub words: usize,
+    pub nonempty: *mut AtomicU64,
+    pub being_stolen: *mut AtomicU64,
+}
+
 pub struct SlabCacheInner {
-    cache: *mut MainCache,
+    cache: SafePointer<MainCache>,
     numa: NumaTopology,
     pub is_numa: bool,
-    bitmap_words: usize,
-    nonempty_bitmap: *mut AtomicU64,
-    being_stolen_bitmap: *mut AtomicU64,
+    bitmap: Bitmap,
 }
 
 pub struct SlabCache {
@@ -84,7 +87,7 @@ impl SlabCache {
     pub const fn new() -> Self {
         Self {
             inner: UnsafeCell::new(SlabCacheInner {
-                cache: null_mut(),
+                cache: SafePointer::NULL,
                 numa: NumaTopology {
                     cpu_to_node: null_mut(),
                     ncpu: 0,
@@ -94,9 +97,11 @@ impl SlabCache {
                     nranges: 0,
                 },
                 is_numa: false,
-                nonempty_bitmap: null_mut(),
-                being_stolen_bitmap: null_mut(),
-                bitmap_words: 0,
+                bitmap: Bitmap {
+                    words: 0,
+                    nonempty: null_mut(),
+                    being_stolen: null_mut(),
+                },
             }),
             once: Once::new(),
         }
@@ -124,7 +129,8 @@ impl SlabCache {
                 )
             });
 
-            inner.cache = list as *mut MainCache;
+            inner.cache = SafePointer::from(list as *mut MainCache);
+
             if let Some(numa) = parse_numa_topology(ncpu) {
                 inner.numa = numa;
 
@@ -149,7 +155,7 @@ impl SlabCache {
                     let end = cpu_range.end_cpu.min(ncpu.saturating_sub(1));
 
                     if start <= end {
-                        let cache = inner.cache.add(start) as *mut _;
+                        let cache = inner.cache.get_offset(start).cast_as_ptr();
                         let len = size_of::<MainCache>() * (end - start + 1);
                         NumaBind.bind_node(cache, len, cpu_range.node_id);
                     }
@@ -175,9 +181,9 @@ impl SlabCache {
                     Some(err.raw_os_error()),
                 )
             }) as *mut AtomicU64;
-            inner.nonempty_bitmap = bitmap;
-            inner.being_stolen_bitmap = bitmap.add(bitmaps_each);
-            inner.bitmap_words = bitmap_words;
+            inner.bitmap.nonempty = bitmap;
+            inner.bitmap.being_stolen = bitmap.add(bitmaps_each);
+            inner.bitmap.words = bitmap_words;
 
             PENDING_QUEUE.init(inner.numa.nranges, inner.is_numa);
             NCPU = ncpu;
@@ -186,16 +192,16 @@ impl SlabCache {
 
     #[inline(always)]
     unsafe fn mark_class_nonempty(&self, inner: &SlabCacheInner, class: usize, cpu_id: usize) {
-        cpu_bit_set(inner.nonempty_bitmap, class, cpu_id, inner.bitmap_words);
+        cpu_bit_set(inner.bitmap.nonempty, class, cpu_id, inner.bitmap.words);
     }
 
     #[inline(always)]
     unsafe fn clear_class_hint(&self, inner: &SlabCacheInner, class: usize, cpu_id: usize) {
-        cpu_bit_clear(inner.nonempty_bitmap, class, cpu_id, inner.bitmap_words);
+        cpu_bit_clear(inner.bitmap.nonempty, class, cpu_id, inner.bitmap.words);
     }
 
     unsafe fn is_empty(&self, inner: &SlabCacheInner, class: usize, cpu_id: usize) -> bool {
-        cpu_is_empty(inner.nonempty_bitmap, class, cpu_id, inner.bitmap_words)
+        cpu_is_empty(inner.bitmap.nonempty, class, cpu_id, inner.bitmap.words)
     }
 
     #[inline(never)]
@@ -205,12 +211,12 @@ impl SlabCache {
         class: usize,
         cpu_id: usize,
     ) -> bool {
-        cpu_try_marking(inner.being_stolen_bitmap, class, cpu_id, inner.bitmap_words)
+        cpu_try_marking(inner.bitmap.being_stolen, class, cpu_id, inner.bitmap.words)
     }
 
     #[inline(never)]
     unsafe fn clear_being_stolen(&self, inner: &SlabCacheInner, class: usize, cpu_id: usize) {
-        cpu_bit_clear(inner.being_stolen_bitmap, class, cpu_id, inner.bitmap_words);
+        cpu_bit_clear(inner.bitmap.being_stolen, class, cpu_id, inner.bitmap.words);
     }
 
     #[inline(always)]
@@ -223,7 +229,7 @@ impl SlabCache {
         start: usize,
         end: usize,
     ) -> Option<TransferReturn> {
-        let base = class * inner.bitmap_words;
+        let base = class * inner.bitmap.words;
 
         let start_word = start >> 6;
         let end_word = end >> 6;
@@ -231,7 +237,7 @@ impl SlabCache {
         for word_idx in start_word..=end_word {
             for force_steal in [false, true] {
                 let mut bits =
-                    (*inner.nonempty_bitmap.add(base + word_idx)).load(Ordering::Relaxed);
+                    (*inner.bitmap.nonempty.add(base + word_idx)).load(Ordering::Relaxed);
 
                 if bits == 0 {
                     continue;
@@ -287,11 +293,11 @@ impl GenericCache for SlabCache {
         tail: *mut Header,
         batch_size: usize,
     ) {
-        let inner = &mut *self.inner.get();
+        let inner = self.get_inner();
         let rseq = get_rseq();
 
         let current_cpu = read_volatile(&rseq.cpu_id) as usize;
-        let list = &mut (*inner.cache.add(current_cpu)).cache[class];
+        let list = &mut inner.cache.get_offset(current_cpu).cache[class];
         let usage_ptr = &mut list.usage;
 
         if usage_ptr.load(Ordering::Relaxed) >= CACHE_HIGH_BLOCKS[class] {
@@ -324,13 +330,13 @@ impl GenericCache for SlabCache {
 
     #[inline(always)]
     unsafe fn push(&self, class: usize, header: *mut Header) {
-        let inner = &mut *self.inner.get();
+        let inner = self.get_inner();
         let rseq = get_rseq();
         let mut loop_count = 0;
 
         loop {
             let current_cpu = read_volatile(&rseq.cpu_id) as usize;
-            let list = &mut (*inner.cache.add(current_cpu)).cache[class];
+            let list = &mut inner.cache.get_offset(current_cpu).cache[class];
             let usage_ptr = &mut list.usage;
 
             if usage_ptr.load(Ordering::Relaxed) >= CACHE_HIGH_BLOCKS[class] {
@@ -361,12 +367,12 @@ impl GenericCache for SlabCache {
 
     #[inline(always)]
     unsafe fn pop(&self, class: usize) -> UnsafePointer<Header> {
-        let inner = &mut *self.inner.get();
+        let inner = self.get_inner();
         let rseq = get_rseq();
 
         loop {
             let current_cpu = read_volatile(&rseq.cpu_id) as usize;
-            let list = &mut (*inner.cache.add(current_cpu)).cache[class];
+            let list = &mut inner.cache.get_offset(current_cpu).cache[class];
             let list_ptr = addr_of!(list.list) as *mut *mut Header;
             let usage_ptr = &list.usage;
             let result = RseqCore.pop(list_ptr, rseq, current_cpu, usage_ptr.as_ptr());
@@ -410,7 +416,7 @@ impl SlabCache {
     pub unsafe fn get_rseq_cpu_class_usage_bytes(&self, cpu_id: usize, class: usize) -> usize {
         use crate::utility::{SIZE_CLASSES, align_to};
         let inner = self.get_inner();
-        let cpu = &(*inner.cache.add(cpu_id)).cache[class];
+        let cpu = &inner.cache.get_offset(cpu_id).cache[class];
         let blocks = cpu.usage.load(Relaxed);
         let block_size = align_to(SIZE_CLASSES[class] + Header::SIZE, 16);
         blocks.saturating_mul(block_size)
@@ -437,7 +443,7 @@ impl SlabCache {
             use crate::{bitmap_word, rseq_core::bitmap::cpu_word_bit};
 
             let (word, bit) = cpu_word_bit(cpu);
-            let ptr = bitmap_word!(inner.nonempty_bitmap, class, word, inner.bitmap_words);
+            let ptr = bitmap_word!(inner.bitmap.nonempty, class, word, inner.bitmap.words);
             let bits = (*ptr).load(Ordering::Relaxed);
             out.push(if bits & bit != 0 { '1' } else { '0' });
         }
@@ -464,8 +470,9 @@ impl SlabCache {
     }
 
     pub unsafe fn get_list(&self, cpu_id: usize, class: usize) -> &mut TransferCache {
-        let inner = &mut *self.inner.get();
-        let list = &mut (*inner.cache.add(cpu_id)).mail[class];
+        let inner = self.get_inner();
+        let cache = inner.cache.get_offset(cpu_id).as_ptr();
+        let list = &mut (*cache).mail[class];
         list
     }
 
@@ -572,7 +579,7 @@ impl SlabCache {
         #[cfg(feature = "transfer-debug-exact")]
         crate::TOTAL_TRANSFER_PUSH_CALLS.fetch_add(1, Ordering::Relaxed);
 
-        let list = &mut (*inner.cache.add(cpu_id)).mail[class];
+        let list = &mut inner.cache.get_offset(cpu_id).mail[class];
         let list_ptr = &list.list;
 
         loop {
@@ -610,7 +617,7 @@ impl SlabCache {
         cpu_id: usize,
         inner: &mut SlabCacheInner,
     ) {
-        let list = &mut (*inner.cache.add(cpu_id)).mail[class];
+        let list = &mut inner.cache.get_offset(cpu_id).mail[class];
         let list_ptr = &list.list;
 
         self.transfer_push_single_to(list_ptr, class, header, cpu_id, inner);
@@ -623,7 +630,7 @@ impl SlabCache {
         cpu_id: usize,
         inner: &mut SlabCacheInner,
     ) {
-        let list = &mut (*inner.cache.add(cpu_id)).mail[class];
+        let list = &mut inner.cache.get_offset(cpu_id).mail[class];
         let list_ptr = &list.trimmed;
 
         self.transfer_push_single_to(list_ptr, class, header, cpu_id, inner);
@@ -692,8 +699,8 @@ impl SlabCache {
         #[cfg(feature = "transfer-debug-exact")]
         crate::TOTAL_TRANSFER_POP_CALLS.fetch_add(1, Ordering::Relaxed);
 
-        let inner = &mut *self.inner.get();
-        let list = &mut (*inner.cache.add(cpu_id)).mail[class];
+        let inner = self.get_inner();
+        let list = &mut inner.cache.get_offset(cpu_id).mail[class];
         let normal_ptr = &list.list;
         let trimmed_ptr = &list.trimmed;
         let mut list_ptr = normal_ptr;

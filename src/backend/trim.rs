@@ -15,8 +15,7 @@ use rustix::{
 };
 
 use crate::{
-    ALLOCATED_FLAG, AVERAGE_BLOCK_TIMES, CURRENT_STAMP, DISABLE_TRIM_THREAD, GLOBAL_TRIM_LOCK,
-    Header, NCPU, TRIMMED_FLAG,
+    AVERAGE_BLOCK_TIMES, CURRENT_STAMP, DISABLE_TRIM_THREAD, Flags, GLOBAL_TRIM_LOCK, Header, NCPU,
     big_allocations::buddy::BUDDY_BACKEND,
     core_prim::predictor::TRIM_SMOOTHING,
     internals::lock::LockGuard,
@@ -174,7 +173,7 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
                 let life_time = (*next).life_time;
                 let mut is_push = false;
 
-                if stamp.saturating_sub(life_time) > avg_life && (*next).flags == ALLOCATED_FLAG {
+                if stamp.saturating_sub(life_time) > avg_life && (*next).flags == Flags::Allocated {
                     (*next).next = trim_list;
                     trim_list = next;
                 } else {
@@ -226,7 +225,7 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
                     if is_ok {
                         #[cfg(feature = "debug")]
                         TOTAL_TRIMMED_VA.fetch_add(SIZE_CLASSES[class], Relaxed);
-                        (*trim_list).flags = TRIMMED_FLAG;
+                        (*trim_list).flags = Flags::Trimmed;
                         total_trimmed += SIZE_CLASSES[class];
                         did_trim = true;
                     }

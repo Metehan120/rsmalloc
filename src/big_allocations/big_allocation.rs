@@ -7,8 +7,7 @@ use std::{
 use rustix::mm::{Advice, MapFlags, ProtFlags, madvise, mmap_anonymous, munmap};
 
 use crate::{
-    BIG_FLAG, BIG_MAGIC, BUDDY_INIT, BigAllocMeta, Header, RS_DISABLE_THP, RSMallocError,
-    ZERO_FLAG,
+    BIG_MAGIC, BUDDY_INIT, BigAllocMeta, Flags, Header, RS_DISABLE_THP, RSMallocError,
     backend::trim::DISABLE_BUDDY,
     big_allocations::buddy::BUDDY_BACKEND,
     core_prim::wrappers::UnsafePointer,
@@ -42,7 +41,7 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
     let mut mapped_total = aligned_total;
     let mut actual_ptr: *mut u8 = null_mut();
     let mut buddy_region = 0usize;
-    let mut flags = 100;
+    let mut flags = Flags::Allocated;
     let cpu_id = get_rseq().cpu_id as usize;
     let (numa, inner) = SLAB_CACHE.get_numa_and_inner();
     let node_id = SLAB_CACHE.node_for_cpu(cpu_id, inner);
@@ -56,7 +55,7 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
             registered = true;
             mapped_total = 1 << order;
 
-            flags = BIG_FLAG;
+            flags = Flags::Big;
         }
     }
 
@@ -72,7 +71,7 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
                 prefer_node(pointer, mapped_total, node_id);
             }
 
-            flags = ZERO_FLAG;
+            flags = Flags::Zero;
             actual_ptr = pointer as *mut u8;
         } else {
             return UnsafePointer::NULL;

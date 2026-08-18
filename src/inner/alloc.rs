@@ -4,7 +4,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::{hint::likely, ptr::null_mut};
 
-use crate::ALLOCATED_FLAG;
+use crate::Flags;
 #[cfg(feature = "preload")]
 use crate::inner::libc_int::set_nomem;
 use crate::{
@@ -315,7 +315,7 @@ pub unsafe fn rs_alloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
 
         let mut safe = cache.apply_safe();
         safe.magic = MAGIC;
-        safe.flags = ALLOCATED_FLAG;
+        safe.flags = Flags::Allocated;
 
         return cache.walk_header();
     }

@@ -10,13 +10,17 @@ use std::{
 };
 
 use crate::rseq_core::{pending_queue::PENDING_QUEUE, slab_cache::SLAB_CACHE};
-use crate::{CURRENT_STAMP, ZERO_FLAG};
+use crate::{CURRENT_STAMP, Flags};
 use crate::{
-    Err, FREED_MAGIC, Header, MetaData, add_slab_cached_va,
+    FREED_MAGIC, Header, MetaData, add_slab_cached_va,
     backend::page_allocator::PAGE_ALLOCATOR,
     internals::radix_tree::RADIX,
     utility::{ITERATIONS, NUM_SIZE_CLASSES, SIZE_CLASSES, align_to},
 };
+
+pub(crate) enum Err {
+    OutOfMemory,
+}
 
 pub struct Destructor(*mut ThreadBulk);
 
@@ -114,7 +118,7 @@ unsafe fn init_blocks(
                 class,
                 magic: FREED_MAGIC,
                 life_time: current_stamp,
-                flags: ZERO_FLAG,
+                flags: Flags::Zero,
             },
         );
 

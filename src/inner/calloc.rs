@@ -1,13 +1,9 @@
 use std::{alloc::Layout, hint::unlikely, os::raw::c_void};
 
-use crate::ALLOCATED_FLAG;
-#[cfg(not(feature = "lazy-page-trim"))]
-use crate::BIG_FLAG;
-
 #[cfg(feature = "preload")]
 use crate::inner::libc_int::set_nomem;
 use crate::{
-    Header, RSMallocError,
+    Flags, Header, RSMallocError,
     core_prim::wrappers::UnsafePointer,
     inner::alloc::rs_alloc,
     internals::rbtree::BIG_META_MAP,
@@ -31,7 +27,7 @@ macro_rules! calloc_zero {
         let flags = unsafe { (*$header.as_ptr()).flags };
 
         #[cfg(not(feature = "lazy-page-trim"))]
-        if flags == ALLOCATED_FLAG || flags == BIG_FLAG {
+        if flags == Flags::Allocated || flags == Flags::Big {
             zero(
                 $ptr.cast_as_ptr() as *mut u8,
                 $actual_size.min($effective_size),
@@ -39,7 +35,7 @@ macro_rules! calloc_zero {
         }
 
         #[cfg(feature = "lazy-page-trim")]
-        if flags == ALLOCATED_FLAG || flags == TRIMMED_FLAG || flags == BIG_FLAG {
+        if flags == Flags::Allocated || flags == Flags::Trimmed || flags == Flags::Big {
             zero(
                 $ptr.cast_as_ptr() as *mut u8,
                 $actual_size.min($effective_size),

@@ -742,7 +742,7 @@ mod tests {
             class: 0,
             magic: 0,
             life_time: 0,
-            flags: 0,
+            flags: crate::Flags::Zero,
         }))
     }
 

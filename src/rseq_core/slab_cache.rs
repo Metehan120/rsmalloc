@@ -486,10 +486,10 @@ impl SlabCache {
     ) -> Option<TransferReturn> {
         let inner = &*self.inner.get();
 
-        if !self.is_empty(inner, class, cpu_id)
-            && let Some(popped) = self.transfer_pop_batch(class, cpu_id, batch_size)
-        {
-            return Some(popped);
+        if !self.is_empty(inner, class, cpu_id) {
+            if let Some(popped) = self.transfer_pop_batch(class, cpu_id, batch_size) {
+                return Some(popped);
+            }
         }
 
         self.pop_slow(inner, class, cpu_id, batch_size)

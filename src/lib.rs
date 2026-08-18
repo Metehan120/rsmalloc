@@ -82,13 +82,13 @@ pub use frontend::global_alloc::RSMallocStats;
 #[cfg(not(feature = "preload"))]
 pub use frontend::global_alloc::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Flags {
-    Zero,
-    Allocated,
-    Trimmed,
-    Big,
+    Zero = 1,
+    Allocated = 2,
+    Trimmed = 3,
+    Big = 4,
 }
 
 #[repr(C, align(16))]

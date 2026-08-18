@@ -77,34 +77,24 @@ unsafe fn record_refill_prediction(
 
     if count < wanted {
         let missing = wanted - count;
-        let (extra, extra_tail, extra_count) = SLAB_CACHE.try_pop(class, missing, cpu_id);
-        if extra_count > 0 && !extra.is_null() {
-            SLAB_CACHE.transfer_push_batch(
-                class,
-                extra.as_ptr(),
-                extra_tail.as_ptr(),
-                cpu_id,
-                inner,
-            );
+        let found = SLAB_CACHE.try_pop(class, missing, cpu_id);
+        let extra_total = found.as_ref().map_or(0, |c| c.total);
+
+        if let Some(cache) = found {
+            SLAB_CACHE.transfer_push_batch(class, cache.start, cache.end, cpu_id, inner);
         }
 
-        if count + extra_count < wanted {
+        if count + extra_total < wanted {
             crate::REFILL_OVER_PREDICTS.fetch_add(1, Ordering::Relaxed);
         }
+
         return;
     }
 
     if wanted >= 8 && wanted < ITERATIONS[class] {
-        let (extra, extra_tail, extra_count) = SLAB_CACHE.try_pop(class, 1, cpu_id);
-        if extra_count > 0 && !extra.is_null() {
+        if let Some(cache) = SLAB_CACHE.try_pop(class, 1, cpu_id) {
             crate::REFILL_UNDER_PREDICTS.fetch_add(1, Ordering::Relaxed);
-            SLAB_CACHE.transfer_push_batch(
-                class,
-                extra.as_ptr(),
-                extra_tail.as_ptr(),
-                cpu_id,
-                inner,
-            );
+            SLAB_CACHE.transfer_push_batch(class, cache.start, cache.end, cpu_id, inner);
         }
     }
 }
@@ -218,7 +208,7 @@ pub unsafe fn refill(class: usize, cpu_id: usize) -> UnsafePointer<Header> {
         }
     }
 
-    SLAB_CACHE.try_pop(class, 1, cpu_id).0
+    UnsafePointer::NULL
 }
 
 #[unsafe(link_section = ".text.hot")]
@@ -233,21 +223,20 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
     let cache_batch = refill!(class);
     let cpu_id = get_rseq().cpu_id as usize;
 
-    let (start, tail, count) = SLAB_CACHE.try_pop(class, cache_batch, cpu_id);
-
-    if !start.is_null() {
-        let observed = if count == cache_batch && cache_batch < ITERATIONS[class] {
+    let transfer_result = SLAB_CACHE.try_pop(class, cache_batch, cpu_id);
+    if let Some(transfer_cache) = transfer_result {
+        let observed = if transfer_cache.total == cache_batch && cache_batch < ITERATIONS[class] {
             cache_batch.saturating_add((cache_batch / 4).max(1))
         } else {
-            count
+            transfer_cache.total
         };
 
         TRANSFER_BATCHING[class].update_refill(observed, ITERATIONS[class]);
         let one = take_one_from_batch(
             class,
-            start.as_ptr(),
-            tail.as_ptr(),
-            count,
+            transfer_cache.start,
+            transfer_cache.end,
+            transfer_cache.total,
             #[cfg(feature = "debug")]
             cache_batch,
             #[cfg(feature = "debug")]

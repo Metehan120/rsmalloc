@@ -223,7 +223,7 @@ impl SlabCache {
         batch_size: usize,
         start: usize,
         end: usize,
-    ) -> Option<(UnsafePointer<Header>, UnsafePointer<Header>, usize)> {
+    ) -> Option<TransferReturn> {
         let base = class * inner.bitmap_words;
 
         let start_word = start >> 6;
@@ -269,11 +269,7 @@ impl SlabCache {
                     self.clear_being_stolen(inner, class, victim);
 
                     if let Some(block) = result {
-                        return Some((
-                            UnsafePointer::new(block.0),
-                            UnsafePointer::new(block.1),
-                            block.2,
-                        ));
+                        return Some(block);
                     }
                 }
             }
@@ -384,14 +380,24 @@ const TAG_STEP: usize = 1usize << TAG_SHIFT;
 const TAG_MASK: usize = 0xffusize << TAG_SHIFT;
 const PTR_MASK: usize = !TAG_MASK;
 
-#[inline(always)]
-pub fn pack(ptr: *mut Header, old_tag: usize) -> usize {
-    ((ptr as usize) & PTR_MASK) | (old_tag.wrapping_add(TAG_STEP) & TAG_MASK)
+pub struct Tagging;
+
+impl Tagging {
+    #[inline(always)]
+    pub fn pack(&self, ptr: *mut Header, old_tag: usize) -> usize {
+        ((ptr as usize) & PTR_MASK) | (old_tag.wrapping_add(TAG_STEP) & TAG_MASK)
+    }
+
+    #[inline(always)]
+    pub fn unpack_ptr(&self, word: usize) -> (*mut Header, usize) {
+        ((word & PTR_MASK) as *mut Header, word)
+    }
 }
 
-#[inline(always)]
-pub fn unpack_ptr(word: usize) -> (*mut Header, usize) {
-    ((word & PTR_MASK) as *mut Header, word)
+pub struct TransferReturn {
+    pub start: *mut Header,
+    pub end: *mut Header,
+    pub total: usize,
 }
 
 impl SlabCache {
@@ -472,17 +478,13 @@ impl SlabCache {
         class: usize,
         batch_size: usize,
         cpu_id: usize,
-    ) -> (UnsafePointer<Header>, UnsafePointer<Header>, usize) {
+    ) -> Option<TransferReturn> {
         let inner = &*self.inner.get();
 
-        if !self.is_empty(inner, class, cpu_id) {
-            if let Some(popped) = self.transfer_pop_batch(class, cpu_id, batch_size) {
-                return (
-                    UnsafePointer::new(popped.0),
-                    UnsafePointer::new(popped.1),
-                    popped.2,
-                );
-            }
+        if !self.is_empty(inner, class, cpu_id)
+            && let Some(popped) = self.transfer_pop_batch(class, cpu_id, batch_size)
+        {
+            return Some(popped);
         }
 
         self.pop_slow(inner, class, cpu_id, batch_size)
@@ -495,7 +497,7 @@ impl SlabCache {
         class: usize,
         cpu_id: usize,
         batch_size: usize,
-    ) -> (UnsafePointer<Header>, UnsafePointer<Header>, usize) {
+    ) -> Option<TransferReturn> {
         let (start, end, node_id) = if inner.is_numa {
             self.numa_cpu(&inner, cpu_id)
         } else {
@@ -507,20 +509,21 @@ impl SlabCache {
         {
             #[cfg(feature = "transfer-debug")]
             crate::TOTAL_TRANSFER_STEALS.fetch_add(1, Ordering::Relaxed);
-            return block;
+            return Some(block);
         }
 
         if inner.is_numa {
-            let pointer = self.slowest_numa_steal_path(class, &inner, cpu_id, node_id, batch_size);
-            if !pointer.0.is_null() {
-                return pointer;
+            if let Some(numa_block) =
+                self.slowest_numa_steal_path(class, &inner, cpu_id, node_id, batch_size)
+            {
+                return Some(numa_block);
             }
         }
 
         #[cfg(feature = "transfer-debug")]
         crate::DRY_TRANSFER_STEALS.fetch_add(1, Ordering::Relaxed);
 
-        (UnsafePointer::NULL, UnsafePointer::NULL, 0)
+        None
     }
 
     #[cold]
@@ -532,7 +535,7 @@ impl SlabCache {
         cpu_id: usize,
         node_id: u16,
         batch_size: usize,
-    ) -> (UnsafePointer<Header>, UnsafePointer<Header>, usize) {
+    ) -> Option<TransferReturn> {
         for i in 1..inner.numa.nranges {
             let node_id = (i + node_id as usize) % inner.numa.nranges;
             let (start, end) = {
@@ -545,12 +548,11 @@ impl SlabCache {
             {
                 #[cfg(feature = "transfer-debug")]
                 crate::TOTAL_TRANSFER_STEALS.fetch_add(1, Ordering::Relaxed);
-
-                return block;
+                return Some(block);
             }
         }
 
-        (UnsafePointer::NULL, UnsafePointer::NULL, 0)
+        None
     }
 
     #[inline(always)]
@@ -570,12 +572,17 @@ impl SlabCache {
 
         loop {
             let old = list_ptr.load(Ordering::Relaxed);
-            let (old_head, tag) = unpack_ptr(old);
+            let (old_head, tag) = Tagging.unpack_ptr(old);
 
             (*tail).next = old_head;
 
             if list_ptr
-                .compare_exchange(old, pack(start, tag), Ordering::Release, Ordering::Relaxed)
+                .compare_exchange(
+                    old,
+                    Tagging.pack(start, tag),
+                    Ordering::Release,
+                    Ordering::Relaxed,
+                )
                 .is_ok()
             {
                 if old_head.is_null() {
@@ -605,11 +612,16 @@ impl SlabCache {
 
         loop {
             let old = list_ptr.load(Ordering::Relaxed);
-            let (old_head, tag) = unpack_ptr(old);
+            let (old_head, tag) = Tagging.unpack_ptr(old);
 
             (*header).next = old_head;
             if list_ptr
-                .compare_exchange(old, pack(header, tag), Ordering::Release, Ordering::Relaxed)
+                .compare_exchange(
+                    old,
+                    Tagging.pack(header, tag),
+                    Ordering::Release,
+                    Ordering::Relaxed,
+                )
                 .is_ok()
             {
                 if old_head.is_null() {
@@ -660,7 +672,7 @@ impl SlabCache {
         cpu_id: usize,
     ) {
         self.clear_class_hint(inner, class, cpu_id);
-        if !unpack_ptr(ptr.load(Ordering::Acquire)).0.is_null() {
+        if !Tagging.unpack_ptr(ptr.load(Ordering::Acquire)).0.is_null() {
             self.mark_class_nonempty(inner, class, cpu_id);
         }
     }
@@ -671,7 +683,7 @@ impl SlabCache {
         class: usize,
         cpu_id: usize,
         batch_size: usize,
-    ) -> Option<(*mut Header, *mut Header, usize)> {
+    ) -> Option<TransferReturn> {
         #[cfg(feature = "transfer-debug-exact")]
         crate::TOTAL_TRANSFER_POP_CALLS.fetch_add(1, Ordering::Relaxed);
 
@@ -683,7 +695,7 @@ impl SlabCache {
 
         loop {
             let old = list_ptr.load(Ordering::Acquire);
-            let (head, tag) = unpack_ptr(old);
+            let (head, tag) = Tagging.unpack_ptr(old);
 
             if head.is_null() {
                 if eq(list_ptr, normal_ptr) {
@@ -708,7 +720,12 @@ impl SlabCache {
             }
 
             if list_ptr
-                .compare_exchange(old, pack(next, tag), Ordering::Acquire, Ordering::Relaxed)
+                .compare_exchange(
+                    old,
+                    Tagging.pack(next, tag),
+                    Ordering::Acquire,
+                    Ordering::Relaxed,
+                )
                 .is_ok()
             {
                 if !next.is_null() {
@@ -716,7 +733,11 @@ impl SlabCache {
                 } else {
                     self.clear_hint(normal_ptr, inner, class, cpu_id);
                 }
-                return Some((head, tail, count));
+                return Some(TransferReturn {
+                    start: head,
+                    end: tail,
+                    total: count,
+                });
             }
 
             #[cfg(feature = "transfer-debug")]
@@ -762,8 +783,8 @@ mod tests {
     fn packed_transfer_pointer_preserves_low_address_bits() {
         let addr = 0x00ab_cdef_1234_5670usize;
         let ptr = addr as *mut Header;
-        let packed = pack(ptr, 0);
-        let (unpacked, _) = unpack_ptr(packed);
+        let packed = Tagging.pack(ptr, 0);
+        let (unpacked, _) = Tagging.unpack_ptr(packed);
 
         assert_eq!(unpacked as usize, addr);
         assert_eq!(packed >> TAG_SHIFT, 1);
@@ -776,13 +797,13 @@ mod tests {
         let mut packed = 0;
 
         for expected in 1..=u8::MAX {
-            packed = pack(ptr, packed);
+            packed = Tagging.pack(ptr, packed);
             assert_eq!((packed >> TAG_SHIFT) as u8, expected);
-            assert_eq!(unpack_ptr(packed).0 as usize, addr);
+            assert_eq!(Tagging.unpack_ptr(packed).0 as usize, addr);
         }
 
-        packed = pack(ptr, packed);
+        packed = Tagging.pack(ptr, packed);
         assert_eq!(packed >> TAG_SHIFT, 0);
-        assert_eq!(unpack_ptr(packed).0 as usize, addr);
+        assert_eq!(Tagging.unpack_ptr(packed).0 as usize, addr);
     }
 }

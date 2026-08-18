@@ -19,7 +19,7 @@ use crate::{
     big_allocations::buddy::BUDDY_BACKEND,
     core_prim::predictor::TRIM_SMOOTHING,
     internals::lock::LockGuard,
-    rseq_core::slab_cache::{SLAB_CACHE, pack, unpack_ptr},
+    rseq_core::slab_cache::{SLAB_CACHE, Tagging},
     traits::Lock,
     utility::{NUM_SIZE_CLASSES, SIZE_CLASSES, get_size_4096_class},
 };
@@ -132,7 +132,7 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
             let output = {
                 let mut list = main_list.list.load(Acquire);
                 loop {
-                    let (unpacked, tag) = unpack_ptr(list);
+                    let (unpacked, tag) = Tagging.unpack_ptr(list);
 
                     if unpacked.is_null() {
                         break null_mut();
@@ -140,7 +140,7 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
 
                     match main_list.list.compare_exchange(
                         list,
-                        pack(null_mut(), tag),
+                        Tagging.pack(null_mut(), tag),
                         Acquire,
                         Relaxed,
                     ) {

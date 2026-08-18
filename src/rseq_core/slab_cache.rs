@@ -603,6 +603,32 @@ impl SlabCache {
         }
     }
 
+    pub unsafe fn transfer_push_single(
+        &self,
+        class: usize,
+        header: *mut Header,
+        cpu_id: usize,
+        inner: &mut SlabCacheInner,
+    ) {
+        let list = &mut (*inner.cache.add(cpu_id)).mail[class];
+        let list_ptr = &list.list;
+
+        self.transfer_push_single_to(list_ptr, class, header, cpu_id, inner);
+    }
+
+    pub unsafe fn transfer_push_single_trimmed(
+        &self,
+        class: usize,
+        header: *mut Header,
+        cpu_id: usize,
+        inner: &mut SlabCacheInner,
+    ) {
+        let list = &mut (*inner.cache.add(cpu_id)).mail[class];
+        let list_ptr = &list.trimmed;
+
+        self.transfer_push_single_to(list_ptr, class, header, cpu_id, inner);
+    }
+
     #[inline(always)]
     pub unsafe fn transfer_push_single_to(
         &self,
@@ -640,32 +666,6 @@ impl SlabCache {
 
             spin_loop();
         }
-    }
-
-    pub unsafe fn transfer_push_single(
-        &self,
-        class: usize,
-        header: *mut Header,
-        cpu_id: usize,
-        inner: &mut SlabCacheInner,
-    ) {
-        let list = &mut (*inner.cache.add(cpu_id)).mail[class];
-        let list_ptr = &list.list;
-
-        self.transfer_push_single_to(list_ptr, class, header, cpu_id, inner);
-    }
-
-    pub unsafe fn transfer_push_single_trimmed(
-        &self,
-        class: usize,
-        header: *mut Header,
-        cpu_id: usize,
-        inner: &mut SlabCacheInner,
-    ) {
-        let list = &mut (*inner.cache.add(cpu_id)).mail[class];
-        let list_ptr = &list.trimmed;
-
-        self.transfer_push_single_to(list_ptr, class, header, cpu_id, inner);
     }
 
     #[inline(never)]

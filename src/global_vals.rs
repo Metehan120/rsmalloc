@@ -84,8 +84,8 @@ pub static REFILL_OVER_PREDICTS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "debug")]
 pub static TOTAL_REFILL_CALLS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "debug")]
-pub static REFILLS_BY_CLASS: [AtomicUsize; utility::NUM_SIZE_CLASSES] =
-    [const { AtomicUsize::new(0) }; utility::NUM_SIZE_CLASSES];
+pub static REFILLS_BY_CLASS: [AtomicUsize; crate::utility::NUM_SIZE_CLASSES] =
+    [const { AtomicUsize::new(0) }; crate::utility::NUM_SIZE_CLASSES];
 
 #[cfg(feature = "debug")]
 pub static ABORTS: AtomicUsize = AtomicUsize::new(0);

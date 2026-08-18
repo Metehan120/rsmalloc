@@ -11,7 +11,7 @@ use crate::{
     backend::trim::DISABLE_BUDDY,
     big_allocations::buddy::BUDDY_BACKEND,
     core_prim::wrappers::UnsafePointer,
-    internals::{binder::prefer_node, radix_tree::RADIX, rbtree::BIG_MAP},
+    internals::{binder::NumaBind, radix_tree::RADIX, rbtree::BIG_MAP},
     record_mmap_call,
     rseq_core::{rseq_offsets::get_rseq, slab_cache::SLAB_CACHE},
     utility::align_to,
@@ -68,7 +68,7 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
             MapFlags::PRIVATE,
         ) {
             if inner.is_numa {
-                prefer_node(pointer, mapped_total, node_id);
+                NumaBind.prefer_node(pointer, mapped_total, node_id);
             }
 
             flags = Flags::NotAllocated;

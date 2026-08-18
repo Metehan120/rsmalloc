@@ -20,7 +20,7 @@ use crate::{
     Header, NCPU, RSMallocError,
     core_prim::wrappers::UnsafePointer,
     internals::{
-        binder::bind_node,
+        binder::NumaBind,
         numa_parser::{NumaTopology, parse_numa_topology},
         once::Once,
     },
@@ -151,7 +151,7 @@ impl SlabCache {
                     if start <= end {
                         let cache = inner.cache.add(start) as *mut _;
                         let len = size_of::<MainCache>() * (end - start + 1);
-                        bind_node(cache, len, cpu_range.node_id);
+                        NumaBind.bind_node(cache, len, cpu_range.node_id);
                     }
                 }
             }
@@ -369,13 +369,13 @@ impl GenericCache for SlabCache {
             let list = &mut (*inner.cache.add(current_cpu)).cache[class];
             let list_ptr = addr_of!(list.list) as *mut *mut Header;
             let usage_ptr = &list.usage;
-            let header = RseqCore.pop(list_ptr, rseq, current_cpu, usage_ptr.as_ptr());
+            let result = RseqCore.pop(list_ptr, rseq, current_cpu, usage_ptr.as_ptr());
 
-            if header.is_failed() {
+            if result.is_failed() {
                 continue;
             }
 
-            return UnsafePointer::new(header.get());
+            return UnsafePointer::new(result.get());
         }
     }
 }

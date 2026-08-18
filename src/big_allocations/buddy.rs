@@ -17,7 +17,7 @@ use crate::{
     core_prim::predictor::EMA_ALPHA,
     inner::alloc::MAX_REFILL_RETRIES,
     internals::{
-        binder::prefer_node,
+        binder::NumaBind,
         lock::{LockGuard, SpinLock},
         numa_parser::NumaTopology,
         once::Once,
@@ -276,7 +276,7 @@ impl BuddyAllocator {
             ) {
                 add_buddy_cached_va(normalized_size);
                 if is_numa {
-                    prefer_node(region, normalized_size, node_id);
+                    NumaBind.prefer_node(region, normalized_size, node_id);
                 }
                 base = region as *mut c_void;
                 break;

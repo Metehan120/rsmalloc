@@ -13,7 +13,7 @@ use rustix::mm::{Advice, MapFlags, ProtFlags, madvise, mmap_anonymous};
 use rustix::mm::{MprotectFlags, mprotect};
 
 use crate::{
-    internals::{binder::prefer_node, lock::SpinLock, once::Once},
+    internals::{binder::NumaBind, lock::SpinLock, once::Once},
     record_mmap_call,
     traits::Lock,
     utility::{MIN_REFILL_BYTES, align_to},
@@ -456,7 +456,7 @@ impl PageAllocator {
         ))]
         let _ = madvise(mem, map_size, Advice::LinuxHugepage);
 
-        prefer_node(mem, map_size, node_id);
+        NumaBind.prefer_node(mem, map_size, node_id);
 
         let arena = mem as *mut PageArena;
         let base = mem as usize + metadata_size;

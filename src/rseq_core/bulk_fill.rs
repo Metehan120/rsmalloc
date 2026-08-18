@@ -118,7 +118,7 @@ unsafe fn init_blocks(
                 class,
                 magic: FREED_MAGIC,
                 life_time: current_stamp,
-                flags: Flags::Zero,
+                flags: Flags::NotAllocated,
             },
         );
 

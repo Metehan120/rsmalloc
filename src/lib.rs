@@ -87,10 +87,10 @@ pub use frontend::global_alloc::*;
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Flags {
-    Zero = 1,
+    NotAllocated = 1,
     Allocated = 2,
     Trimmed = 3,
-    Big = 4,
+    BigAlloc = 4,
 }
 
 #[repr(C, align(16))]

@@ -55,7 +55,7 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
             registered = true;
             mapped_total = 1 << order;
 
-            flags = Flags::Big;
+            flags = Flags::BigAlloc;
         }
     }
 
@@ -71,7 +71,7 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
                 prefer_node(pointer, mapped_total, node_id);
             }
 
-            flags = Flags::Zero;
+            flags = Flags::NotAllocated;
             actual_ptr = pointer as *mut u8;
         } else {
             return UnsafePointer::NULL;

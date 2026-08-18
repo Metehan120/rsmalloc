@@ -27,7 +27,7 @@ macro_rules! calloc_zero {
         let flags = unsafe { (*$header.as_ptr()).flags };
 
         #[cfg(not(feature = "lazy-page-trim"))]
-        if flags == Flags::Allocated || flags == Flags::Big {
+        if flags == Flags::Allocated || flags == Flags::BigAlloc {
             zero(
                 $ptr.cast_as_ptr() as *mut u8,
                 $actual_size.min($effective_size),
@@ -35,7 +35,7 @@ macro_rules! calloc_zero {
         }
 
         #[cfg(feature = "lazy-page-trim")]
-        if flags == Flags::Allocated || flags == Flags::Trimmed || flags == Flags::Big {
+        if flags == Flags::Allocated || flags == Flags::Trimmed || flags == Flags::BigAlloc {
             zero(
                 $ptr.cast_as_ptr() as *mut u8,
                 $actual_size.min($effective_size),

@@ -43,7 +43,7 @@ v0.2.1-alpha is an architectural cleanup pass over `0.2.0-alpha`, targeting weak
 
 - Added `size_class_matching_*` cases to `book_speed`'s `alloc_free` group, covering both fixed repeated sizes and a genuinely randomized-size variant, for measuring `match_size_class` dispatch cost in isolation.
 - Added `malloc_only` and `free_only` benchmark groups using `iter_custom` to separate untimed setup/teardown from the timed operation, instead of only measuring paired `malloc`+`free` round trips.
-- 
+
 ## v0.2.0-alpha
 
 v0.2.0-alpha is a full allocator overhaul relative to the `main` branch's `0.1.0-alpha` line. It reworks the RSEQ/slab path, transfer-cache reuse, refill metadata ownership, NUMA placement, buddy backend, trimming and relief, preload ABI behavior, debug reporting, benchmarks, and the public Rust configuration surface.

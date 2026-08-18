@@ -1,9 +1,9 @@
 // ! DO NOT TOUCH, CHANGE OR BREATHE NEAR ASSEMBLY unless you know how rseq or assembly works !
 
-use std::{arch::asm, ptr::addr_of, usize};
+use std::{arch::asm, mem::transmute, ptr::addr_of, usize};
 
 use crate::{
-    Header,
+    Header, RseqResult,
     rseq_core::rseq_offsets::{get_cs_ptr, rseq},
     traits::RseqCoreTrait,
 };
@@ -21,7 +21,7 @@ impl RseqCoreTrait for RseqCore {
         tail: *mut Header,
         usage_ptr: *mut usize,
         batch_total: usize,
-    ) -> usize {
+    ) -> RseqResult {
         let res: usize;
         let cs = get_cs_ptr(rseq);
         let cpu_id_start = addr_of!(rseq.cpu_id_start);
@@ -77,7 +77,11 @@ impl RseqCoreTrait for RseqCore {
             options(nostack),
         );
 
-        res
+        // # SAFETY:
+        // RseqResult is repr(transparent) which means it is the same layout as usize
+        // safe to exploit rust's repr structure with transmute here;
+        // guarantees 0 overhead in generated code
+        transmute::<usize, RseqResult>(res)
     }
 
     #[inline(always)]
@@ -88,7 +92,7 @@ impl RseqCoreTrait for RseqCore {
         cpu_id: usize,
         header: *mut Header,
         usage_ptr: *mut usize,
-    ) -> usize {
+    ) -> RseqResult {
         let res: usize;
         let cs = get_cs_ptr(rseq);
         let cpu_id_start = addr_of!(rseq.cpu_id_start);
@@ -142,7 +146,11 @@ impl RseqCoreTrait for RseqCore {
             options(nostack),
         );
 
-        res
+        // # SAFETY:
+        // RseqResult is repr(transparent) which means it is the same layout as usize
+        // safe to exploit rust's repr structure with transmute here;
+        // guarantees 0 overhead in generated code
+        transmute::<usize, RseqResult>(res)
     }
 
     #[inline(always)]
@@ -152,7 +160,7 @@ impl RseqCoreTrait for RseqCore {
         rseq: &rseq,
         cpu_id: usize,
         usage_ptr: *mut usize,
-    ) -> *mut Header {
+    ) -> RseqResult {
         let res: *mut Header;
         let cs = get_cs_ptr(rseq);
         let cpu_id_start = addr_of!(rseq.cpu_id_start);
@@ -221,6 +229,10 @@ impl RseqCoreTrait for RseqCore {
             options(nostack),
         );
 
-        res
+        // # SAFETY:
+        // RseqResult is repr(transparent) which means it is the same layout as usize
+        // safe to exploit rust's repr structure with transmute here;
+        // guarantees 0 overhead in generated code
+        transmute::<*mut Header, RseqResult>(res)
     }
 }

@@ -1,4 +1,6 @@
-use crate::{Header, core_prim::wrappers::UnsafePointer, rseq_core::rseq_offsets::rseq};
+use crate::{
+    Header, RseqResult, core_prim::wrappers::UnsafePointer, rseq_core::rseq_offsets::rseq,
+};
 
 pub(crate) trait GenericCache {
     unsafe fn push(&self, class: usize, header: *mut Header);
@@ -20,7 +22,7 @@ pub(crate) trait RseqCoreTrait {
         cpu_id: usize,
         header: *mut Header,
         usage_ptr: *mut usize,
-    ) -> usize;
+    ) -> RseqResult;
     unsafe fn push_tailed(
         &self,
         list_ptr: *mut *mut Header,
@@ -30,14 +32,14 @@ pub(crate) trait RseqCoreTrait {
         tail: *mut Header,
         usage_ptr: *mut usize,
         batch_total: usize,
-    ) -> usize;
+    ) -> RseqResult;
     unsafe fn pop(
         &self,
         list_ptr: *mut *mut Header,
         rseq: &rseq,
         cpu_id: usize,
         usage_ptr: *mut usize,
-    ) -> *mut Header;
+    ) -> RseqResult;
 }
 
 pub trait Lock {

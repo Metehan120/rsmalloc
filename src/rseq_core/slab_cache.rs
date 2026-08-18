@@ -17,7 +17,7 @@ use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 #[cfg(feature = "debug")]
 use crate::ABORTS;
 use crate::{
-    Header, NCPU, RSMallocError, Rseq,
+    Header, NCPU, RSMallocError,
     core_prim::wrappers::UnsafePointer,
     internals::{
         binder::bind_node,
@@ -301,15 +301,17 @@ impl GenericCache for SlabCache {
 
         let list_ptr = addr_of!(list.list) as *mut *mut Header;
         if likely(
-            RseqCore.push_tailed(
-                list_ptr,
-                rseq,
-                current_cpu,
-                header,
-                tail,
-                usage_ptr.as_ptr(),
-                batch_size,
-            ) == Rseq::SUCCESS,
+            RseqCore
+                .push_tailed(
+                    list_ptr,
+                    rseq,
+                    current_cpu,
+                    header,
+                    tail,
+                    usage_ptr.as_ptr(),
+                    batch_size,
+                )
+                .is_success(),
         ) {
             return;
         }
@@ -338,8 +340,9 @@ impl GenericCache for SlabCache {
 
             let list_ptr = addr_of!(list.list) as *mut *mut Header;
             if likely(
-                RseqCore.push(list_ptr, rseq, current_cpu, header, usage_ptr.as_ptr())
-                    == Rseq::SUCCESS,
+                RseqCore
+                    .push(list_ptr, rseq, current_cpu, header, usage_ptr.as_ptr())
+                    .is_success(),
             ) {
                 break;
             }
@@ -368,11 +371,11 @@ impl GenericCache for SlabCache {
             let usage_ptr = &list.usage;
             let header = RseqCore.pop(list_ptr, rseq, current_cpu, usage_ptr.as_ptr());
 
-            if header as isize == Rseq::FAILED {
+            if header.is_failed() {
                 continue;
             }
 
-            return UnsafePointer::new(header);
+            return UnsafePointer::new(header.0 as *mut Header);
         }
     }
 }

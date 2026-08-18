@@ -17,7 +17,7 @@ use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 #[cfg(feature = "debug")]
 use crate::ABORTS;
 use crate::{
-    Header, NCPU, RSMallocError,
+    Header, NCPU, RSMallocError, Rseq,
     core_prim::wrappers::UnsafePointer,
     internals::{
         binder::bind_node,
@@ -31,8 +31,7 @@ use crate::{
         rseq_asm::RseqCore,
         rseq_offsets::get_rseq,
     },
-    traits::GenericCache,
-    traits::RseqCoreTrait,
+    traits::{GenericCache, RseqCoreTrait},
     utility::{CACHE_HIGH_BLOCKS, NUM_SIZE_CLASSES},
 };
 
@@ -310,7 +309,7 @@ impl GenericCache for SlabCache {
                 tail,
                 usage_ptr.as_ptr(),
                 batch_size,
-            ) == 1,
+            ) == Rseq::SUCCESS,
         ) {
             return;
         }
@@ -338,7 +337,10 @@ impl GenericCache for SlabCache {
             }
 
             let list_ptr = addr_of!(list.list) as *mut *mut Header;
-            if likely(RseqCore.push(list_ptr, rseq, current_cpu, header, usage_ptr.as_ptr()) == 1) {
+            if likely(
+                RseqCore.push(list_ptr, rseq, current_cpu, header, usage_ptr.as_ptr())
+                    == Rseq::SUCCESS,
+            ) {
                 break;
             }
 
@@ -366,7 +368,7 @@ impl GenericCache for SlabCache {
             let usage_ptr = &list.usage;
             let header = RseqCore.pop(list_ptr, rseq, current_cpu, usage_ptr.as_ptr());
 
-            if header as isize == -1 {
+            if header as isize == Rseq::FAILED {
                 continue;
             }
 

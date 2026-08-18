@@ -151,3 +151,10 @@ pub fn get_clock() -> &'static Instant {
 
 pub const OFFSET_SIZE: usize = size_of::<usize>();
 pub const TAG_SIZE: usize = OFFSET_SIZE * 2;
+
+pub struct Rseq;
+
+impl Rseq {
+    pub const FAILED: isize = -1;
+    pub const SUCCESS: usize = 1;
+}

@@ -264,27 +264,25 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
 }
 
 #[inline]
-fn release_memory(header_ptr: *mut Header, size: usize) -> bool {
-    unsafe {
-        const PAGE_SIZE: usize = 4096;
-        const PAGE_MASK: usize = !(PAGE_SIZE - 1);
+unsafe fn release_memory(header_ptr: *mut Header, size: usize) -> bool {
+    const PAGE_SIZE: usize = 4096;
+    const PAGE_MASK: usize = !(PAGE_SIZE - 1);
 
-        let header = header_ptr as usize;
-        let user_start = header + Header::SIZE;
-        let user_end = user_start + size;
+    let header = header_ptr as usize;
+    let user_start = header + Header::SIZE;
+    let user_end = user_start + size;
 
-        let page_start = (user_start + PAGE_SIZE - 1) & PAGE_MASK;
-        let page_end = user_end & PAGE_MASK;
+    let page_start = (user_start + PAGE_SIZE - 1) & PAGE_MASK;
+    let page_end = user_end & PAGE_MASK;
 
-        if page_start >= page_end {
-            return false;
-        }
-        let length = page_end - page_start;
+    if page_start >= page_end {
+        return false;
+    }
+    let length = page_end - page_start;
 
-        if cfg!(feature = "lazy-page-trim") {
-            madvise(page_start as *mut c_void, length, Advice::LinuxFree).is_ok()
-        } else {
-            madvise(page_start as *mut c_void, length, Advice::LinuxDontNeed).is_ok()
-        }
+    if cfg!(feature = "lazy-page-trim") {
+        madvise(page_start as *mut c_void, length, Advice::LinuxFree).is_ok()
+    } else {
+        madvise(page_start as *mut c_void, length, Advice::LinuxDontNeed).is_ok()
     }
 }

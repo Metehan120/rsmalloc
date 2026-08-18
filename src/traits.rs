@@ -2,7 +2,7 @@ use crate::{
     Header, RseqResult, core_prim::wrappers::UnsafePointer, rseq_core::rseq_offsets::rseq,
 };
 
-pub(crate) trait GenericCache {
+pub trait GenericCache {
     unsafe fn push(&self, class: usize, header: *mut Header);
     unsafe fn pop(&self, class: usize) -> UnsafePointer<Header>;
     unsafe fn push_tailed(
@@ -14,7 +14,7 @@ pub(crate) trait GenericCache {
     );
 }
 
-pub(crate) trait RseqCoreTrait {
+pub trait RseqCoreTrait {
     unsafe fn push(
         &self,
         list_ptr: *mut *mut Header,

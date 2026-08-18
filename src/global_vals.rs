@@ -151,26 +151,3 @@ pub fn get_clock() -> &'static Instant {
 
 pub const OFFSET_SIZE: usize = size_of::<usize>();
 pub const TAG_SIZE: usize = OFFSET_SIZE * 2;
-
-struct RseqResultConst;
-
-impl RseqResultConst {
-    pub const FAILED: usize = usize::MAX;
-    pub const SUCCESS: usize = 1;
-}
-
-#[repr(transparent)]
-#[derive(Debug, PartialEq)]
-pub struct RseqResult(pub usize);
-
-impl RseqResult {
-    #[inline(always)]
-    pub const fn is_success(&self) -> bool {
-        self.0 == RseqResultConst::SUCCESS
-    }
-
-    #[inline(always)]
-    pub const fn is_failed(&self) -> bool {
-        self.0 == RseqResultConst::FAILED
-    }
-}

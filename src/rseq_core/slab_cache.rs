@@ -375,7 +375,7 @@ impl GenericCache for SlabCache {
                 continue;
             }
 
-            return UnsafePointer::new(header.0 as *mut Header);
+            return UnsafePointer::new(header.get());
         }
     }
 }

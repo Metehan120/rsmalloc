@@ -41,7 +41,7 @@
 #![feature(thread_local)]
 #![allow(binary_asm_labels, unsafe_op_in_unsafe_fn, static_mut_refs)]
 
-use std::{fmt::Debug, process::abort, sync::atomic::Ordering};
+use std::{fmt::Debug, sync::atomic::Ordering};
 
 #[cfg(not(target_arch = "x86_64"))]
 compile_error!(
@@ -53,26 +53,28 @@ compile_error!(
     "RSMalloc is only supported on Linux; RSEQ is a Linux-only syscall feature and cannot be replicated on other OSes. RSMalloc will only support Linux until other OSes support RSEQ-like syscall."
 );
 
-pub(crate) use global_vals::*;
-
 pub fn get_total_cached_va() -> usize {
     TOTAL_CACHED_VA.load(Ordering::Relaxed)
 }
 
-pub(crate) mod backend;
-pub(crate) mod big_allocations;
-pub(crate) mod core_prim;
+mod backend;
+mod big_allocations;
+mod core_prim;
 #[cfg(feature = "debug-print")]
 mod debug_exit_printer;
 #[cfg(feature = "debug-printer-thread")]
 mod debug_printer_thread;
-pub(crate) mod frontend;
-pub(crate) mod global_vals;
-pub(crate) mod inner;
-pub(crate) mod internals;
-pub(crate) mod rseq_core;
-pub(crate) mod traits;
-pub(crate) mod utility;
+mod frontend;
+mod global_vals;
+mod inner;
+mod internals;
+mod result_handling;
+mod rseq_core;
+mod traits;
+mod utility;
+
+use global_vals::*;
+use result_handling::*;
 
 #[cfg(any(all(feature = "debug-exact", not(feature = "preload")), doc))]
 pub use frontend::global_alloc::RSMallocExactStats;
@@ -92,7 +94,7 @@ pub enum Flags {
 }
 
 #[repr(C, align(16))]
-pub(crate) struct MetaData {
+struct MetaData {
     pub next_page: *mut MetaData,
     pub start: usize,
     pub end: usize,
@@ -102,7 +104,7 @@ pub(crate) struct MetaData {
 
 #[repr(C, align(16))]
 #[derive(Copy, Clone, Default)]
-pub(crate) struct BigAllocMeta {
+struct BigAllocMeta {
     pub next: *mut BigAllocMeta,
     pub size: usize,
     pub order: usize,
@@ -113,7 +115,7 @@ pub(crate) struct BigAllocMeta {
 // DO NOT TOUCH HEADER POSITIONING, RSEQ DEPENDS ON IT
 #[cfg(not(feature = "extended-header"))]
 #[repr(C, align(16))]
-pub(crate) struct Header {
+struct Header {
     pub next: *mut Header,
     pub flags: Flags,
     pub class: u8,
@@ -124,7 +126,7 @@ pub(crate) struct Header {
 // DO NOT TOUCH HEADER POSITIONING, RSEQ DEPENDS ON IT
 #[cfg(feature = "extended-header")]
 #[repr(C, align(16))]
-pub(crate) struct Header {
+struct Header {
     pub next: *mut Header,
     pub magic: u64,
     pub flags: Flags,
@@ -140,67 +142,4 @@ const _: () = assert!(size_of::<Header>() == 32);
 
 impl Header {
     pub const SIZE: usize = size_of::<Self>();
-}
-
-#[repr(u32)]
-#[derive(PartialEq, Eq)]
-pub(crate) enum RSMallocError {
-    DoubleFree = 0x1000,
-    MemoryCorruption = 0x1001,
-    OutOfMemory = 0x1003,
-    VAIinitFailed = 0x1005,
-    AttackOrCorruption = 0x100B,
-    SecurityViolation = 0x100C,
-    RSEQRegFailed = 0x100D,
-    #[cfg(not(feature = "preload"))]
-    ForeignPointer = 0x100E,
-    InvalidPointer = 0x100F,
-    #[cfg(feature = "abort-on-rseq-failure")]
-    RseqCeasedToExist = 0x1010,
-}
-
-impl Debug for RSMallocError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::DoubleFree => write!(f, "DoubleFree (0x1000)"),
-            Self::MemoryCorruption => write!(f, "MemoryCorruption (0x1001)"),
-            Self::OutOfMemory => write!(f, "OutOfMemory (0x1003)"),
-            Self::VAIinitFailed => write!(f, "VAIinitFailed (0x1005)"),
-            Self::AttackOrCorruption => write!(f, "AttackOrCorruption (0x100B)"),
-            Self::SecurityViolation => write!(f, "SecurityViolation (0x100C)"),
-            Self::RSEQRegFailed => write!(f, "RSEQRegFailed (0x100D)"),
-            #[cfg(not(feature = "preload"))]
-            Self::ForeignPointer => write!(f, "ForeignPointer (0x100E)"),
-            Self::InvalidPointer => write!(f, "InvalidPointer (0x100F)"),
-            #[cfg(feature = "abort-on-rseq-failure")]
-            Self::RseqCeasedToExist => write!(f, "RseqCeasedToExist (0x1010)"),
-        }
-    }
-}
-
-impl RSMallocError {
-    #[inline(never)]
-    pub fn log_and_abort(&self, ptr: *mut std::ffi::c_void, extra: &str, errno: Option<i32>) -> ! {
-        #[cfg(feature = "print-cpu-on-double-free")]
-        let current_cpu = unsafe {
-            use crate::rseq_core::rseq_offsets::get_rseq;
-            get_rseq().cpu_id
-        };
-
-        if let Some(errno) = errno {
-            eprintln!(
-                "[RSMALLOC FATAL] {:?} at ptr={:p} | {} | errno({})",
-                self, ptr, extra, errno
-            );
-        } else {
-            eprintln!("[RSMALLOC FATAL] {:?} at ptr={:p} | {}", self, ptr, extra);
-        }
-
-        #[cfg(feature = "print-cpu-on-double-free")]
-        if *self == Self::DoubleFree {
-            eprintln!("[RSMALLOC] Double free on CPU {}", current_cpu)
-        }
-
-        abort();
-    }
 }

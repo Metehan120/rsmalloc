@@ -1,6 +1,6 @@
 // ! DO NOT TOUCH, CHANGE OR BREATHE NEAR ASSEMBLY unless you know how rseq or assembly works !
 
-use std::{arch::asm, mem::transmute, ptr::addr_of, usize};
+use std::{arch::asm, ptr::addr_of, usize};
 
 use crate::{
     Header, RseqResult,
@@ -77,11 +77,7 @@ impl RseqCoreTrait for RseqCore {
             options(nostack),
         );
 
-        // # SAFETY:
-        // RseqResult is repr(transparent) which means it is the same layout as usize
-        // safe to exploit rust's repr structure with transmute here;
-        // guarantees 0 overhead in generated code
-        transmute::<usize, RseqResult>(res)
+        RseqResult::new(res)
     }
 
     #[inline(always)]
@@ -146,11 +142,7 @@ impl RseqCoreTrait for RseqCore {
             options(nostack),
         );
 
-        // # SAFETY:
-        // RseqResult is repr(transparent) which means it is the same layout as usize
-        // safe to exploit rust's repr structure with transmute here;
-        // guarantees 0 overhead in generated code
-        transmute::<usize, RseqResult>(res)
+        RseqResult::new(res)
     }
 
     #[inline(always)]
@@ -229,10 +221,6 @@ impl RseqCoreTrait for RseqCore {
             options(nostack),
         );
 
-        // # SAFETY:
-        // RseqResult is repr(transparent) which means it is the same layout as usize
-        // safe to exploit rust's repr structure with transmute here;
-        // guarantees 0 overhead in generated code
-        transmute::<*mut Header, RseqResult>(res)
+        RseqResult::new_header(res)
     }
 }

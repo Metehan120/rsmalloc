@@ -21,6 +21,7 @@ use crate::{
     core_prim::wrappers::{SafePointer, UnsafePointer},
     internals::{
         binder::NumaBind,
+        lock::SpinLock,
         numa_parser::{NumaTopology, parse_numa_topology},
         once::Once,
     },
@@ -31,7 +32,7 @@ use crate::{
         rseq_asm::RseqCore,
         rseq_offsets::get_rseq,
     },
-    traits::{GenericCache, RseqCoreTrait},
+    traits::{GenericCache, Lock, RseqCoreTrait},
     utility::{CACHE_HIGH_BLOCKS, NUM_SIZE_CLASSES},
 };
 
@@ -43,6 +44,7 @@ pub struct RseqCache {
 pub struct TransferCache {
     pub list: AtomicUsize,
     pub trimmed: AtomicUsize,
+    pub trim_lock: SpinLock<()>,
 }
 
 // NOTE: Use 4096-byte alignment to avoid false sharing between cache lines and NUMA node balancing.
@@ -706,6 +708,8 @@ impl SlabCache {
         let mut list_ptr = normal_ptr;
 
         loop {
+            list.trim_lock.spin_until_unlock();
+
             let old = list_ptr.load(Ordering::Acquire);
             let (head, tag) = Tagging.unpack_ptr(old);
 

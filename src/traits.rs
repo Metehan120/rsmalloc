@@ -58,4 +58,5 @@ pub trait Lock {
     fn spin_until_unlock(&self);
     #[allow(dead_code)]
     fn get_lock(&self) -> Self::LockState;
+    fn unlock(&self);
 }

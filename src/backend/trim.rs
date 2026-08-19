@@ -2,6 +2,7 @@
 use std::arch::x86_64::__rdtscp;
 use std::{
     ffi::c_void,
+    mem::forget,
     ptr::null_mut,
     sync::atomic::{
         AtomicBool, AtomicUsize,
@@ -129,6 +130,8 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
     for cpu in 0..NCPU {
         for class in get_size_4096_class()..NUM_SIZE_CLASSES {
             let main_list = SLAB_CACHE.get_list(cpu, class);
+            forget(main_list.trim_lock.lock());
+
             let output = {
                 let mut list = main_list.list.load(Acquire);
                 loop {
@@ -154,6 +157,7 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
                 if !cfg!(feature = "trim-aggressively") {
                     TRIM_SMOOTHING[class].update_refill(100, 1, 100);
                 }
+                main_list.trim_lock.unlock();
                 continue;
             }
 
@@ -193,6 +197,8 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
 
                 if total_push == TRIM_REPUSH_BATCH && is_push {
                     SLAB_CACHE.transfer_push_batch(class, push_list, push_list_start, cpu, inner);
+                    main_list.trim_lock.unlock();
+
                     total_push = 0;
                     push_list = null_mut();
                     push_list_start = null_mut();
@@ -201,14 +207,14 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
                 next = old_next;
             }
 
-            if total > 0 {
+            if total_push > 0 {
+                SLAB_CACHE.transfer_push_batch(class, push_list, push_list_start, cpu, inner);
+
                 let new_avg = (avg / total).clamp(1, 100);
                 TRIM_SMOOTHING[class].update_refill(new_avg as usize, 1, 100);
             }
 
-            if total_push > 0 {
-                SLAB_CACHE.transfer_push_batch(class, push_list, push_list_start, cpu, inner);
-            }
+            main_list.trim_lock.unlock();
 
             while !trim_list.is_null() {
                 #[cfg(feature = "debug-exact")]

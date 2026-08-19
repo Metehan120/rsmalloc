@@ -4,7 +4,7 @@ use std::{
     ops::{Deref, DerefMut},
     sync::atomic::{
         AtomicBool,
-        Ordering::{self, Acquire},
+        Ordering::{self, Acquire, Release},
     },
 };
 
@@ -140,6 +140,11 @@ impl<T> Lock for SpinLock<T> {
             return LockState::Locked;
         }
         LockState::Free
+    }
+
+    #[inline(always)]
+    fn unlock(&self) {
+        self.state.store(false, Release);
     }
 }
 

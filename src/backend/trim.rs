@@ -207,11 +207,13 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
                 next = old_next;
             }
 
-            if total_push > 0 {
-                SLAB_CACHE.transfer_push_batch(class, push_list, push_list_start, cpu, inner);
-
+            if total > 0 {
                 let new_avg = (avg / total).clamp(1, 100);
                 TRIM_SMOOTHING[class].update_refill(new_avg as usize, 1, 100);
+            }
+
+            if total_push > 0 {
+                SLAB_CACHE.transfer_push_batch(class, push_list, push_list_start, cpu, inner);
             }
 
             main_list.trim_lock.unlock();

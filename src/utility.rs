@@ -1,3 +1,5 @@
+use std::hint::unlikely;
+
 use crate::{Header, internals::oncelock::OnceLock};
 
 pub const SIZE_CLASSES: [usize; 34] = [
@@ -104,13 +106,6 @@ pub const SIZE_LUT: [u8; 256] = {
 // buckets. Classes above 32 KiB are powers of two and are matched arithmetically.
 const LARGE_SIZE_LUT: [u8; 8] = [0, 23, 24, 25, 26, 26, 27, 27];
 
-#[must_use]
-#[inline(always)]
-pub const fn align_to(size: usize, align: usize) -> usize {
-    let al = align - 1;
-    (size + al) & !al
-}
-
 pub const BIG_CLASS_BYTES: usize = 1024 * 96;
 pub const MEDIUM_CLASS_BYTES: usize = 1024 * 96;
 pub const SMALL_CLASS_BYTES: usize = 1024 * 128;
@@ -206,3 +201,39 @@ mod tests {
         }
     }
 }
+
+#[must_use]
+#[inline(always)]
+const fn align_to(size: usize, align: usize) -> usize {
+    let al = align - 1;
+    (size + al) & !al
+}
+
+pub trait Alignment<T> {
+    fn align_to(self, align: T) -> T;
+    fn checked_align_to(self, align: T) -> Option<T>;
+}
+
+macro_rules! impl_align {
+    ($($u:ty),*) => {
+        $(impl Alignment<$u> for $u {
+            #[inline(always)]
+            fn align_to(self, align: $u) -> $u {
+                let al = align - 1;
+                (self + al) & !al
+            }
+
+            #[inline(always)]
+            fn checked_align_to(self, align: $u) -> Option<$u> {
+                let al = align - 1;
+                let aligned = self.checked_add(al)? & !al;
+                if unlikely(aligned < self) {
+                    return None;
+                }
+                Some(aligned)
+            }
+        })*
+    };
+}
+
+impl_align!(usize, u128, u64, u32, u16, u8);

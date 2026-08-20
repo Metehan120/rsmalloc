@@ -9,13 +9,17 @@ use std::{
     sync::atomic::Ordering,
 };
 
-use crate::rseq_core::{pending_queue::PENDING_QUEUE, slab_cache::SLAB_CACHE};
 use crate::{CURRENT_STAMP, Flags};
 use crate::{
     FREED_MAGIC, Header, MetaData, add_slab_cached_va,
     backend::page_allocator::PAGE_ALLOCATOR,
     internals::radix_tree::RADIX,
-    utility::{ITERATIONS, NUM_SIZE_CLASSES, SIZE_CLASSES, align_to},
+    utility::{ITERATIONS, NUM_SIZE_CLASSES, SIZE_CLASSES},
+};
+
+use crate::{
+    rseq_core::{pending_queue::PENDING_QUEUE, slab_cache::SLAB_CACHE},
+    utility::Alignment,
 };
 
 pub(crate) enum Err {
@@ -189,7 +193,7 @@ pub unsafe fn bulk_fill(
     max_init: usize,
 ) -> Result<(*mut Header, *mut Header, usize), Err> {
     let payload_size = SIZE_CLASSES[class];
-    let block_size = align_to(payload_size + Header::SIZE, 16);
+    let block_size = (payload_size + Header::SIZE).align_to(16);
     let current_stamp = CURRENT_STAMP.load(Ordering::Relaxed);
 
     let pending = THREAD_BULK.get_or_init(class);

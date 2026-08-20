@@ -16,7 +16,7 @@ use crate::{
     internals::{binder::NumaBind, lock::SpinLock, once::Once},
     record_mmap_call,
     traits::Lock,
-    utility::{MIN_REFILL_BYTES, align_to},
+    utility::{Alignment, MIN_REFILL_BYTES},
 };
 
 const PAGE_SIZE: usize = 4096;
@@ -198,7 +198,7 @@ impl PageAllocator {
 
     #[inline(always)]
     pub unsafe fn alloc(&self, node_id: u16, size: usize) -> Option<*mut c_void> {
-        let size = align_to(size.max(1), PAGE_SIZE);
+        let size = (size.max(1)).align_to(PAGE_SIZE);
         let inner = &mut *self.inner.get();
 
         if inner.arenas.is_null() || inner.node_count == 0 {
@@ -317,8 +317,8 @@ impl PageAllocator {
             return false;
         }
 
-        let old_size = align_to(old_size.max(1), PAGE_SIZE);
-        let new_size = align_to(new_size.max(1), PAGE_SIZE);
+        let old_size = (old_size.max(1)).align_to(PAGE_SIZE);
+        let new_size = (new_size.max(1)).align_to(PAGE_SIZE);
         if new_size <= old_size {
             return true;
         }
@@ -416,7 +416,7 @@ impl PageAllocator {
         // important for overall performance of the allocator;
         // we shouldnt stall too much even in the slowest path
         if ARENA_SIZE >= 1024 * 1024 * 16 {
-            let metadata_size = align_to(size_of::<PageArena>(), PAGE_SIZE);
+            let metadata_size = size_of::<PageArena>().align_to(PAGE_SIZE);
             let _ = madvise(arena_base as *mut c_void, metadata_size, Advice::DontNeed);
         }
     }
@@ -428,11 +428,11 @@ impl PageAllocator {
         node_id: u16,
         requested: usize,
     ) -> Option<()> {
-        let data_size = align_to(requested.max(ARENA_SIZE), PAGE_SIZE);
+        let data_size = requested.max(ARENA_SIZE).align_to(PAGE_SIZE);
 
         #[cfg(feature = "guard-pages-thp")]
         let data_size = data_size.checked_add(PAGE_SIZE)?;
-        let metadata_size = align_to(size_of::<PageArena>(), PAGE_SIZE);
+        let metadata_size = size_of::<PageArena>().align_to(PAGE_SIZE);
         let map_size = metadata_size.checked_add(data_size)?;
 
         record_mmap_call(map_size);

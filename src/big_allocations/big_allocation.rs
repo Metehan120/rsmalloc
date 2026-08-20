@@ -14,25 +14,25 @@ use crate::{
     internals::{binder::NumaBind, radix_tree::RADIX, rbtree::BIG_MAP},
     record_mmap_call,
     rseq_core::{rseq_offsets::get_rseq, slab_cache::SLAB_CACHE},
-    utility::align_to,
+    utility::Alignment,
 };
 
 const TWO_MB: usize = 1024 * 1024 * 2;
 
 pub unsafe fn estimate_and_align_2mb(size: usize) -> Option<usize> {
-    let remainder = size % TWO_MB;
-    let alignment = align_to(size, TWO_MB);
+    if !RS_DISABLE_THP {
+        let remainder = size % TWO_MB;
+        let alignment = size.checked_align_to(TWO_MB);
 
-    if alignment >= size && remainder > 0 && (TWO_MB - remainder) <= 1024 * 64 && !RS_DISABLE_THP {
-        return Some(alignment);
+        if remainder > 0
+            && (TWO_MB - remainder) <= 1024 * 64
+            && let Some(alignment) = alignment
+        {
+            return Some(alignment);
+        }
     }
 
-    let fallback = align_to(size, 4096);
-    if fallback < size {
-        None
-    } else {
-        Some(fallback)
-    }
+    size.checked_align_to(4096)
 }
 
 #[cold]

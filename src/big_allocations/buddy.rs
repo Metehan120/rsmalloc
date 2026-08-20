@@ -26,7 +26,7 @@ use crate::{
     record_mmap_call,
     rseq_core::slab_cache::{SLAB_CACHE, SlabCacheInner},
     traits::Lock,
-    utility::align_to,
+    utility::Alignment,
 };
 
 pub static BUDDY_TOTAL_CACHED_VA: AtomicUsize = AtomicUsize::new(0);
@@ -147,7 +147,7 @@ impl BuddyAllocator {
 
     #[inline(always)]
     fn align_to_page(size: usize) -> usize {
-        align_to(size, PAGE_SIZE)
+        size.align_to(PAGE_SIZE)
     }
 
     #[inline(always)]

@@ -24,7 +24,7 @@ use crate::{
         free::{find_original_ptr, rs_free},
     },
     internals::{radix_tree::RADIX, rbtree::BIG_META_MAP},
-    utility::{ITERATIONS, SIZE_CLASSES, align_to, match_size_class},
+    utility::{Alignment, ITERATIONS, SIZE_CLASSES, match_size_class},
 };
 
 // TODO: Check for safety logic bugs
@@ -64,8 +64,9 @@ unsafe fn small_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePoin
 
     if ITERATIONS[old_class] == 1 && ITERATIONS[new_class] == 1 {
         let metadata_size = size_of::<MetaData>();
-        let block_size = align_to(old_payload_size + Header::SIZE, 16);
-        let new_block_size = align_to(SIZE_CLASSES[new_class] + Header::SIZE, 16);
+        let block_size = (old_payload_size + Header::SIZE).align_to(16);
+        let new_block_size = (SIZE_CLASSES[new_class] + Header::SIZE).align_to(16);
+
         let mapping_base = header_ptr.cast_usize().wrapping_sub(metadata_size);
         let metadata = mapping_base as *mut MetaData;
 
@@ -76,8 +77,8 @@ unsafe fn small_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePoin
         {
             let old_total = metadata_size + block_size;
             let new_logical_total = metadata_size + new_block_size;
-            let old_page_total = align_to(old_total, 4096);
-            let new_page_total = align_to(new_logical_total, 4096);
+            let old_page_total = old_total.align_to(4096);
+            let new_page_total = new_logical_total.align_to(4096);
 
             if PAGE_ALLOCATOR.try_grow_inplace(
                 (*metadata).node_id,

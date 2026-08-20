@@ -83,6 +83,7 @@ pub use frontend::global_alloc::RSMallocStats;
 
 #[cfg(not(feature = "preload"))]
 pub use frontend::global_alloc::*;
+use rsmalloc_macro::assert_sizes;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -115,6 +116,7 @@ struct BigAllocMeta {
 // DO NOT TOUCH HEADER POSITIONING, RSEQ DEPENDS ON IT
 #[cfg(not(feature = "extended-header"))]
 #[repr(C, align(16))]
+#[assert_sizes(16)]
 struct Header {
     pub next: *mut Header,
     pub flags: Flags,
@@ -126,6 +128,7 @@ struct Header {
 // DO NOT TOUCH HEADER POSITIONING, RSEQ DEPENDS ON IT
 #[cfg(feature = "extended-header")]
 #[repr(C, align(16))]
+#[assert_sizes(32)]
 struct Header {
     pub next: *mut Header,
     pub magic: u64,
@@ -133,12 +136,6 @@ struct Header {
     pub life_time: u32,
     pub class: u8,
 }
-
-#[cfg(not(feature = "extended-header"))]
-const _: () = assert!(size_of::<Header>() == 16);
-
-#[cfg(feature = "extended-header")]
-const _: () = assert!(size_of::<Header>() == 32);
 
 impl Header {
     pub const SIZE: usize = size_of::<Self>();

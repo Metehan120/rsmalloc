@@ -17,6 +17,7 @@ rustix = { version = "1.1.4", features = [
     "fs",
     "thread",
 ] }
+rsmalloc-macro = { path = "./rsmalloc-macro" }
 
 [features]
 default = []

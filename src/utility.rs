@@ -240,12 +240,7 @@ macro_rules! impl_align {
                 if !align.is_multiple_of(4096){
                     return None;
                 }
-                let al = align - 1;
-                let aligned = self.checked_add(al)? & !al;
-                if unlikely(aligned < self) {
-                    return None;
-                }
-                Some(aligned)
+                self.checked_align_to(align)
             }
         })*
     };

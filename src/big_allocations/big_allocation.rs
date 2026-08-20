@@ -19,13 +19,19 @@ use crate::{
 
 const TWO_MB: usize = 1024 * 1024 * 2;
 
-pub unsafe fn estimate_and_align_2mb(size: usize) -> usize {
+pub unsafe fn estimate_and_align_2mb(size: usize) -> Option<usize> {
     let remainder = size % TWO_MB;
+    let alignment = align_to(size, TWO_MB);
 
-    if remainder > 0 && (TWO_MB - remainder) <= 1024 * 64 && !RS_DISABLE_THP {
-        align_to(size, TWO_MB)
+    if alignment >= size && remainder > 0 && (TWO_MB - remainder) <= 1024 * 64 && !RS_DISABLE_THP {
+        return Some(alignment);
+    }
+
+    let fallback = align_to(size, 4096);
+    if fallback < size {
+        None
     } else {
-        align_to(size, 4096)
+        Some(fallback)
     }
 }
 
@@ -36,7 +42,10 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
         return UnsafePointer::NULL;
     };
 
-    let aligned_total = estimate_and_align_2mb(requested_total);
+    let Some(aligned_total) = estimate_and_align_2mb(requested_total) else {
+        return UnsafePointer::NULL;
+    };
+
     let mut registered = false;
     let mut mapped_total = aligned_total;
     let mut actual_ptr: *mut u8 = null_mut();
@@ -130,7 +139,7 @@ pub unsafe fn big_free(ptr: usize) {
         )
     });
     let mapping_base = (ptr - Header::SIZE) as *mut u8;
-    let payload_size = estimate_and_align_2mb(header.size + Header::SIZE);
+    let payload_size = estimate_and_align_2mb(header.size + Header::SIZE).unwrap();
 
     if header.buddy_region != 0 {
         BUDDY_BACKEND.free(header.buddy_region, mapping_base as usize, header.order);

@@ -126,7 +126,7 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
     let old_mapped_size = if is_in_buddy {
         1usize << old_meta.order
     } else {
-        estimate_and_align_2mb(old_meta.size + Header::SIZE)
+        estimate_and_align_2mb(old_meta.size + Header::SIZE).unwrap()
     };
 
     if match_size_class(new_size).is_some() {
@@ -149,10 +149,9 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
     let Some(new_total) = new_size.checked_add(Header::SIZE) else {
         return UnsafePointer::NULL;
     };
-    let aligned_new = estimate_and_align_2mb(new_total);
-    if aligned_new < new_total {
+    let Some(aligned_new) = estimate_and_align_2mb(new_total) else {
         return UnsafePointer::NULL;
-    }
+    };
 
     if is_in_buddy && old_mapped_size >= aligned_new {
         let new_meta = BigAllocMeta {

@@ -139,7 +139,13 @@ pub unsafe fn big_free(ptr: usize) {
         )
     });
     let mapping_base = (ptr - Header::SIZE) as *mut u8;
-    let payload_size = estimate_and_align_2mb(header.size + Header::SIZE).unwrap();
+    let payload_size = estimate_and_align_2mb(header.size + Header::SIZE).unwrap_or_else(|| {
+        RSMallocError::MemoryCorruption.log_and_abort(
+            null_mut(),
+            "impossible overflow recomputing size for already-live big allocation",
+            None,
+        )
+    });
 
     if header.buddy_region != 0 {
         BUDDY_BACKEND.free(header.buddy_region, mapping_base as usize, header.order);

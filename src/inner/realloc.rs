@@ -3,7 +3,10 @@
 // Namings were made by me at 3AM (in a sense, not exactly 3AM ofc) do not assume its AI because of clean namings its just me bored ;)
 // - Metehan
 
-use std::{os::raw::c_void, ptr::copy_nonoverlapping};
+use std::{
+    os::raw::c_void,
+    ptr::{copy_nonoverlapping, null_mut},
+};
 
 use rustix::mm::{MremapFlags, mremap};
 
@@ -126,7 +129,13 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
     let old_mapped_size = if is_in_buddy {
         1usize << old_meta.order
     } else {
-        estimate_and_align_2mb(old_meta.size + Header::SIZE).unwrap()
+        estimate_and_align_2mb(old_meta.size + Header::SIZE).unwrap_or_else(|| {
+            RSMallocError::MemoryCorruption.log_and_abort(
+                null_mut(),
+                "impossible overflow recomputing size for already-live big allocation",
+                None,
+            )
+        })
     };
 
     if match_size_class(new_size).is_some() {

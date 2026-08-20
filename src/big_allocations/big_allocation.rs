@@ -134,7 +134,7 @@ pub unsafe fn big_free(ptr: usize) {
     let header = BIG_MAP.remove(ptr).unwrap_or_else(|| {
         RSMallocError::MemoryCorruption.log_and_abort(
             null_mut(),
-            "missing header for big allocation",
+            "missing header for big allocation, possibly double free",
             None,
         )
     });

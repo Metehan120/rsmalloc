@@ -3,7 +3,7 @@ use proc_macro2::{Literal, TokenStream as TokenStream2};
 use quote::quote;
 use syn::{Item, LitInt, LitStr, parse::Parser, parse_macro_input};
 
-// Making stable API surface more explicit for future development, leave it
+/// Making stable API surface more explicit for future development
 #[proc_macro_attribute]
 pub fn stable_api_surface(args: TokenStream, input: TokenStream) -> TokenStream {
     let args2: TokenStream2 = args.into();
@@ -36,6 +36,7 @@ pub fn stable_api_surface(args: TokenStream, input: TokenStream) -> TokenStream 
     .into()
 }
 
+/// Type-sugar, asserting size of a struct or enum
 #[proc_macro_attribute]
 pub fn assert_sizes(args: TokenStream, input: TokenStream) -> TokenStream {
     let lit = parse_macro_input!(args as LitInt);

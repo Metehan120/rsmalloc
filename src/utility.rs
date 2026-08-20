@@ -212,6 +212,8 @@ const fn align_to(size: usize, align: usize) -> usize {
 pub trait Alignment<T> {
     fn align_to(self, align: T) -> T;
     fn checked_align_to(self, align: T) -> Option<T>;
+    #[allow(dead_code)]
+    fn checked_align_of_page(self, align: T) -> Option<T>;
 }
 
 macro_rules! impl_align {
@@ -232,8 +234,21 @@ macro_rules! impl_align {
                 }
                 Some(aligned)
             }
+
+            #[inline(always)]
+            fn checked_align_of_page(self, align: $u) -> Option<$u> {
+                if !align.is_multiple_of(4096){
+                    return None;
+                }
+                let al = align - 1;
+                let aligned = self.checked_add(al)? & !al;
+                if unlikely(aligned < self) {
+                    return None;
+                }
+                Some(aligned)
+            }
         })*
     };
 }
 
-impl_align!(usize, u128, u64, u32, u16, u8);
+impl_align!(usize, u64, u32, u16);

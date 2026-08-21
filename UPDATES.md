@@ -32,7 +32,29 @@ v0.2.1-alpha is an architectural cleanup pass over `0.2.0-alpha`, targeting weak
 ### Realloc hardening
 
 - Added a magic-value check (`MAGIC`/`BIG_MAGIC`) on the header found via `find_original_ptr` during `rs_realloc`'s owned-pointer path, aborting as a double-free/corruption if it doesn't match either expected value, instead of trusting whatever the search returned.
-- Added an overflow guard in `big_realloc`'s 2MB-aligned size estimate (`estimate_and_align_2mb`), returning null instead of proceeding with a wrapped/undersized aligned size when the estimate overflows.
+- Replaced the manual overflow guard in `big_realloc`'s 2MB-aligned size estimate with a proper `Option`-returning `estimate_and_align_2mb`, built on new `checked_align_to`/`checked_align_of_page` helpers (see Alignment helpers below). `big_malloc`, `big_realloc`, and `big_free` all now propagate `None` instead of proceeding with a wrapped/undersized aligned size.
+- Replaced bare `.unwrap()` calls on recomputed big-allocation sizes (`big_free`, `big_realloc`) with `unwrap_or_else(|| RSMallocError::MemoryCorruption.log_and_abort(...))`, matching the rest of the big-allocation path's error handling instead of panicking on corrupted metadata.
+
+### Type-safety modernization
+
+- Replaced raw `u8` header flags with a `#[repr(u8)]` `Flags` enum (`NotAllocated`/`Allocated`/`Trimmed`/`BigAlloc`) with explicit discriminants.
+- Replaced the RSEQ push/pop asm result convention (raw `usize`/`*mut Header` with `-1`/`1` sentinels) with `RseqResult`, a `#[repr(transparent)]` struct wrapping `usize` with `is_success()`/`is_failed()`/`get()` accessors — sound for arbitrary pointer bit patterns (verified under Miri) and compiles to identical codegen to the raw sentinel version.
+- Introduced `TransferReturn` (`start`/`end`/`total`) as a named return type for transfer-cache pop paths (`try_pop`, `transfer_pop_batch`, `first_nonempty_cpu_in_range`, `slowest_numa_steal_path`, `pop_slow`), replacing an unnamed tuple return.
+- Replaced raw pointer arithmetic in `slab_cache.rs` with `SafePointer<T>`/`UnsafePointer<T>`, `#[repr(transparent)]` newtype wrappers (`core_prim::wrappers`) providing `get_offset`/`walk_header`/`get_actual_header`/`cast_as_ptr` — confirmed byte-identical `malloc` disassembly before and after.
+
+### Trim/transfer-cache correctness
+
+- Added a `trim_lock: SpinLock<()>` per `(cpu, class)` `TransferCache` slot. `trim_small` holds it across its list-swap/repush/per-node push sequence for that slot; `transfer_pop_batch`'s CAS loop calls `spin_until_unlock()` before attempting the swap. Fixes a real race where a steal could land between the trimmer's CAS-detach and its repush and observe an empty list, losing blocks that were about to come back — and measurably reduced hot-path contention under `mimalloc-bench`'s `larson` case, since stealers now wait via a cheap read-only spin instead of CAS-storming against the trimmer's in-flight writes.
+- Fixed `trim_small`'s average-life update being incorrectly gated behind `total_push > 0` — it now correctly runs whenever `total > 0`, independent of whether any nodes were push-eligible that pass.
+
+### Alignment helpers
+
+- Added an `Alignment<T>` trait (`utility.rs`) implemented for `usize`/`u128`/`u64`/`u32`/`u16`/`u8`, providing `align_to` (existing unchecked fast path), `checked_align_to` (overflow-checked, returns `None` instead of silently wrapping), and `checked_align_of_page` (additionally requires the alignment to be a multiple of the OS page size).
+- `estimate_and_align_2mb` now short-circuits the 2MB/THP-eligible branch entirely when `RS_DISABLE_THP` is set, instead of always computing it and discarding the result.
+
+### Proc-macro crate
+
+- Added `rsmalloc-macro`, a small proc-macro crate (`syn`/`quote`) providing `#[assert_sizes(N)]` (compile-time `size_of::<T>() == N` assertion on a struct/enum, replacing manual `const _: () = assert!(...)` blocks) and `#[stable_api_surface(since = "...")]` (documentation-only marker for internal functions whose signature/contract shouldn't casually change, e.g. the RSEQ asm trait methods). Both are pure compile-time constructs with no runtime cost.
 
 ### Small branch/overhead cleanups
 

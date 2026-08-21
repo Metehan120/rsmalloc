@@ -4,6 +4,7 @@ use quote::quote;
 use syn::{Item, LitInt, LitStr, parse::Parser, parse_macro_input};
 
 /// Making stable API surface more explicit for future development
+/// This is only to be used inside rsmalloc's private functions
 #[proc_macro_attribute]
 pub fn stable_api_surface(args: TokenStream, input: TokenStream) -> TokenStream {
     let args2: TokenStream2 = args.into();

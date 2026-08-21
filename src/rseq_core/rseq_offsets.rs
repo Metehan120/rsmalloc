@@ -1,5 +1,7 @@
 use std::arch::asm;
 
+use rsmalloc_macro::stable_api_surface;
+
 #[cfg(feature = "abort-on-rseq-failure")]
 use crate::RSMallocError;
 #[cfg(feature = "abort-on-rseq-failure")]
@@ -21,6 +23,7 @@ unsafe extern "C" {
     pub static __rseq_size: u32;
 }
 
+#[stable_api_surface]
 #[inline(always)]
 pub unsafe fn get_rseq() -> &'static rseq {
     let rseq_ptr: *mut rseq;

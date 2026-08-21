@@ -356,7 +356,7 @@ impl GenericCache for SlabCache {
             }
 
             if loop_count > 3 {
-                self.transfer_push_single(class, header, current_cpu, inner);
+                self.transfer_push_single_non_inline(class, header, current_cpu, inner);
                 return;
             }
 
@@ -612,6 +612,7 @@ impl SlabCache {
         }
     }
 
+    #[inline(always)]
     pub unsafe fn transfer_push_single(
         &self,
         class: usize,
@@ -623,6 +624,17 @@ impl SlabCache {
         let list_ptr = &list.list;
 
         self.transfer_push_single_to(list_ptr, class, header, cpu_id, inner);
+    }
+
+    #[inline(never)]
+    pub unsafe fn transfer_push_single_non_inline(
+        &self,
+        class: usize,
+        header: *mut Header,
+        cpu_id: usize,
+        inner: &mut SlabCacheInner,
+    ) {
+        self.transfer_push_single(class, header, cpu_id, inner);
     }
 
     pub unsafe fn transfer_push_single_trimmed(

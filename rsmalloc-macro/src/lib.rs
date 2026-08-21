@@ -52,14 +52,14 @@ pub fn assert_sizes(args: TokenStream, input: TokenStream) -> TokenStream {
             let name = &s.ident;
             quote! {
                 #item
-                const _: [(); core::mem::size_of::<#name>()] = [(); #expected_size];
+                const _: () = assert!(size_of::<#name>() == #expected_size);
             }
         }
         Item::Enum(e) => {
             let name = &e.ident;
             quote! {
                 #item
-                const _: [(); core::mem::size_of::<#name>()] = [(); #expected_size];
+                const _: () = assert!(size_of::<#name>() == #expected_size);
             }
         }
         _ => {

@@ -50,7 +50,7 @@ v0.2.1-alpha is an architectural cleanup pass over `0.2.0-alpha`, targeting weak
 
 ### Alignment helpers
 
-- Added an `Alignment<T>` trait (`utility.rs`) implemented for `usize`/`u128`/`u64`/`u32`/`u16`/`u8`, providing `align_to` (existing unchecked fast path), `checked_align_to` (overflow-checked, returns `None` instead of silently wrapping), and `checked_align_of_page` (additionally requires the alignment to be a multiple of the OS page size).
+- Added an `Alignment<T>` trait (`utility.rs`) implemented for `usize`/`u64`/`u32`/`u16`, providing `align_to` (existing unchecked fast path), `checked_align_to` (overflow-checked, returns `None` instead of silently wrapping), and `checked_align_of_page` (additionally requires the alignment to be a multiple of the OS page size).
 - `estimate_and_align_2mb` now short-circuits the 2MB/THP-eligible branch entirely when `RS_DISABLE_THP` is set, instead of always computing it and discarding the result.
 
 ### Proc-macro crate

@@ -2,7 +2,10 @@ use std::{
     mem::size_of,
     os::raw::c_void,
     ptr::null_mut,
-    sync::atomic::{AtomicU8, AtomicUsize, Ordering},
+    sync::atomic::{
+        AtomicU8, AtomicUsize,
+        Ordering::{self, Relaxed},
+    },
 };
 
 use rustix::{
@@ -15,6 +18,7 @@ use crate::backend::trim::{TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA};
 use crate::{
     BUDDY_AVERAGE_BLOCK_TIMES, BUDDY_INIT, CURRENT_STAMP, GLOBAL_TRIM_LOCK, add_buddy_cached_va,
     core_prim::predictor::EMA_ALPHA,
+    global_vals::{TOTAL_CACHED_VA, TRIM_THRESHOLD},
     inner::alloc::MAX_REFILL_RETRIES,
     internals::{
         binder::NumaBind,
@@ -682,6 +686,10 @@ impl BuddyAllocator {
     }
 
     unsafe fn trim_inner(&mut self, requested_size: usize, force_trim: bool) -> usize {
+        if !force_trim && TOTAL_CACHED_VA.load(Relaxed) < TRIM_THRESHOLD {
+            return 0;
+        }
+
         let LockGuard::Free(_global_trim_guard) = GLOBAL_TRIM_LOCK.try_lock() else {
             return 0;
         };

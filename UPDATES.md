@@ -46,6 +46,7 @@ v0.2.1-alpha is an architectural cleanup pass over `0.2.0-alpha`, targeting weak
 
 - Added a `trim_lock: SpinLock<()>` per `(cpu, class)` `TransferCache` slot. `trim_small` holds it across its list-swap/repush/per-node push sequence for that slot; `transfer_pop_batch`'s CAS loop calls `spin_until_unlock()` before attempting the swap. Fixes a real race where a steal could land between the trimmer's CAS-detach and its repush and observe an empty list, losing blocks that were about to come back — and measurably reduced hot-path contention under `mimalloc-bench`'s `larson` case, since stealers now wait via a cheap read-only spin instead of CAS-storming against the trimmer's in-flight writes.
 - Fixed `trim_small`'s average-life update being incorrectly gated behind `total_push > 0` — it now correctly runs whenever `total > 0`, independent of whether any nodes were push-eligible that pass.
+- Added a `TOTAL_CACHED_VA < TRIM_THRESHOLD` early-out to `trim_small` and `BuddyBackend::trim_inner`, skipping the trim-lock acquisition and full region/class walk entirely when there's nothing meaningfully cached to reclaim.
 
 ### Alignment helpers
 

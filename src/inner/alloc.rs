@@ -1,10 +1,8 @@
 use std::hint::unlikely;
-use std::sync::atomic::AtomicBool;
 #[cfg(feature = "debug-full-critic")]
 use std::sync::atomic::AtomicUsize;
 use std::{hint::likely, ptr::null_mut};
 
-use crate::Flags;
 #[cfg(feature = "preload")]
 use crate::inner::libc_int::set_nomem;
 use crate::{
@@ -20,9 +18,9 @@ use crate::{
     traits::GenericCache,
     utility::{ITERATIONS, SIZE_CLASSES, match_size_class},
 };
+use crate::{Flags, backend::trim::maybe_start_trimmer};
 #[cfg(feature = "debug")]
 use crate::{REFILLS_BY_CLASS, TOTAL_REFILL_CALLS};
-use crate::{TOTAL_CACHED_VA, TRIM_THRESHOLD, backend::trim::trimmer_main};
 #[cfg(feature = "debug")]
 use std::sync::atomic::Ordering;
 
@@ -137,39 +135,6 @@ macro_rules! refill {
 macro_rules! bulk_refill {
     ($class:expr) => {
         BULK_FILL_BATCHING[$class].batch(ITERATIONS[$class])
-    };
-}
-
-pub static TRIM_GUARD: AtomicBool = AtomicBool::new(false);
-
-#[cold]
-#[inline(never)]
-pub unsafe fn spawn(entry: unsafe fn() -> !) -> bool {
-    std::thread::Builder::new()
-        .name("rsmalloc-trimmer".into())
-        .stack_size(64 * 1024)
-        .spawn(move || unsafe {
-            entry();
-        })
-        .is_ok()
-}
-
-pub unsafe fn maybe_start_trimmer() {
-    use std::sync::atomic::Ordering;
-
-    if TOTAL_CACHED_VA.load(Ordering::Relaxed) < TRIM_THRESHOLD
-        || TRIM_GUARD.load(Ordering::Relaxed) == true
-    {
-        return;
-    }
-
-    if TRIM_GUARD
-        .compare_exchange(false, true, Ordering::Release, Ordering::Acquire)
-        .is_ok()
-    {
-        if !spawn(trimmer_main) {
-            TRIM_GUARD.store(false, Ordering::Relaxed);
-        }
     };
 }
 

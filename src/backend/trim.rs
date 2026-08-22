@@ -19,11 +19,45 @@ use crate::{
     AVERAGE_BLOCK_TIMES, CURRENT_STAMP, DISABLE_TRIM_THREAD, Flags, GLOBAL_TRIM_LOCK, Header, NCPU,
     big_allocations::buddy::BUDDY_BACKEND,
     core_prim::predictor::TRIM_SMOOTHING,
+    global_vals::{TOTAL_CACHED_VA, TRIM_THRESHOLD},
     internals::lock::LockGuard,
     rseq_core::slab_cache::{SLAB_CACHE, Tagging},
     traits::Lock,
     utility::{NUM_SIZE_CLASSES, SIZE_CLASSES, get_size_4096_class},
 };
+
+pub static TRIM_GUARD: AtomicBool = AtomicBool::new(false);
+
+#[cold]
+#[inline(never)]
+pub unsafe fn spawn(entry: unsafe fn() -> !) -> bool {
+    std::thread::Builder::new()
+        .name("rsmalloc-trimmer".into())
+        .stack_size(64 * 1024)
+        .spawn(move || unsafe {
+            entry();
+        })
+        .is_ok()
+}
+
+pub unsafe fn maybe_start_trimmer() {
+    use std::sync::atomic::Ordering;
+
+    if TOTAL_CACHED_VA.load(Ordering::Relaxed) < TRIM_THRESHOLD
+        || TRIM_GUARD.load(Ordering::Relaxed) == true
+    {
+        return;
+    }
+
+    if TRIM_GUARD
+        .compare_exchange(false, true, Ordering::Release, Ordering::Acquire)
+        .is_ok()
+    {
+        if !spawn(trimmer_main) {
+            TRIM_GUARD.store(false, Ordering::Relaxed);
+        }
+    };
+}
 
 fn check_memory_pressure() -> usize {
     let info = sysinfo();
@@ -117,6 +151,10 @@ pub unsafe fn trimmer_main() -> ! {
 const TRIM_REPUSH_BATCH: usize = 16;
 
 pub unsafe fn trim_small(requested_size: usize) -> usize {
+    if TOTAL_CACHED_VA.load(Relaxed) < TRIM_THRESHOLD {
+        return 0;
+    }
+
     let LockGuard::Free(_global_trim_guard) = GLOBAL_TRIM_LOCK.try_lock() else {
         return 0;
     };

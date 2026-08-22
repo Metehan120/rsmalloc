@@ -23,7 +23,7 @@ use crate::{
     internals::lock::LockGuard,
     rseq_core::slab_cache::{SLAB_CACHE, Tagging},
     traits::Lock,
-    utility::{NUM_SIZE_CLASSES, SIZE_CLASSES, get_size_4096_class},
+    utility::{ITERATIONS, NUM_SIZE_CLASSES, SIZE_CLASSES, get_size_4096_class},
 };
 
 pub static TRIM_GUARD: AtomicBool = AtomicBool::new(false);
@@ -148,8 +148,6 @@ pub unsafe fn trimmer_main() -> ! {
     }
 }
 
-const TRIM_REPUSH_BATCH: usize = 16;
-
 pub unsafe fn trim_small(requested_size: usize) -> usize {
     if TOTAL_CACHED_VA.load(Relaxed) < TRIM_THRESHOLD {
         return 0;
@@ -233,7 +231,7 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
                     total += 1;
                 }
 
-                if total_push == TRIM_REPUSH_BATCH && is_push {
+                if total_push == ITERATIONS[class] + 1 && is_push {
                     SLAB_CACHE.transfer_push_batch(class, push_list, push_list_start, cpu, inner);
                     main_list.trim_lock.unlock();
 

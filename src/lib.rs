@@ -88,10 +88,10 @@ use rsmalloc_macro::assert_sizes;
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Flags {
-    NotAllocated = 1,
-    Allocated = 2,
-    Trimmed = 3,
-    BigAlloc = 4,
+    NotAllocated = 2,
+    Allocated = 4,
+    Trimmed = 8,
+    BigAlloc = 16,
 }
 
 #[repr(C, align(16))]

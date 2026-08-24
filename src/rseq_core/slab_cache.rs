@@ -397,6 +397,7 @@ pub struct Tagging;
 impl Tagging {
     #[inline(always)]
     pub fn pack(&self, ptr: *mut Header, old_tag: u128) -> u128 {
+        // this shift should be eliminated at compile time
         let tag = (old_tag >> TAG_SHIFT) as u64;
         let tag = tag.wrapping_add(1);
 

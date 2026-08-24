@@ -18,6 +18,7 @@ rustix = { version = "1.1.4", features = [
     "thread",
 ] }
 rsmalloc-macro = { path = "./rsmalloc-macro" }
+portable-atomic = "1"
 
 [features]
 default = []
@@ -89,7 +90,6 @@ doctest = false
 
 [profile.release]
 opt-level = 3
-panic = "abort"
 overflow-checks = false
 lto = "fat"
 codegen-units = 1

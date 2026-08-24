@@ -1,4 +1,5 @@
 target
+target-fuzzcov
 gpt-sol-audit.md
 book
 .claude

@@ -12,6 +12,7 @@ use std::{
     },
 };
 
+use portable_atomic::AtomicU128;
 use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 
 #[cfg(feature = "debug")]
@@ -42,8 +43,8 @@ pub struct RseqCache {
 }
 
 pub struct TransferCache {
-    pub list: AtomicUsize,
-    pub trimmed: AtomicUsize,
+    pub list: AtomicU128,
+    pub trimmed: AtomicU128,
     pub trim_lock: SpinLock<()>,
 }
 
@@ -388,22 +389,23 @@ impl GenericCache for SlabCache {
     }
 }
 
-const TAG_SHIFT: u32 = 56;
-const TAG_STEP: usize = 1usize << TAG_SHIFT;
-const TAG_MASK: usize = 0xffusize << TAG_SHIFT;
-const PTR_MASK: usize = !TAG_MASK;
+const TAG_SHIFT: u32 = 64;
+const PTR_MASK: u128 = u64::MAX as u128;
 
 pub struct Tagging;
 
 impl Tagging {
     #[inline(always)]
-    pub fn pack(&self, ptr: *mut Header, old_tag: usize) -> usize {
-        ((ptr as usize) & PTR_MASK) | (old_tag.wrapping_add(TAG_STEP) & TAG_MASK)
+    pub fn pack(&self, ptr: *mut Header, old_tag: u128) -> u128 {
+        let tag = (old_tag >> TAG_SHIFT) as u64;
+        let tag = tag.wrapping_add(1);
+
+        ((ptr as usize as u128) & PTR_MASK) | ((tag as u128) << TAG_SHIFT)
     }
 
     #[inline(always)]
-    pub fn unpack_ptr(&self, word: usize) -> (*mut Header, usize) {
-        ((word & PTR_MASK) as *mut Header, word)
+    pub fn unpack_ptr(&self, word: u128) -> (*mut Header, u128) {
+        ((word & PTR_MASK) as usize as *mut Header, word)
     }
 }
 
@@ -641,7 +643,7 @@ impl SlabCache {
     #[inline(always)]
     pub unsafe fn transfer_push_single_to(
         &self,
-        list_ptr: &AtomicUsize,
+        list_ptr: &AtomicU128,
         class: usize,
         header: *mut Header,
         cpu_id: usize,
@@ -680,7 +682,7 @@ impl SlabCache {
     #[inline(never)]
     unsafe fn clear_hint(
         &self,
-        ptr: &AtomicUsize,
+        ptr: &AtomicU128,
         inner: &SlabCacheInner,
         class: usize,
         cpu_id: usize,
@@ -807,19 +809,30 @@ mod tests {
     }
 
     #[test]
-    fn packed_transfer_tag_wraps_after_256_updates() {
-        let addr = 0x00ab_cdef_1234_5670usize;
+    fn packed_transfer_tag_increments_and_pointer_survives_full_64_bit_address() {
+        let addr = 0xffff_ab12_3456_7890usize;
         let ptr = addr as *mut Header;
-        let mut packed = 0;
+        let mut packed = 0u128;
 
-        for expected in 1..=u8::MAX {
+        for expected in 1..=10_000u128 {
             packed = Tagging.pack(ptr, packed);
-            assert_eq!((packed >> TAG_SHIFT) as u8, expected);
+            assert_eq!(packed >> TAG_SHIFT, expected);
             assert_eq!(Tagging.unpack_ptr(packed).0 as usize, addr);
         }
+    }
 
-        packed = Tagging.pack(ptr, packed);
-        assert_eq!(packed >> TAG_SHIFT, 0);
+    #[test]
+    fn packed_transfer_tag_does_not_wrap_within_u64_range() {
+        let addr = 0x00ab_cdef_1234_5670usize;
+        let ptr = addr as *mut Header;
+        let near_wrap = ((u64::MAX as u128) << TAG_SHIFT) | addr as u128;
+
+        let packed = Tagging.pack(ptr, near_wrap);
+        assert_eq!(
+            packed >> TAG_SHIFT,
+            0,
+            "u64 tag wraps exactly at u64::MAX + 1"
+        );
         assert_eq!(Tagging.unpack_ptr(packed).0 as usize, addr);
     }
 }

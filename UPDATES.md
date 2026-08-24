@@ -16,6 +16,12 @@ v0.2.1-alpha is an architectural cleanup pass over `0.2.0-alpha`, targeting weak
 - Fixed a real NULL-return bug found via a production crash report (`malloc` failing for a large, legitimate request): the original guard-check logic could permanently deny any request `>= GUARD_ALIGN`, since such a request can never avoid straddling a guard regardless of start address. `new_arena_locked` also now maps one extra page per arena so a snugly-sized request still leaves room for its own trailing guard, instead of a guard page eating the arena's last few KB and returning null for an otherwise-legitimate allocation.
 - Bundled into `semi-hardened` as `guard-pages-ignore-thp`, alongside the existing `extended-header` + `check-owned-on-alloc` + `zero-small-on-free`.
 
+### Transfer-cache ABA hardening
+
+- Widened the transfer cache's ABA protection from an 8-bit tag packed into the pointer's high byte to a full 64-bit generation counter, by switching `TransferCache::list`/`trimmed` from a tagged `AtomicUsize` to a 128-bit `AtomicU128` (via the `portable-atomic` crate, hardware `CMPXCHG16B`/`CASP`-backed on x86-64/arm64) holding the full 64-bit pointer in the low word and the tag in the high word. The old scheme needed only 256 same-slot push/pop cycles between a thread's stale load and its retried CAS to spuriously succeed; the new one needs `2^64`, which isn't reachable at any real hardware throughput.
+- As a side effect, this also removes an implicit LA57 canonical-address assumption the old high-byte tag depended on — the pointer field is no longer masked at all.
+- `Tagging::pack` extracts and increments the tag as a plain `u64` (`wrapping_add`) instead of doing wrapping arithmetic across the full `u128`, since a 128-bit add costs an add+adc pair for no benefit when only the high word ever changes; this restored throughput to parity with the old 8-bit-tag scheme in benchmarking.
+
 ### Debug/stats API parity
 
 - Added `alloc_calls`/`free_calls` counters (`debug-full-critic`) to `RSMallocExactStats`, closing a gap where the text-based exit report had allocation/free call counts but the structured Rust stats API didn't.
@@ -35,12 +41,19 @@ v0.2.1-alpha is an architectural cleanup pass over `0.2.0-alpha`, targeting weak
 - Replaced the manual overflow guard in `big_realloc`'s 2MB-aligned size estimate with a proper `Option`-returning `estimate_and_align_2mb`, built on new `checked_align_to`/`checked_align_of_page` helpers (see Alignment helpers below). `big_malloc`, `big_realloc`, and `big_free` all now propagate `None` instead of proceeding with a wrapped/undersized aligned size.
 - Replaced bare `.unwrap()` calls on recomputed big-allocation sizes (`big_free`, `big_realloc`) with `unwrap_or_else(|| RSMallocError::MemoryCorruption.log_and_abort(...))`, matching the rest of the big-allocation path's error handling instead of panicking on corrupted metadata.
 
+### Hardware-feature abstraction
+
+- Added `src/core_prim/hw.rs`, centralizing per-architecture hardware hints behind a single `HardwareFeature` type instead of raw `std::arch` calls scattered across call sites.
+- `HardwareFeature::prefetch` takes a `SafeToPrefetch<T>` pointer wrapper and a `PrefetchHint` (`PreferL1`/`PreferL2`/`PreferL3`).
+- Added `HardwareFeature::new_cycle_clock()` 
+
 ### Type-safety modernization
 
 - Replaced raw `u8` header flags with a `#[repr(u8)]` `Flags` enum (`NotAllocated`/`Allocated`/`Trimmed`/`BigAlloc`) with explicit discriminants.
 - Replaced the RSEQ push/pop asm result convention (raw `usize`/`*mut Header` with `-1`/`1` sentinels) with `RseqResult`, a `#[repr(transparent)]` struct wrapping `usize` with `is_success()`/`is_failed()`/`get()` accessors — sound for arbitrary pointer bit patterns (verified under Miri) and compiles to identical codegen to the raw sentinel version.
 - Introduced `TransferReturn` (`start`/`end`/`total`) as a named return type for transfer-cache pop paths (`try_pop`, `transfer_pop_batch`, `first_nonempty_cpu_in_range`, `slowest_numa_steal_path`, `pop_slow`), replacing an unnamed tuple return.
 - Replaced raw pointer arithmetic in `slab_cache.rs` with `SafePointer<T>`/`UnsafePointer<T>`, `#[repr(transparent)]` newtype wrappers (`core_prim::wrappers`) providing `get_offset`/`walk_header`/`get_actual_header`/`cast_as_ptr` — confirmed byte-identical `malloc` disassembly before and after.
+/ `CycleClock` (`debug-exact` only), wrapping `__rdtscp`-based timing that was previously called directly in `backend/trim.rs`'s per-block trim timing.
 
 ### Trim/transfer-cache correctness
 
@@ -209,12 +222,6 @@ Major themes are: fewer mapping/VMA slow paths, NUMA-aware locality, lower refil
 
 - Fixed `SpinLock::get_lock()` to use `Acquire` instead of `Relaxed`, closing a data race where `BuddyAllocator::regions_head()` could observe a partially-published region list after only polling the lock state.
 - Fixed `Once::call_once()`'s fast path to use `Acquire` instead of `Relaxed`, ensuring initialization side effects are properly visible once the fast path is taken.
-
-### Transfer-cache ABA hardening
-
-- Widened the transfer cache's ABA protection from an 8-bit tag packed into the pointer's high byte to a full 64-bit generation counter, by switching `TransferCache::list`/`trimmed` from a tagged `AtomicUsize` to a 128-bit `AtomicU128` (via the `portable-atomic` crate, hardware `CMPXCHG16B`/`CASP`-backed on x86-64/arm64) holding the full 64-bit pointer in the low word and the tag in the high word. The old scheme needed only 256 same-slot push/pop cycles between a thread's stale load and its retried CAS to spuriously succeed; the new one needs `2^64`, which isn't reachable at any real hardware throughput.
-- As a side effect, this also removes an implicit LA57 canonical-address assumption the old high-byte tag depended on — the pointer field is no longer masked at all.
-- `Tagging::pack` extracts and increments the tag as a plain `u64` (`wrapping_add`) instead of doing wrapping arithmetic across the full `u128`, since a 128-bit add costs an add+adc pair for no benefit when only the high word ever changes; this restored throughput to parity with the old 8-bit-tag scheme in benchmarking.
 
 ### Preload, C ABI, fork, and runtime configuration
 

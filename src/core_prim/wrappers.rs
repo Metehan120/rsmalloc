@@ -38,9 +38,9 @@ macro_rules! impl_conversions {
             }
         }
 
-        impl<T> Into<*mut T> for $type<T> {
-            fn into(self) -> *mut T {
-                self.0
+        impl<T> From<*const T> for $type<T> {
+            fn from(ptr: *const T) -> Self {
+                Self(ptr as *mut T)
             }
         }
     };

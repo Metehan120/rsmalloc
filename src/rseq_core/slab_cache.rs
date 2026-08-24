@@ -2,7 +2,6 @@
 use std::sync::atomic::Ordering::Relaxed;
 
 use std::{
-    arch::x86_64::{_MM_HINT_T0, _mm_prefetch},
     cell::UnsafeCell,
     hint::{likely, spin_loop},
     ptr::{addr_of, eq, null_mut, read_volatile},
@@ -19,7 +18,10 @@ use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 use crate::ABORTS;
 use crate::{
     Header, NCPU, RSMallocError,
-    core_prim::wrappers::{SafePointer, UnsafePointer},
+    core_prim::{
+        hw::{HardwareFeature, PrefetchHint, SafeToPrefetch},
+        wrappers::{SafePointer, UnsafePointer},
+    },
     internals::{
         binder::NumaBind,
         lock::SpinLock,
@@ -729,7 +731,7 @@ impl SlabCache {
             let mut count = 1usize;
             let mut next = (*tail).next;
             if !next.is_null() {
-                _mm_prefetch(next as *const i8, _MM_HINT_T0)
+                HardwareFeature.prefetch(SafeToPrefetch::new(next), PrefetchHint::PreferL1)
             };
 
             while count < batch_size && !next.is_null() {
@@ -748,7 +750,7 @@ impl SlabCache {
                 .is_ok()
             {
                 if !next.is_null() {
-                    _mm_prefetch(next as *const i8, _MM_HINT_T0);
+                    HardwareFeature.prefetch(SafeToPrefetch::new(next), PrefetchHint::PreferL1)
                 } else {
                     self.clear_hint(normal_ptr, inner, class, cpu_id);
                 }

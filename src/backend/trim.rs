@@ -1,5 +1,3 @@
-#[cfg(feature = "debug-exact")]
-use std::arch::x86_64::__rdtscp;
 use std::{
     ffi::c_void,
     mem::forget,
@@ -15,6 +13,8 @@ use rustix::{
     system::sysinfo,
 };
 
+#[cfg(feature = "debug-exact")]
+use crate::core_prim::hw::HardwareFeature;
 use crate::{
     AVERAGE_BLOCK_TIMES, CURRENT_STAMP, DISABLE_TRIM_THREAD, Flags, GLOBAL_TRIM_LOCK, Header, NCPU,
     big_allocations::buddy::BUDDY_BACKEND,
@@ -261,9 +261,7 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
                 let mut did_trim = false;
                 if requested_size == 0 || total_trimmed < requested_size {
                     #[cfg(feature = "debug-exact")]
-                    let mut aux = 0;
-                    #[cfg(feature = "debug-exact")]
-                    let start_of = __rdtscp(&mut aux);
+                    let mut start_of = HardwareFeature::new_cycle_clock();
 
                     let is_ok = release_memory(trim_list, SIZE_CLASSES[class]);
                     if is_ok {
@@ -275,9 +273,7 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
                     }
 
                     #[cfg(feature = "debug-exact")]
-                    let current = __rdtscp(&mut aux);
-                    #[cfg(feature = "debug-exact")]
-                    let elapsed = current - start_of;
+                    let elapsed = start_of.elapsed();
 
                     #[cfg(feature = "debug-exact")]
                     TOTAL_TRIMMED_TIME.fetch_add(elapsed as usize, Relaxed);

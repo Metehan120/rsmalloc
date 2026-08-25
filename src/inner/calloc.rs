@@ -5,7 +5,7 @@ use crate::inner::libc_int::set_nomem;
 use crate::{
     Flags, Header, RSMallocError,
     core_prim::wrappers::UnsafePointer,
-    inner::alloc::rs_alloc,
+    inner::alloc::rs_alloc_no_flag,
     internals::rbtree::BIG_META_MAP,
     utility::{SIZE_CLASSES, match_size_class},
 };
@@ -59,7 +59,7 @@ unsafe fn calc_and_get(size: Layout, nmem: usize) -> Option<(UnsafePointer<Heade
 
     let effective_size = total_size.max(1);
 
-    let ptr = rs_alloc(effective_size, false);
+    let ptr = rs_alloc_no_flag(effective_size, false);
     if unlikely(ptr.is_null()) {
         return None;
     }
@@ -82,13 +82,14 @@ pub unsafe fn rs_calloc(size: usize, zero_size: usize) -> UnsafePointer<Header> 
         None => return UnsafePointer::NULL,
     };
 
-    let header = ptr.get_actual_header();
+    let mut header = ptr.get_actual_header().apply_safe();
 
     match match_size_class(effective_size) {
         Some(class) => {
             let actual_size = SIZE_CLASSES[class];
 
             calloc_zero!(header, ptr, actual_size, effective_size);
+            header.flags = Flags::Allocated;
 
             ptr
         }

@@ -19,7 +19,7 @@ cache-scratch1 sys   00.86 10740 0.86 0.00 0 322
 cache-scratchN sys   00.15 10744 1.80 0.00 0 374
 glibc-simple sys   01.63 10804 1.63 0.00 0 258
 glibc-thread sys   1.295 12992 23.83 0.01 0 383
-rocksdb     sys   03.25 107628 2.87 0.66 0 956
+rocksdb     sys   03.28 106944 2.90 0.66 0 982
 
 rsmalloc alpha-2 (THP handled by kernel like most of the allocators, expected higher RSS):
 cfrac       sys   03.22 10488 3.21 0.00 0 265

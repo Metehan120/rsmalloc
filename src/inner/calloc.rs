@@ -26,15 +26,6 @@ macro_rules! calloc_zero {
     ($header:expr, $ptr:expr, $actual_size:expr, $effective_size:expr) => {
         let flags = unsafe { (*$header.as_ptr()).flags };
 
-        #[cfg(not(feature = "lazy-page-trim"))]
-        if flags == Flags::Allocated || flags == Flags::BigAlloc {
-            zero(
-                $ptr.cast_as_ptr() as *mut u8,
-                $actual_size.min($effective_size),
-            )
-        }
-
-        #[cfg(feature = "lazy-page-trim")]
         if flags == Flags::Allocated || flags == Flags::Trimmed || flags == Flags::BigAlloc {
             zero(
                 $ptr.cast_as_ptr() as *mut u8,

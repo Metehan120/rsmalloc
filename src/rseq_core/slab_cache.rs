@@ -671,7 +671,7 @@ impl SlabCache {
         cpu_id: usize,
     ) {
         self.clear_class_hint(inner, class, cpu_id);
-        // Trimmed list is
+        // Trimmed list is oppurnatistic, no need to scan second time
         if !Tagging
             .untag_ptr(ptr.load(Ordering::Acquire))
             .current_header

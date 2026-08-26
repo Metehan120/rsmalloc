@@ -30,6 +30,7 @@ use crate::{
     },
     record_mmap_call,
     rseq_core::{
+        aba::Tagging,
         bitmap::{cpu_bit_clear, cpu_bit_set, cpu_is_empty, cpu_try_marking},
         pending_queue::PENDING_QUEUE,
         rseq_asm::RseqCore,
@@ -391,27 +392,6 @@ impl GenericCache for SlabCache {
     }
 }
 
-const TAG_SHIFT: u32 = 64;
-const PTR_MASK: u128 = u64::MAX as u128;
-
-pub struct Tagging;
-
-impl Tagging {
-    #[inline(always)]
-    pub fn pack(&self, ptr: *mut Header, old_tag: u128) -> u128 {
-        // this shift should be eliminated at compile time
-        let tag = (old_tag >> TAG_SHIFT) as u64;
-        let tag = tag.wrapping_add(1);
-
-        ((ptr as usize as u128) & PTR_MASK) | ((tag as u128) << TAG_SHIFT)
-    }
-
-    #[inline(always)]
-    pub fn unpack_ptr(&self, word: u128) -> (*mut Header, u128) {
-        ((word & PTR_MASK) as usize as *mut Header, word)
-    }
-}
-
 pub struct TransferReturn {
     pub start: *mut Header,
     pub end: *mut Header,
@@ -591,20 +571,20 @@ impl SlabCache {
 
         loop {
             let old = list_ptr.load(Ordering::Relaxed);
-            let (old_head, tag) = Tagging.unpack_ptr(old);
+            let pack = Tagging.untag_ptr(old);
 
-            (*tail).next = old_head;
+            (*tail).next = pack.current_header;
 
             if list_ptr
                 .compare_exchange(
                     old,
-                    Tagging.pack(start, tag),
+                    Tagging.tag_ptr(start, pack.old_packed),
                     Ordering::Release,
                     Ordering::Relaxed,
                 )
                 .is_ok()
             {
-                if old_head.is_null() {
+                if pack.current_header.is_null() {
                     self.mark_class_nonempty(inner, class, cpu_id);
                 }
                 return;
@@ -657,19 +637,19 @@ impl SlabCache {
 
         loop {
             let old = list_ptr.load(Ordering::Relaxed);
-            let (old_head, tag) = Tagging.unpack_ptr(old);
+            let pack = Tagging.untag_ptr(old);
 
-            (*header).next = old_head;
+            (*header).next = pack.current_header;
             if list_ptr
                 .compare_exchange(
                     old,
-                    Tagging.pack(header, tag),
+                    Tagging.tag_ptr(header, pack.old_packed),
                     Ordering::Release,
                     Ordering::Relaxed,
                 )
                 .is_ok()
             {
-                if old_head.is_null() {
+                if pack.current_header.is_null() {
                     self.mark_class_nonempty(inner, class, cpu_id);
                 }
                 return;
@@ -691,7 +671,12 @@ impl SlabCache {
         cpu_id: usize,
     ) {
         self.clear_class_hint(inner, class, cpu_id);
-        if !Tagging.unpack_ptr(ptr.load(Ordering::Acquire)).0.is_null() {
+        // Trimmed list is
+        if !Tagging
+            .untag_ptr(ptr.load(Ordering::Acquire))
+            .current_header
+            .is_null()
+        {
             self.mark_class_nonempty(inner, class, cpu_id);
         }
     }
@@ -716,9 +701,9 @@ impl SlabCache {
             list.trim_lock.spin_until_unlock();
 
             let old = list_ptr.load(Ordering::Acquire);
-            let (head, tag) = Tagging.unpack_ptr(old);
+            let pack = Tagging.untag_ptr(old);
 
-            if head.is_null() {
+            if pack.current_header.is_null() {
                 if eq(list_ptr, normal_ptr) {
                     list_ptr = &trimmed_ptr;
                     continue;
@@ -727,13 +712,9 @@ impl SlabCache {
                 return None;
             }
 
-            let mut tail = head;
+            let mut tail = pack.current_header;
             let mut count = 1usize;
             let mut next = (*tail).next;
-            if !next.is_null() {
-                HardwareFeature.prefetch(SafeToPrefetch::new(next), PrefetchHint::PreferL1)
-            };
-
             while count < batch_size && !next.is_null() {
                 tail = next;
                 next = (*tail).next;
@@ -743,7 +724,7 @@ impl SlabCache {
             if list_ptr
                 .compare_exchange(
                     old,
-                    Tagging.pack(next, tag),
+                    Tagging.tag_ptr(next, pack.old_packed),
                     Ordering::Acquire,
                     Ordering::Relaxed,
                 )
@@ -755,7 +736,7 @@ impl SlabCache {
                     self.clear_hint(normal_ptr, inner, class, cpu_id);
                 }
                 return Some(TransferReturn {
-                    start: head,
+                    start: pack.current_header,
                     end: tail,
                     total: count,
                 });
@@ -775,6 +756,8 @@ pub static SLAB_CACHE: SlabCache = SlabCache::new();
 #[cfg(not(feature = "extended-header"))]
 mod tests {
     use std::hint::black_box;
+
+    use crate::rseq_core::aba::TAG_SHIFT;
 
     use super::*;
 
@@ -804,8 +787,8 @@ mod tests {
     fn packed_transfer_pointer_preserves_low_address_bits() {
         let addr = 0x00ab_cdef_1234_5670usize;
         let ptr = addr as *mut Header;
-        let packed = Tagging.pack(ptr, 0);
-        let (unpacked, _) = Tagging.unpack_ptr(packed);
+        let packed = Tagging.tag_ptr(ptr, 0);
+        let unpacked = Tagging.untag_ptr(packed).current_header;
 
         assert_eq!(unpacked as usize, addr);
         assert_eq!(packed >> TAG_SHIFT, 1);
@@ -818,9 +801,9 @@ mod tests {
         let mut packed = 0u128;
 
         for expected in 1..=10_000u128 {
-            packed = Tagging.pack(ptr, packed);
+            packed = Tagging.tag_ptr(ptr, packed);
             assert_eq!(packed >> TAG_SHIFT, expected);
-            assert_eq!(Tagging.unpack_ptr(packed).0 as usize, addr);
+            assert_eq!(Tagging.untag_ptr(packed).current_header as usize, addr);
         }
     }
 
@@ -830,12 +813,12 @@ mod tests {
         let ptr = addr as *mut Header;
         let near_wrap = ((u64::MAX as u128) << TAG_SHIFT) | addr as u128;
 
-        let packed = Tagging.pack(ptr, near_wrap);
+        let packed = Tagging.tag_ptr(ptr, near_wrap);
         assert_eq!(
             packed >> TAG_SHIFT,
             0,
             "u64 tag wraps exactly at u64::MAX + 1"
         );
-        assert_eq!(Tagging.unpack_ptr(packed).0 as usize, addr);
+        assert_eq!(Tagging.untag_ptr(packed).current_header as usize, addr);
     }
 }

@@ -21,7 +21,7 @@ use crate::{
     core_prim::predictor::TRIM_SMOOTHING,
     global_vals::{TOTAL_CACHED_VA, TRIM_THRESHOLD},
     internals::lock::LockGuard,
-    rseq_core::slab_cache::{SLAB_CACHE, Tagging},
+    rseq_core::{aba::Tagging, slab_cache::SLAB_CACHE},
     traits::Lock,
     utility::{ITERATIONS, NUM_SIZE_CLASSES, SIZE_CLASSES, get_size_4096_class},
 };
@@ -171,19 +171,19 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
             let output = {
                 let mut list = main_list.list.load(Acquire);
                 loop {
-                    let (unpacked, tag) = Tagging.unpack_ptr(list);
+                    let pack = Tagging.untag_ptr(list);
 
-                    if unpacked.is_null() {
+                    if pack.current_header.is_null() {
                         break null_mut();
                     }
 
                     match main_list.list.compare_exchange(
                         list,
-                        Tagging.pack(null_mut(), tag),
+                        Tagging.tag_ptr(null_mut(), pack.old_packed),
                         Acquire,
                         Relaxed,
                     ) {
-                        Ok(_) => break unpacked,
+                        Ok(_) => break pack.current_header,
                         Err(new) => list = new,
                     }
                 }
@@ -251,7 +251,6 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
             if total_push > 0 {
                 SLAB_CACHE.transfer_push_batch(class, push_list, push_list_start, cpu, inner);
             }
-
             main_list.trim_lock.unlock();
 
             while !trim_list.is_null() {

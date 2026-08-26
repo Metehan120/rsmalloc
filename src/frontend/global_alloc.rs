@@ -390,10 +390,7 @@ impl RSMallocConfig {
         max_refill_retries: 3,
         predictor_settings: RefillPredictorSettings::DEFAULT,
         foreign_pointer: ForeignPointerSettings::DEFAULT,
-        trim_thread: TrimThreadSettings {
-            background_worker: TrimThread::Disabled,
-            threshold: Bytes::TRIM_DEFAULT,
-        },
+        trim_thread: TrimThreadSettings::DEFAULT,
         relief: ReliefSettings::DEFAULT,
         max_per_buddy_cache: PerCacheLimit::Default,
         magic_safety: MagicSafety::MagicRandomization,
@@ -887,10 +884,10 @@ impl RSMalloc {
             REFILL_UNDER_PREDICTS, REFILLS_BY_CLASS, START_TIME, TOTAL_CACHED_VA, TOTAL_MMAP_BYTES,
             TOTAL_MMAP_CALLS, TOTAL_REFILL_CALLS,
             backend::page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR, TOTAL_LIVED, TOTAL_REMOVED},
+            backend::trim::{DISABLE_BUDDY, TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA},
             big_allocations::buddy::{BIG_BUDDY_MIN_ORDER, BUDDY_BACKEND, BUDDY_TOTAL_CACHED_VA},
             internals::radix_tree::{CHUNK_SIZE, RADIX},
             rseq_core::slab_cache::SLAB_CACHE,
-            backend::trim::{DISABLE_BUDDY, TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA},
             utility::{NUM_SIZE_CLASSES, SIZE_CLASSES},
         };
         use std::sync::atomic::Ordering::{self, Relaxed};

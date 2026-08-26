@@ -626,11 +626,11 @@ impl BuddyAllocator {
                     report.free_bytes = report.free_bytes.saturating_add(block_size);
 
                     match (*curr).trim_state {
-                        BUDDY_TRIM_NOT_ALLOCATED => {
+                        Flags::NotAllocated => {
                             report.never_allocated_blocks += 1;
                             report.never_allocated_by_order[index] += 1;
                         }
-                        BUDDY_TRIM_TRIMMED => {
+                        Flags::Trimmed => {
                             report.trimmed_blocks += 1;
                             report.trimmed_by_order[index] += 1;
                         }

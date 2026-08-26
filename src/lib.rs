@@ -83,6 +83,8 @@ pub use frontend::global_alloc::RSMallocStats;
 
 #[cfg(not(feature = "preload"))]
 pub use frontend::global_alloc::*;
+#[cfg(not(feature = "preload"))]
+pub use frontend::global_alloc2 as v2;
 use rsmalloc_macro::assert_sizes;
 
 #[repr(u8)]

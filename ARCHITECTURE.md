@@ -1,8 +1,8 @@
 # RSMalloc Architecture
 
-This document is a working architecture draft for `rsmalloc` `0.2.0-alpha`. It describes the allocator as it exists today, not as a final stable design. Some pieces are intentionally experimental and may change before a production-ready release.
+This document is a working architecture draft for `rsmalloc` `0.2.1-alpha`. It describes the allocator as it exists today, not as a final stable design. Some pieces are intentionally experimental and may change before a production-ready release.
 
-`0.2.0-alpha` is a full allocator-architecture overhaul relative to the `main` branch's earlier `0.1.0-alpha` design. The release reworks the RSEQ slab cache, transfer-cache balancing, bulk-refill metadata ownership, NUMA placement, buddy backend, trimming/relief paths, preload ABI behavior, benchmark suite, and public Rust configuration surface.
+The `0.2.x-alpha` line is a full allocator-architecture overhaul relative to the earlier `0.1.0-alpha` design. The current `0.2.1-alpha` pass also hardens transfer-cache ABA protection, simplifies the slab page backend to bump-only arenas, makes its newer locks fork-safe, and reorganizes public-facing modules under `frontend/`.
 
 ## Design Goal
 
@@ -66,11 +66,11 @@ Main source areas:
 
 | Area | Role |
 | --- | --- |
-| `src/abi` | C ABI entry points for `LD_PRELOAD` builds. |
-| `src/global_alloc.rs` | Rust `GlobalAlloc` integration, Rust-facing configuration, capabilities, stats, and direct helper methods. |
+| `src/frontend/abi` | C ABI entry points for `LD_PRELOAD` builds. |
+| `src/frontend/global_alloc.rs` | Rust `GlobalAlloc` integration, Rust-facing configuration, capabilities, stats, and direct helper methods. |
 | `src/inner` | Shared allocation operations: alloc, free, realloc, calloc, alignment, fallback/free handling. |
 | `src/rseq_core` | `SLAB_CACHE` layout, transfer caches, nonempty transfer hints, inline assembly critical sections, bulk refill metadata, pending queue, RSEQ TLS access. |
-| `src/backend` | Slab page backend arenas used by bulk refill metadata allocation. |
+| `src/backend` | Slab page-backend arenas and trim implementation. |
 | `src/big_allocations` | Big allocation path and NUMA-aware `BUDDY_BACKEND`, including cached-region reuse, trimming, and relief integration. |
 | `src/internals` | `RADIX` ownership map, `BIG_META_MAP`, NUMA parsing/binding helpers, locks, once primitives, env parsing. |
 | `src/core_prim` | Bootstrap, fork handling, adaptive-batching & EMA-smoothing state, pointer wrappers. |
@@ -110,7 +110,7 @@ Bootstrap initializes:
 7. Fork handlers for preload/fallback state.
 8. Randomized magic values and aligned-allocation tag, unless randomization is explicitly disabled.
 
-In non-preload Rust mode, this is driven through `RSMalloc::init()` from `global_alloc.rs`. In preload mode, C ABI entry points bootstrap on first use.
+In non-preload Rust mode, this is driven through `RSMalloc::init()` from `frontend/global_alloc.rs`. In preload mode, C ABI entry points bootstrap on first use.
 
 ## Allocation Path
 
@@ -164,7 +164,7 @@ flowchart TD
     PENDING_HIT -- "yes" --> INIT
     PENDING_HIT -- "no" --> SIZE["compute page-rounded metadata span"]
     SIZE --> PAGE_INIT["PAGE_ALLOCATOR.init(numa ranges)"]
-    PAGE_INIT --> PAGE_ALLOC["PAGE_ALLOCATOR.allocate: bump, bitmap, or new arena"]
+    PAGE_INIT --> PAGE_ALLOC["PAGE_ALLOCATOR.alloc: current bump arena, another live arena, or new arena"]
     PAGE_ALLOC --> PAGE_OK{"span allocated?"}
     PAGE_OK -- "no" --> BULK_ERR["bulk_fill returns OutOfMemory"]
     PAGE_OK -- "yes" --> ARENA_ADV{"new arena advice feature?"}
@@ -212,7 +212,7 @@ flowchart TD
     BIG_NODE --> BUDDY_ELIG{"buddy enabled and size <= 64 MiB?"}
     BUDDY_ELIG -- "yes" --> BUDDY_ALLOC["BUDDY_BACKEND.alloc(local node first)"]
     BUDDY_ALLOC --> BUDDY_HIT{"buddy hit?"}
-    BUDDY_HIT -- "yes" --> BUDDY_FLAG["set zero/trim/reuse flag from buddy state"]
+    BUDDY_HIT -- "yes" --> BUDDY_FLAG["set BIG_ALLOC reuse flag"]
     BUDDY_HIT -- "no" --> DIRECT
     BUDDY_ELIG -- "no" --> DIRECT["direct mmap"]
     DIRECT --> MMAP_OK{"mmap ok?"}
@@ -245,7 +245,7 @@ Important details:
 
 ## Slab Cache Layout
 
-`SLAB_CACHE` owns an mmap-backed array of per-CPU cache state, one per configured CPU plus one extra spare slot. Current `0.2.0-alpha` treats working per-thread RSEQ state as required; invalid or unregistered RSEQ CPU IDs are not silently redirected through an allocation fallback path.
+`SLAB_CACHE` owns an mmap-backed array of per-CPU cache state, one per configured CPU plus one extra spare slot. Current `0.2.1-alpha` treats working per-thread RSEQ state as required; invalid or unregistered RSEQ CPU IDs are not silently redirected through an allocation fallback path.
 
 ```rust
 #[repr(C, align(4096))]
@@ -278,14 +278,17 @@ Current layout:
 
 ```rust
 pub struct TransferCache {
-    pub list: AtomicUsize,
-    pub trimmed: AtomicUsize,
+    pub list: AtomicU128,
+    pub trimmed: AtomicU128,
+    pub trim_lock: SpinLock<()>,
 }
 ```
 
 The normal transfer list is preferred. The `trimmed` list is checked only after the normal list is empty, so the common normal-transfer hit does not touch trimmed state. Trimmed blocks are cold/opportunistic reuse: local pops can recover them, while remote victim stealing is allowed to miss trimmed-only CPUs until a later push refreshes the approximate class hint.
 
-The transfer lists use ABA-tagged pointer words. They are still fallback/pressure paths for tiny/small hot allocations, but medium classes intentionally use transfer-cache scanning before refill. Victim scans are NUMA-aware: local CPU transfer cache is tried first, then CPUs in the same node range, then remote node ranges when NUMA is active.
+Each transfer-list head is one 128-bit atomic word: the complete 64-bit pointer occupies the low word and a 64-bit generation counter occupies the high word. Every successful head update increments the generation, so a stale CAS cannot succeed unless that counter wraps after `2^64` updates to the same CPU/class/list slot. This replaces the old 8-bit high-pointer tag, removes its 56-bit-address assumption, and makes the formerly reachable 256-update ABA wrap impractical.
+
+The transfer lists are still fallback/pressure paths for tiny/small hot allocations, but medium classes intentionally use transfer-cache scanning before refill. Victim scans are NUMA-aware: local CPU transfer cache is tried first, then CPUs in the same node range, then remote node ranges when NUMA is active. The per-slot `trim_lock` serializes a trim detach-and-repush pass with batch pops; transfer pops wait for an active trim pass before attempting their CAS.
 
 Batch victim stealing is guided by a per-class nonempty bitmap. Each bitmap word tracks up to 64 CPUs for one size class. Transfer pushes set the hint only when the push observes an empty-to-nonempty transition. Transfer pops clear the hint when they observe empty transfer lists, then cheaply recheck the normal list to avoid the most important stale false-negative race on hot blocks. These bits are relaxed hints only; the ABA-tagged transfer list remains the source of correctness.
 
@@ -313,19 +316,19 @@ Blocks are initialized lazily in batches. `bulk_fill()` writes headers only for 
 
 ### Slab Page Backend
 
-The slab page backend serves fresh bulk-fill metadata spans from larger NUMA-preferred arenas instead of issuing a direct mapping for every refill span. It is a hybrid allocator: it tries cheap bump allocation from the current node arena first, then scans arena bitmaps for reusable free page runs, then maps a new arena if needed. This reduces `mmap` call count, VMA churn, and scattered refill mappings while giving the allocator a central place to manage slab backing memory.
+The slab page backend serves fresh bulk-fill metadata spans from larger NUMA-preferred arenas instead of issuing a direct mapping for every refill span. It is a bump allocator: it first tries the current arena for the selected NUMA node, then searches that node's other live arenas for remaining tail space, and finally maps a new arena. This reduces `mmap` call count, VMA churn, and scattered refill mappings while giving the allocator a central place to manage slab backing memory.
 
 The arena data-size minimum defaults to 256 MiB. Rust `GlobalAlloc` configurations provide it through `RSMallocConfig::arena_min_size`; preload initialization reads `RS_ARENA_SIZE` as a byte count. Arena creation uses the larger of this minimum and the current refill request, then aligns the result to the page size. The mapping reserves virtual address space; physical RSS remains driven primarily by pages touched during lazy refill initialization and by the selected THP policy.
 
-Each page-backend arena stores its `PageArena` metadata and bitmap at the front of the mapping, then exposes a page-aligned data region for refill spans:
+Each page-backend arena stores its `PageArena` metadata at the front of the mapping, then exposes a page-aligned data region for refill spans:
 
 ```text
-[ PageArena ][ bitmap ][ padding ][ page-aligned refill span memory ... ]
+[ PageArena ][ padding ][ page-aligned refill span memory ... ]
 ```
 
-The bitmap is protected by the per-node page-backend lock and is intentionally not atomic. Bump allocations mark bitmap bits too, so bitmap reuse, in-place growth, and future release logic share one page-run ownership model. The current `release(...)` API is scaffolding for future span reclaim; it is not part of normal slab free yet because safe reclaim needs span live-count policy.
+`PageArena` tracks `base`, `end`, and `current`, plus links in a per-node doubly linked arena list. There is no free-run bitmap and no `PAGE_ALLOCATOR.release(...)` path. When an arena's unused tail falls below `MIN_REFILL_BYTES`, it is unlinked in O(1); for sufficiently large configured arenas, its metadata page is also advised away. Existing refill-span ownership remains tracked independently through `RADIX` and cached-VA accounting.
 
-`try_grow_inplace(...)` can extend a page-backed refill span when the following pages in the same arena are still free. `small_realloc` uses this only for single-block slab refill spans; normal shrink keeps the existing block, and failed growth falls back to allocate/copy/free.
+`try_grow_inplace(...)` can extend a page-backed refill span only when that span is still the arena's most recent bump (`ptr + old_size == arena.current`) and the enlarged span fits in the remaining tail. `small_realloc` uses this only for single-block slab refill spans; normal shrink keeps the existing block, and failed growth falls back to allocate/copy/free.
 
 `RADIX` ownership and cached-VA accounting are still applied to the allocated metadata span rather than treating every byte of arena slack as live allocation ownership. This means the backend may reserve larger virtual arenas while physical RSS remains driven by lazily initialized/touched refill pages.
 
@@ -648,10 +651,10 @@ Small-allocation trim scans the transfer caches for size classes equal to or gre
 
 For each CPU and eligible size class:
 
-1. The class transfer list is detached under that transfer list's trim lock.
-2. Detached blocks are inspected outside the transfer lock.
-3. Blocks older than the current average lifetime and marked trim-eligible are passed to `release_memory(...)`.
-4. Blocks are pushed back into the target transfer cache in small batches.
+1. The per-slot `trim_lock` is acquired and the normal transfer list is detached with its 128-bit tagged CAS.
+2. Detached blocks are classified while batch pops remain excluded; ordinary blocks are periodically repushed in batches of `ITERATIONS[class] + 1`, briefly releasing the lock between batches.
+3. After the normal-list repush is complete, the lock is released and blocks older than the current average lifetime and marked trim-eligible are passed to `release_memory(...)`.
+4. Successfully advised blocks are pushed onto the cold `trimmed` list; the rest return to the normal transfer list.
 
 `release_memory(...)` only advises the page-aligned interior of a block:
 
@@ -737,7 +740,7 @@ Important architecture-affecting features:
 | `lazy-page-trim` | Uses lazy page-free advice for trim paths instead of eager `MADV_DONTNEED`-style advice. |
 | `print-cpu-on-double-free` | Adds current RSEQ CPU id to fatal double-free/corruption reports when available. |
 
-Semi-hardening and debug feature tiers are intentionally explicit in alpha-2. `check-owned-on-alloc` is useful when chasing freelist/metadata corruption, while `debug-print` is useful for coarse allocator state. `debug-exact`, `transfer-debug*`, and `debug-predictor-exact` can perturb timing and should be treated as diagnostic modes rather than benchmark-neutral instrumentation.
+Semi-hardening and debug feature tiers are intentionally explicit in the current alpha line. `check-owned-on-alloc` is useful when chasing freelist/metadata corruption, while `debug-print` is useful for coarse allocator state. `debug-exact`, `transfer-debug*`, and `debug-predictor-exact` can perturb timing and should be treated as diagnostic modes rather than benchmark-neutral instrumentation.
 
 ## Known Architectural Tradeoffs
 

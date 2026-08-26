@@ -10,13 +10,13 @@ An RSEQ-based memory allocator for Rust, focused on low-overhead concurrent allo
 
 ## Alpha 2.1: Rust API transition
 
-Alpha 2.1 introduces a redesigned Rust global-allocator API under `rsmalloc::v2`.
+Alpha 2.1 will introduce a redesigned Rust global allocator API under `rsmalloc::v2`.
 
 - During Alpha 2.1, the existing root API remains usable but is deprecated.
 - In Beta 1, the v2 API becomes the primary root API and the legacy API is removed. The `rsmalloc::v2` path remains temporarily available but deprecated.
 - In Beta 2, the deprecated `rsmalloc::v2` compatibility path is removed.
 
-The preload C ABI is unaffected by this transition.
+The preload C ABI will be unaffected by this transition.
 
 ## Quick Start
 

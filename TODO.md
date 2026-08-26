@@ -1,3 +1,5 @@
+### Next Release target after alpha-2.1: Beta
+
 ### TODO list for adding lacking features:
 1. Add buddy backend for Big Allocation path - Done
 2. Check safety of AI written lines or rewrite entirely - only hashmap left
@@ -12,3 +14,6 @@
 11. Lock-free buddy if possible / For stable release
 12. Add special benchmark to stress test every subsystem at once - Done
 13. Audit entire allocator before stable release
+
+14. Beta-2: arm64 support
+15. Beta: replace buddy for the 4-64MB big-allocation band with a size-classed (non-power-of-two, no split/merge) allocator layered on PageAllocator-like arena machinery - fixes buddy's merge-losing-zero-state problem for calloc and reduces power-of-two rounding waste

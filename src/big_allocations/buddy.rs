@@ -16,7 +16,8 @@ use rustix::{
 #[cfg(feature = "debug")]
 use crate::backend::trim::{TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA};
 use crate::{
-    BUDDY_AVERAGE_BLOCK_TIMES, BUDDY_INIT, CURRENT_STAMP, GLOBAL_TRIM_LOCK, add_buddy_cached_va,
+    BUDDY_AVERAGE_BLOCK_TIMES, BUDDY_INIT, CURRENT_STAMP, Flags, GLOBAL_TRIM_LOCK,
+    add_buddy_cached_va,
     core_prim::predictor::EMA_ALPHA,
     global_vals::{TOTAL_CACHED_VA, TRIM_THRESHOLD},
     inner::alloc::MAX_REFILL_RETRIES,
@@ -42,21 +43,17 @@ const NUM_ORDERS: usize = BUDDY_NUM_ORDERS;
 const PAGE_SIZE: usize = 4096;
 const BIG_BUDDY_MAX_BLOCK_SIZE: usize = 1 << BIG_BUDDY_MAX_ORDER;
 
-pub const BUDDY_TRIM_NOT_ALLOCATED: u8 = 0;
-const BUDDY_TRIM_ALLOCATED: u8 = 1;
-pub const BUDDY_TRIM_TRIMMED: u8 = 2;
-
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct FreeBlock {
     next: *mut FreeBlock,
     prev: *mut FreeBlock,
     life_time: u32,
-    trim_state: u8,
+    trim_state: Flags,
 }
 
 impl FreeBlock {
-    unsafe fn new(addr: usize, life_time: u32, trim_state: u8) -> *mut FreeBlock {
+    unsafe fn new(addr: usize, life_time: u32, trim_state: Flags) -> *mut FreeBlock {
         let block = addr as *mut FreeBlock;
         core::ptr::write(
             block,
@@ -330,7 +327,7 @@ impl BuddyAllocator {
         let current_lifetime = CURRENT_STAMP.load(Ordering::Relaxed);
         let mut offset = 0;
         while offset < normalized_size {
-            let block = FreeBlock::new(base + offset, current_lifetime, BUDDY_TRIM_NOT_ALLOCATED);
+            let block = FreeBlock::new(base + offset, current_lifetime, Flags::NotAllocated);
             Self::push_free_block(region_ptr, BIG_BUDDY_MAX_ORDER, block);
             offset += BIG_BUDDY_MAX_BLOCK_SIZE;
         }
@@ -366,7 +363,7 @@ impl BuddyAllocator {
     unsafe fn alloc_from_region(
         region: *mut BuddyRegion,
         requested_order: usize,
-    ) -> Option<(usize, u8)> {
+    ) -> Option<(usize, Flags)> {
         if requested_order > (*region).order {
             return None;
         }
@@ -439,7 +436,7 @@ impl BuddyAllocator {
         &self,
         requested_order: usize,
         node_id: u16,
-    ) -> Option<(usize, usize, u8, usize)> {
+    ) -> Option<(usize, usize, Flags, usize)> {
         let mut region = self.regions_head();
 
         while !region.is_null() {
@@ -462,7 +459,7 @@ impl BuddyAllocator {
         size: usize,
         node_id: u16,
         numa_inner: (&NumaTopology, &SlabCacheInner),
-    ) -> Option<(usize, usize, u8, usize)> {
+    ) -> Option<(usize, usize, Flags, usize)> {
         let requested_order = Self::order_for_size(size).max(BIG_BUDDY_MIN_ORDER);
         if requested_order > BIG_BUDDY_MAX_ORDER {
             return None;
@@ -539,7 +536,7 @@ impl BuddyAllocator {
         let block = FreeBlock::new(
             current,
             CURRENT_STAMP.load(Ordering::Relaxed),
-            BUDDY_TRIM_ALLOCATED,
+            Flags::Allocated,
         );
         let order_index = Self::order_index(current_order);
         let _guard = (*region).order_locks[order_index].lock();
@@ -716,8 +713,8 @@ impl BuddyAllocator {
 
                     while !curr.is_null() {
                         let next_block = (*curr).next;
-                        if (*curr).trim_state == BUDDY_TRIM_NOT_ALLOCATED
-                            || (*curr).trim_state == BUDDY_TRIM_TRIMMED
+                        if (*curr).trim_state == Flags::NotAllocated
+                            || (*curr).trim_state == Flags::Trimmed
                         {
                             curr = next_block;
                             continue;
@@ -742,7 +739,7 @@ impl BuddyAllocator {
                             if madvise(trim_addr as *mut c_void, trim_size, advice).is_ok() {
                                 #[cfg(feature = "debug")]
                                 TOTAL_TRIMMED_VA.fetch_add(block_size, Ordering::Relaxed);
-                                (*curr).trim_state = BUDDY_TRIM_TRIMMED;
+                                (*curr).trim_state = Flags::Trimmed;
                                 trimmed = trimmed.saturating_add(trim_size);
                             }
 
@@ -857,7 +854,7 @@ mod tests {
         region.free_bitmap_words[index] = 1;
 
         unsafe {
-            FreeBlock::new(block_ptr as usize, 7, BUDDY_TRIM_ALLOCATED);
+            FreeBlock::new(block_ptr as usize, 7, Flags::Trimmed);
             BuddyAllocator::push_free_block(&raw mut region, BIG_BUDDY_MIN_ORDER, block_ptr);
             assert_eq!(region.free[index], block_ptr);
             assert!(BuddyAllocator::block_is_free(

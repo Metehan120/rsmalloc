@@ -45,7 +45,7 @@ v0.2.1-alpha is an architectural cleanup pass over `0.2.0-alpha`, targeting weak
 
 - Added `src/core_prim/hw.rs`, centralizing per-architecture hardware hints behind a single `HardwareFeature` type instead of raw `std::arch` calls scattered across call sites.
 - `HardwareFeature::prefetch` takes a `SafeToPrefetch<T>` pointer wrapper and a `PrefetchHint` (`PreferL1`/`PreferL2`/`PreferL3`).
-- Added `HardwareFeature::new_cycle_clock()` 
+- Added `HardwareFeature::new_cycle_clock()` / `CycleClock` (`debug-exact` only), wrapping `__rdtscp`-based timing that was previously called directly in `backend/trim.rs`'s per-block trim timing.
 
 ### Type-safety modernization
 
@@ -53,7 +53,6 @@ v0.2.1-alpha is an architectural cleanup pass over `0.2.0-alpha`, targeting weak
 - Replaced the RSEQ push/pop asm result convention (raw `usize`/`*mut Header` with `-1`/`1` sentinels) with `RseqResult`, a `#[repr(transparent)]` struct wrapping `usize` with `is_success()`/`is_failed()`/`get()` accessors — sound for arbitrary pointer bit patterns (verified under Miri) and compiles to identical codegen to the raw sentinel version.
 - Introduced `TransferReturn` (`start`/`end`/`total`) as a named return type for transfer-cache pop paths (`try_pop`, `transfer_pop_batch`, `first_nonempty_cpu_in_range`, `slowest_numa_steal_path`, `pop_slow`), replacing an unnamed tuple return.
 - Replaced raw pointer arithmetic in `slab_cache.rs` with `SafePointer<T>`/`UnsafePointer<T>`, `#[repr(transparent)]` newtype wrappers (`core_prim::wrappers`) providing `get_offset`/`walk_header`/`get_actual_header`/`cast_as_ptr` — confirmed byte-identical `malloc` disassembly before and after.
-/ `CycleClock` (`debug-exact` only), wrapping `__rdtscp`-based timing that was previously called directly in `backend/trim.rs`'s per-block trim timing.
 
 ### Trim/transfer-cache correctness
 
@@ -61,6 +60,11 @@ v0.2.1-alpha is an architectural cleanup pass over `0.2.0-alpha`, targeting weak
 - Fixed `trim_small`'s average-life update being incorrectly gated behind `total_push > 0` — it now correctly runs whenever `total > 0`, independent of whether any nodes were push-eligible that pass.
 - Added a `TOTAL_CACHED_VA < TRIM_THRESHOLD` early-out to `trim_small` and `BuddyBackend::trim_inner`, skipping the trim-lock acquisition and full region/class walk entirely when there's nothing meaningfully cached to reclaim. `trim_inner`'s guard is bypassed when `force_trim` is set, so `relief_paths()`'s memory-pressure-driven emergency trim (which reacts to system-wide pressure, not this allocator's own cached-VA size) still runs regardless of the threshold.
 - Replaced `trim_small`'s fixed `TRIM_REPUSH_BATCH` (16) periodic-flush threshold with `ITERATIONS[class] + 1`, tying how long `trim_lock` is held before releasing it mid-pass to the same per-class refill-batch granularity already used on the allocation side, instead of one constant applied uniformly across every size class.
+
+### Calloc zero-skip correctness
+
+- `rs_alloc` unconditionally stamped `Flags::Allocated` onto a popped slab header before `rs_calloc` ever got to inspect it, so the existing `calloc_zero!` skip-zero fast path (gated on `Flags::NotAllocated`, i.e. memory never handed to a caller before and therefore still kernel-zeroed) was permanently dead — every calloc on a slab-class size always saw `Allocated` and always paid the explicit zero, even on virgin memory. Split `rs_alloc` into `rs_alloc_inner(size, aligned, is_calloc)`; `rs_calloc` now goes through a new `rs_alloc_no_flag` entry point that skips the stamp so the original flag value survives long enough for `calloc_zero!` to read it, then restamps `Flags::Allocated` itself right after the zero check. `malloc`/`realloc`/`memalign` are unaffected (still go through the original `rs_alloc` wrapper, which stamps unconditionally as before).
+- Buddy-cached big allocations aren't covered by this fix (`big_malloc` still discards the buddy block's `trim_state` and always stamps `Flags::BigAlloc`) — left as-is since almost nothing calls `calloc` in the buddy-cache's 4-64MB band in practice, so it wasn't worth the added complexity for this release (see `TODO.md`).
 
 ### Alignment helpers
 
@@ -75,6 +79,11 @@ v0.2.1-alpha is an architectural cleanup pass over `0.2.0-alpha`, targeting weak
 
 - Removed a now-redundant bounds check in `Radix::get` (`radix_tree.rs`) — `chunk_idx` is already guaranteed in range by its callers.
 - Raised `BUDDY_AVERAGE_BLOCK_TIMES`'s initial seed (10 -> 100, in 100ms ticks) so buddy trim eligibility doesn't start from an unrealistically short assumed block lifetime at cold start.
+
+### Fuzzing
+
+- Added a `fuzz/` crate (`cargo-fuzz`/`libfuzzer-sys`, `arbitrary`-derived op sequences) with two targets: `alloc_ops` (single-threaded alloc/dealloc/realloc/alloc_zeroed sequences against tracked live allocations, checking pattern-filled content survives untouched and calloc'd memory reads back zero) and `concurrent_alloc_ops` (the same op space driven across up to 12 threads via a shared `rayon` pool, exercising the transfer cache's cross-CPU stealing and NUMA paths under concurrent load).
+- Removed `tests/loom_transfer.rs` in favor of the above — direct fuzzing over the real transfer-cache/RSEQ paths in place of a `loom`-modeled subset of the same logic.
 
 ### Benchmarks
 

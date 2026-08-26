@@ -8,6 +8,16 @@ An RSEQ-based memory allocator for Rust, focused on low-overhead concurrent allo
 
 > **Known issue:** Linux kernel `7.0.10` appears to trigger `SIGBUS` in some workloads when using rsmalloc. If you hit unexplained `SIGBUS` crashes, try a different kernel version before assuming allocator corruption.
 
+## Alpha 2.1: Rust API transition
+
+Alpha 2.1 introduces a redesigned Rust global-allocator API under `rsmalloc::v2`.
+
+- During Alpha 2.1, the existing root API remains usable but is deprecated.
+- In Beta 1, the v2 API becomes the primary root API and the legacy API is removed. The `rsmalloc::v2` path remains temporarily available but deprecated.
+- In Beta 2, the deprecated `rsmalloc::v2` compatibility path is removed.
+
+The preload C ABI is unaffected by this transition.
+
 ## Quick Start
 
 Requires nightly Rust (`rustc 1.96.0`+) and a libc with RSEQ TLS support (glibc 2.35+ or equivalent) — rsmalloc relies on libc-registered `__rseq_size`/`__rseq_offset` rather than registering RSEQ itself, so an older libc will fail to bootstrap.

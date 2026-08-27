@@ -15,14 +15,13 @@ use crate::inner::alloc::{MAX_REFILL_RETRIES, rs_alloc, usable_size};
 use crate::inner::calloc::{rs_calloc, zero};
 use crate::inner::free::rs_free;
 use crate::inner::realloc::rs_realloc;
-use crate::internals::once::Once;
 use crate::internals::radix_tree::{RADIX, RadixTree};
 use crate::rseq_core::rseq_offsets::__rseq_offset;
 use crate::rseq_core::rseq_offsets::__rseq_size;
 use crate::rseq_core::slab_cache::SLAB_CACHE;
 use crate::{
     ALIGN_TAG, BUDDY_ATTEMPT_HUGE, BUDDY_MAX_CACHE, DISABLE_TRIM_THREAD, FOREIGN_POINTER_ABORT,
-    Header, RS_DISABLE_THP, RSMallocError, TRIM_THRESHOLD, get_clock,
+    GLOBAL_ALLOC_ONCE, Header, RS_DISABLE_THP, RSMallocError, TRIM_THRESHOLD, get_clock,
 };
 
 // ------------------
@@ -468,8 +467,6 @@ impl RSMallocConfig {
     }
 }
 
-static ONCE: Once = Once::new();
-
 /// rsmalloc Rust global allocator.
 ///
 /// Use this type with Rust's `#[global_allocator]` attribute:
@@ -562,7 +559,7 @@ impl RSMalloc {
 
     #[inline(always)]
     unsafe fn init(&self) {
-        ONCE.call_once(|| {
+        GLOBAL_ALLOC_ONCE.call_once(|| {
             init(self);
         });
 

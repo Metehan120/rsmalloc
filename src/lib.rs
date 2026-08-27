@@ -82,11 +82,19 @@ pub use frontend::global_alloc::RSMallocExactStats;
 pub use frontend::global_alloc::RSMallocStats;
 
 #[cfg(not(feature = "preload"))]
+static GLOBAL_ALLOC_ONCE: Once = Once::new();
+
+#[cfg(not(feature = "preload"))]
 pub use frontend::global_alloc::*;
+
 #[cfg(not(feature = "preload"))]
 pub use frontend::global_alloc2 as v2;
+pub use traits::global_alloc::*;
 
 use rsmalloc_macro::assert_sizes;
+
+#[cfg(not(feature = "preload"))]
+use crate::internals::once::Once;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq)]

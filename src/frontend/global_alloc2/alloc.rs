@@ -1,4 +1,7 @@
-use std::alloc::{GlobalAlloc, Layout};
+use std::{
+    alloc::{GlobalAlloc, Layout},
+    ptr::NonNull,
+};
 
 use portable_atomic::hint::likely;
 
@@ -7,7 +10,7 @@ use crate::{
     core_prim::wrappers::UnsafePointer,
     inner::{
         align::memalign_inner,
-        alloc::rs_alloc,
+        alloc::{rs_alloc, usable_size},
         calloc::{rs_calloc, zero},
         free::rs_free,
         realloc::rs_realloc,
@@ -17,6 +20,10 @@ use crate::{
 pub struct RSMalloc;
 
 impl RSMalloc {
+    pub const fn new() -> RSMalloc {
+        RSMalloc
+    }
+
     #[inline(never)]
     unsafe fn memalign_non_inline(align: usize, size: usize) -> UnsafePointer<Header> {
         memalign_inner(align, size)
@@ -93,5 +100,13 @@ unsafe impl GlobalAlloc for RSMalloc {
             }
             ptr
         }
+    }
+}
+
+impl RSMalloc {
+    pub fn usable_size(pointer: NonNull<u8>) -> Option<usize> {
+        let usable = unsafe { usable_size(UnsafePointer::new(pointer.as_ptr()).cast()) };
+
+        (usable != 0).then_some(usable)
     }
 }

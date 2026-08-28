@@ -8,7 +8,7 @@ use crate::{
     GLOBAL_TRIM_LOCK, RSMallocError,
     backend::page_allocator::PAGE_ALLOCATOR,
     big_allocations::buddy::BUDDY_BACKEND,
-    inner::{fallback::fallback_reinit_on_fork, libc_int::pthread_atfork},
+    inner::{fallback::fallback_reinit_on_fork, preload::libc_int::pthread_atfork},
     internals::{lock::SpinLockGuard, rbtree::BIG_MAP},
     rseq_core::{pending_queue::PENDING_QUEUE, rseq_offsets::__rseq_size},
 };

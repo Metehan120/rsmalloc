@@ -50,7 +50,7 @@ pub unsafe fn memalign_inner(alignment: usize, size: usize) -> UnsafePointer<Hea
     if !adjusted_alignment.is_power_of_two() {
         #[cfg(feature = "preload")]
         {
-            use crate::inner::libc_int::__errno_location;
+            use crate::inner::preload::libc_int::__errno_location;
             *__errno_location() = Errno::INVAL.raw_os_error();
         }
         return UnsafePointer::NULL;
@@ -63,7 +63,7 @@ pub unsafe fn memalign_inner(alignment: usize, size: usize) -> UnsafePointer<Hea
     } else {
         #[cfg(feature = "preload")]
         {
-            use crate::inner::libc_int::__errno_location;
+            use crate::inner::preload::libc_int::__errno_location;
             *__errno_location() = success;
         }
 

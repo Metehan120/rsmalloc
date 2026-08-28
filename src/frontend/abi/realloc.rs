@@ -5,7 +5,7 @@ use crate::{
     core_prim::wrappers::UnsafePointer,
     inner::{
         calloc::{rs_calloc, zero},
-        libc_int::{__errno_location, NOMEM},
+        preload::libc_int::{__errno_location, NOMEM},
         realloc::rs_realloc,
     },
 };

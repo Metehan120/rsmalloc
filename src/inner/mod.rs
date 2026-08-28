@@ -5,5 +5,5 @@ pub mod calloc;
 pub mod fallback;
 pub mod free;
 #[cfg(feature = "preload")]
-pub mod libc_int;
+pub mod preload;
 pub mod realloc;

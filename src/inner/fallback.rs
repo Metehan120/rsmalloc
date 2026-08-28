@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    inner::libc_int::{RTLD_NEXT, dlsym},
+    inner::preload::libc_int::{RTLD_NEXT, dlsym},
     internals::oncelock::OnceLock,
 };
 

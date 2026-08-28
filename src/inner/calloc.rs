@@ -1,7 +1,7 @@
 use std::{alloc::Layout, hint::unlikely, os::raw::c_void};
 
 #[cfg(feature = "preload")]
-use crate::inner::libc_int::set_nomem;
+use crate::inner::preload::libc_int::set_nomem;
 use crate::{
     Flags, Header, RSMallocError,
     core_prim::wrappers::UnsafePointer,

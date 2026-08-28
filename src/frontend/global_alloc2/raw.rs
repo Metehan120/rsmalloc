@@ -8,9 +8,20 @@ use crate::{
         align::memalign_inner, alloc::rs_alloc, calloc::rs_calloc, free::rs_free,
         realloc::rs_realloc,
     },
-    traits::global_alloc::RawInterface,
-    v2::alloc::RSMalloc,
+    v2::alloc::{RSMalloc, RSMallocCoreAPI},
 };
+
+pub trait RawInterface {
+    type TrimIn;
+    type TrimOut;
+
+    unsafe fn rs_alloc(&self, size: usize) -> *mut u8;
+    unsafe fn rs_free(&self, ptr: *mut u8);
+    unsafe fn rs_realloc(&self, old: *mut u8, new_size: usize) -> *mut u8;
+    unsafe fn rs_aligned(&self, alignment: usize, size: usize) -> *mut u8;
+    unsafe fn rs_zeroed(&self, size: usize) -> *mut u8;
+    unsafe fn trim(&self, trim_size: Self::TrimIn) -> Self::TrimOut;
+}
 
 pub struct RSMallocRaw {
     global: &'static RSMalloc,

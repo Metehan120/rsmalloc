@@ -23,6 +23,8 @@ portable-atomic = "1"
 [features]
 default = []
 preload = []
+allocator-api = []
+
 print-cpu-on-double-free = []
 check-owned-on-alloc = []
 
@@ -64,6 +66,8 @@ guard-pages-thp = []
 # supports up to 32kb size classes
 guard-pages-ignore-thp = ["guard-pages-thp"]
 semi-hardened = ["extended-header", "check-owned-on-alloc", "zero-small-on-free", "guard-pages-ignore-thp"]
+
+expose-security-critical-settings = []
 
 [[bench]]
 name = "book_speed"

@@ -1,4 +1,4 @@
-### Next Release target after alpha-2.1: Beta
+### Next Release target after alpha-3: Beta
 
 ### TODO list for adding lacking features:
 1. Add buddy backend for Big Allocation path - Done

@@ -7,7 +7,7 @@ use rustix::io::Errno;
 
 use crate::inner::{
     align::{memalign_inner, posix_align_inner},
-    libc_int::__errno_location,
+    preload::libc_int::__errno_location,
 };
 
 #[unsafe(no_mangle)]

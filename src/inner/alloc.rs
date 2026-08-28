@@ -4,7 +4,7 @@ use std::sync::atomic::AtomicUsize;
 use std::{hint::likely, ptr::null_mut};
 
 #[cfg(feature = "preload")]
-use crate::inner::libc_int::set_nomem;
+use crate::inner::preload::libc_int::set_nomem;
 use crate::{
     BIG_MAGIC, Header, MAGIC, RSMallocError,
     big_allocations::big_allocation::big_malloc,
@@ -241,7 +241,7 @@ pub static RS_ALLOC_CALLS_DEBUG: AtomicUsize = AtomicUsize::new(0);
 #[inline(always)]
 unsafe fn rs_alloc_inner(size: usize, aligned: bool, is_calloc: bool) -> UnsafePointer<Header> {
     #[cfg(feature = "preload")]
-    ONCE.call_once(|| crate::core_prim::bootstrap::bootstrap());
+    ONCE.call_once(|| crate::inner::preload::bootstrap::bootstrap());
 
     #[cfg(feature = "debug-full-critic")]
     RS_ALLOC_CALLS_DEBUG.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

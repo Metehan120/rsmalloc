@@ -190,10 +190,13 @@ unsafe impl AllocationAPI for RSMalloc {
         new_size: Self::Size,
     ) -> Result<NonNull<u8>, AllocationError> {
         self.init();
-        let pointer = rs_realloc(
-            UnsafePointer::new(pointer.as_ptr()).cast(),
-            new_size.bytes(),
-        );
+
+        let size = new_size.bytes();
+        if size == 0 {
+            return Err(AllocationError::NotSupported);
+        }
+
+        let pointer = rs_realloc(UnsafePointer::new(pointer.as_ptr()).cast(), size);
 
         NonNull::new(pointer.cast_as_ptr()).ok_or(AllocationError::OutOfMemory)
     }

@@ -39,10 +39,6 @@
 
 #![feature(likely_unlikely)]
 #![feature(thread_local)]
-#![cfg_attr(
-    any(all(not(feature = "preload"), feature = "allocator-api"), doc),
-    feature(allocator_api)
-)]
 #![allow(binary_asm_labels, unsafe_op_in_unsafe_fn, static_mut_refs)]
 
 use std::{fmt::Debug, sync::atomic::Ordering};

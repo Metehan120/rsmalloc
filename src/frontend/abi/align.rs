@@ -21,7 +21,7 @@ pub unsafe extern "C" fn posix_memalign(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn memalign(alignment: usize, size: usize) -> *mut c_void {
-    memalign_inner(alignment, size).cast_as_ptr()
+    memalign_inner(alignment, size, false).cast_as_ptr()
 }
 
 static MEMALIGN: unsafe extern "C" fn(alignment: usize, size: usize) -> *mut c_void = memalign;

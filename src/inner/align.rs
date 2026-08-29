@@ -43,11 +43,15 @@ pub unsafe fn posix_align_inner(memptr: *mut *mut c_void, alignment: usize, size
 }
 
 #[inline(always)]
-pub unsafe fn memalign_inner(alignment: usize, size: usize) -> UnsafePointer<Header> {
+pub unsafe fn memalign_inner(
+    alignment: usize,
+    size: usize,
+    skip_checks: bool,
+) -> UnsafePointer<Header> {
     let mut ptr: *mut c_void = null_mut();
     let adjusted_alignment = alignment.max(size_of::<*mut c_void>());
 
-    if !adjusted_alignment.is_power_of_two() {
+    if !adjusted_alignment.is_power_of_two() && !skip_checks {
         #[cfg(feature = "preload")]
         {
             use crate::inner::preload::libc_int::__errno_location;

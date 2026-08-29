@@ -23,7 +23,6 @@ portable-atomic = "1"
 [features]
 default = []
 preload = []
-allocator-api = []
 
 print-cpu-on-double-free = []
 check-owned-on-alloc = []

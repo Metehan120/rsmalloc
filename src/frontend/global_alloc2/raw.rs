@@ -68,7 +68,7 @@ impl RawInterface for RSMallocRaw {
 
     unsafe fn rs_aligned(&self, alignment: usize, size: usize) -> *mut u8 {
         self.global.manual_init();
-        memalign_inner(alignment, size).cast_as_ptr()
+        memalign_inner(alignment, size, false).cast_as_ptr()
     }
 
     unsafe fn rs_realloc(&self, old: *mut u8, new_size: usize) -> *mut u8 {

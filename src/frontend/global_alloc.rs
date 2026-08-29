@@ -575,7 +575,7 @@ impl RSMalloc {
 
 #[inline(never)]
 unsafe fn memalign_non_inline(align: usize, size: usize) -> UnsafePointer<Header> {
-    memalign_inner(align, size)
+    memalign_inner(align, size, false)
 }
 
 unsafe impl GlobalAlloc for RSMalloc {
@@ -784,7 +784,7 @@ impl RSMalloc {
     #[inline]
     pub unsafe fn rs_memalign(&self, alignment: usize, size: usize) -> *mut u8 {
         self.init();
-        memalign_inner(alignment, size).cast_as_ptr()
+        memalign_inner(alignment, size, false).cast_as_ptr()
     }
 
     /// Reallocates memory through rsmalloc's Rust-facing realloc-style API.

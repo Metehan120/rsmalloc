@@ -4,16 +4,9 @@ use std::{
     ptr::NonNull,
 };
 
-#[cfg(any(feature = "allocator-api", doc))]
-use std::{
-    alloc::{AllocError, Allocator},
-    ptr::copy_nonoverlapping,
-};
-
 use crate::{
     GLOBAL_ALLOC_ONCE, Header,
-    backend::bootstrap::main_bootstrap,
-    backend::trim::trim_small,
+    backend::{bootstrap::main_bootstrap, trim::trim_small},
     big_allocations::buddy::BUDDY_BACKEND,
     core_prim::wrappers::UnsafePointer,
     inner::{
@@ -23,7 +16,10 @@ use crate::{
         free::rs_free,
         realloc::rs_realloc,
     },
-    v2::config::Config,
+    v2::{
+        allocation_api::{AllocationAPI, AllocationError, AllocationSize},
+        config::Config,
+    },
 };
 use portable_atomic::hint::likely;
 
@@ -68,7 +64,7 @@ impl RSMalloc {
 
     #[inline(never)]
     unsafe fn memalign_non_inline(align: usize, size: usize) -> UnsafePointer<Header> {
-        memalign_inner(align, size)
+        memalign_inner(align, size, false)
     }
 
     #[inline(never)]
@@ -151,130 +147,58 @@ unsafe impl GlobalAlloc for RSMalloc {
     }
 }
 
-#[cfg(any(feature = "allocator-api", doc))]
-unsafe impl Allocator for RSMalloc {
-    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, std::alloc::AllocError> {
-        unsafe { self.init() };
+unsafe impl AllocationAPI for RSMalloc {
+    type Size = AllocationSize;
 
-        let size = layout.size();
-        let allocated = if layout.align() <= 16 {
-            unsafe { rs_alloc(size, false) }
-        } else {
-            unsafe { Self::memalign_non_inline(layout.align(), size) }
-        };
+    fn allocate(&self, size: Self::Size) -> Result<NonNull<u8>, AllocationError> {
+        let pointer = unsafe { rs_alloc(size.bytes(), false) };
 
-        match NonNull::new(allocated.as_ptr() as *mut u8) {
-            Some(pointer) => Ok(NonNull::slice_from_raw_parts(pointer, size)),
-            None => Err(AllocError),
-        }
+        NonNull::new(pointer.cast_as_ptr()).ok_or(AllocationError::OutOfMemory)
     }
 
-    unsafe fn deallocate(&self, ptr: NonNull<u8>, _: Layout) {
-        self.init();
-        rs_free(UnsafePointer::new(ptr.as_ptr() as *mut Header));
+    fn allocate_zeroed(&self, size: Self::Size) -> Result<NonNull<u8>, AllocationError> {
+        let pointer = unsafe { rs_calloc(1, size.bytes()) };
+
+        NonNull::new(pointer.cast_as_ptr()).ok_or(AllocationError::OutOfMemory)
     }
 
-    fn allocate_zeroed(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        unsafe { self.init() };
-
-        let size = layout.size();
-        let allocated = if likely(layout.align() <= 16) {
-            unsafe { rs_calloc(1, size).cast_as_ptr() }
-        } else {
-            let ptr = unsafe { self.alloc_non_inline(layout) };
-            if !ptr.is_null() {
-                unsafe { zero(ptr, size) };
-            }
-            ptr
-        };
-
-        match NonNull::new(allocated) {
-            Some(pointer) => Ok(NonNull::slice_from_raw_parts(pointer, size)),
-            None => Err(AllocError),
-        }
-    }
-
-    unsafe fn grow(
+    fn allocate_aligned(
         &self,
-        ptr: NonNull<u8>,
-        old_layout: Layout,
-        new_layout: Layout,
-    ) -> Result<NonNull<[u8]>, AllocError> {
-        self.init();
-
-        if new_layout.size() < old_layout.size() {
-            return Err(AllocError);
+        size: Self::Size,
+        alignment: usize,
+    ) -> Result<NonNull<u8>, AllocationError> {
+        if !alignment.is_power_of_two() {
+            return Err(AllocationError::InvalidAlignment);
         }
 
-        if new_layout.align() > old_layout.align() {
-            let allocated = if new_layout.align() <= 16 {
-                rs_alloc(new_layout.size(), false)
-            } else {
-                Self::memalign_non_inline(new_layout.align(), new_layout.size())
-            };
+        let pointer = unsafe { memalign_inner(alignment, size.bytes(), true) };
 
-            let Some(new_ptr) = NonNull::new(allocated.as_ptr() as *mut u8) else {
-                return Err(AllocError);
-            };
+        NonNull::new(pointer.cast_as_ptr()).ok_or(AllocationError::OutOfMemory)
+    }
 
-            copy_nonoverlapping(ptr.as_ptr(), new_ptr.as_ptr(), old_layout.size());
-            rs_free(UnsafePointer::new(ptr.as_ptr() as *mut Header));
+    unsafe fn deallocate(&self, pointer: NonNull<u8>) {
+        rs_free(UnsafePointer::new(pointer.as_ptr()).cast());
+    }
 
-            return Ok(NonNull::slice_from_raw_parts(new_ptr, new_layout.size()));
-        }
-
-        if new_layout.size() == 0 {
-            return Ok(NonNull::slice_from_raw_parts(ptr, 0));
-        }
-
-        let allocated = rs_realloc(
-            UnsafePointer::new(ptr.as_ptr() as *mut Header),
-            new_layout.size(),
+    unsafe fn reallocate(
+        &self,
+        pointer: NonNull<u8>,
+        new_size: Self::Size,
+    ) -> Result<NonNull<u8>, AllocationError> {
+        let pointer = rs_realloc(
+            UnsafePointer::new(pointer.as_ptr()).cast(),
+            new_size.bytes(),
         );
 
-        match NonNull::new(allocated.as_ptr() as *mut u8) {
-            Some(pointer) => Ok(NonNull::slice_from_raw_parts(pointer, new_layout.size())),
-            None => Err(AllocError),
-        }
+        NonNull::new(pointer.cast_as_ptr()).ok_or(AllocationError::OutOfMemory)
     }
 
-    unsafe fn shrink(
-        &self,
-        ptr: NonNull<u8>,
-        old: Layout,
-        new: Layout,
-    ) -> Result<NonNull<[u8]>, AllocError> {
-        self.init();
-
-        if new.size() > old.size() {
-            return Err(AllocError);
+    unsafe fn usable_size(&self, pointer: NonNull<u8>) -> Result<usize, AllocationError> {
+        let size = usable_size(UnsafePointer::new(pointer.as_ptr()).cast());
+        if size != 0 {
+            return Ok(size);
         }
-
-        if (ptr.as_ptr() as usize) % new.align() == 0 {
-            return Ok(NonNull::slice_from_raw_parts(ptr, new.size()));
-        }
-
-        let allocated = if new.align() <= 16 {
-            rs_alloc(new.size(), false)
-        } else {
-            Self::memalign_non_inline(new.align(), new.size())
-        };
-
-        let Some(new_ptr) = NonNull::new(allocated.as_ptr() as *mut u8) else {
-            return Err(AllocError);
-        };
-
-        copy_nonoverlapping(ptr.as_ptr(), new_ptr.as_ptr(), new.size());
-        rs_free(UnsafePointer::new(ptr.as_ptr() as *mut Header));
-
-        Ok(NonNull::slice_from_raw_parts(new_ptr, new.size()))
-    }
-
-    fn by_ref(&self) -> &Self
-    where
-        Self: Sized,
-    {
-        self
+        Err(AllocationError::NotOwned)
     }
 }
 

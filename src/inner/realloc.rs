@@ -289,7 +289,7 @@ pub unsafe fn rs_realloc(ptr: UnsafePointer<Header>, new_size: usize) -> UnsafeP
                 return ptr;
             }
 
-            let new_ptr = memalign_inner(observed_alignment(ptr_addr), new_size);
+            let new_ptr = memalign_inner(observed_alignment(ptr_addr), new_size, false);
             if new_ptr.is_null() {
                 return UnsafePointer::NULL;
             }
@@ -475,7 +475,7 @@ mod tests {
             let new_size = 1024usize;
             let seed = 0x6Du8;
 
-            let p = memalign_inner(64, old_size);
+            let p = memalign_inner(64, old_size, false);
             assert!(!p.is_null());
             assert_eq!(p.cast_usize() % 64, 0);
             fill_pattern(&p, old_size, seed);
@@ -496,7 +496,7 @@ mod tests {
             let new_size = 96usize;
             let seed = 0x2Cu8;
 
-            let p = memalign_inner(128, old_size);
+            let p = memalign_inner(128, old_size, false);
             assert!(!p.is_null());
             assert_eq!(p.cast_usize() % 128, 0);
             fill_pattern(&p, new_size, seed);

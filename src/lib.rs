@@ -84,9 +84,9 @@ pub use frontend::global_alloc::RSMallocStats;
 #[cfg(not(feature = "preload"))]
 static GLOBAL_ALLOC_ONCE: Once = Once::new();
 
+#[allow(deprecated)]
 #[cfg(not(feature = "preload"))]
 pub use frontend::global_alloc::*;
-
 #[cfg(not(feature = "preload"))]
 pub use frontend::global_alloc2 as v2;
 

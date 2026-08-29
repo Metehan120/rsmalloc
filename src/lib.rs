@@ -4,10 +4,10 @@
 //!
 //! # Quick Start
 //!
-//! Use [`RSMalloc`] as the process-wide global allocator:
+//! Use [`v2::alloc::RSMalloc`] as the process-wide global allocator:
 //!
 //! ```rust
-//! use rsmalloc::RSMalloc;
+//! use rsmalloc::v2::alloc::RSMalloc;
 //!
 //! #[global_allocator]
 //! static GLOBAL: RSMalloc = RSMalloc::new_default();
@@ -16,20 +16,29 @@
 //! Configure it explicitly when the defaults are not enough:
 //!
 //! ```rust
-//! use rsmalloc::{
-//!     BuddyTHP, CacheLimit, ForeignPointerSettings, RefillPredictorSettings,
-//!     RSMalloc, RSMallocConfig, THP, THPSettings,
+//! use rsmalloc::v2::{
+//!     alloc::RSMalloc,
+//!     config::{
+//!         BuddyTHP, Config, PerCacheLimit, Percentage, ReliefSettings, ReliefState, THP,
+//!         THPSettings, Tuning,
+//!     },
 //! };
 //!
-//! const CONFIG: RSMallocConfig = RSMallocConfig::DEFAULT
-//!     .with_thp_settings(THPSettings::new(THP::Enable, BuddyTHP::Force))
-//!     .with_refill_predictor_settings(RefillPredictorSettings::new(16))
-//!     .with_max_refill_retries(4)
-//!     .with_max_per_buddy_cache(CacheLimit::Bytes(512 * 1024 * 1024))
-//!     .with_foreign_pointer(ForeignPointerSettings::DEFAULT);
+//! const CONFIG: Config = Config::new(
+//!     Tuning::DEFAULT
+//!         .with_thp(THPSettings::new(THP::Enabled, BuddyTHP::Force))
+//!         .with_refill_init_batch(16)
+//!         .with_max_refill_retries(4)
+//!         .with_max_per_buddy_cache(PerCacheLimit::Bytes(512 * 1024 * 1024))
+//!         .with_relief(ReliefSettings::new(
+//!             ReliefState::Enabled,
+//!             Percentage::new(85),
+//!             Percentage::new(80),
+//!         )),
+//! );
 //!
 //! #[global_allocator]
-//! static GLOBAL: RSMalloc = RSMalloc::new_with_config(CONFIG);
+//! static GLOBAL: RSMalloc = RSMalloc::new(CONFIG);
 //! ```
 //!
 //! rsmalloc also supports `LD_PRELOAD`-style use for C applications. See the

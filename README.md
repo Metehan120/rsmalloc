@@ -13,7 +13,7 @@ An RSEQ-based memory allocator for Rust, focused on low-overhead concurrent allo
 Requires nightly Rust (`rustc 1.96.0`+) and a libc with RSEQ TLS support (glibc 2.35+ or equivalent) — rsmalloc relies on libc-registered `__rseq_size`/`__rseq_offset` rather than registering RSEQ itself, so an older libc will fail to bootstrap.
 
 ```rust
-use rsmalloc::RSMalloc;
+use rsmalloc::v2::alloc::RSMalloc;
 
 #[global_allocator]
 static GLOBAL: RSMalloc = RSMalloc::new_default();
@@ -52,37 +52,63 @@ None of this has been evaluated at production scale or across a wide range of wo
 
 ## Configuration
 
-`RSMallocConfig` groups tuning into a few areas: THP behavior, adaptive refill-predictor settings, magic-value safety, foreign-pointer handling, buddy-cache sizing, slab arena sizing, memory-pressure relief, and refill retry limits.
+The v2 API separates ordinary performance and memory-retention tuning from security-critical settings. Build a `Tuning`, wrap it in `Config`, and pass that configuration to `RSMalloc::new`.
 
 ```rust
-use rsmalloc::{
-    BuddyTHP, ExperimentalFeatures, ForeignPointerSettings, PerCacheLimit, Percentage,
-    RefillPredictorSettings, ReliefSettings, ReliefState, RSMalloc, RSMallocConfig, THP,
-    THPSettings,
+use rsmalloc::v2::{
+    alloc::RSMalloc,
+    config::{
+        BuddyTHP, Config, PerCacheLimit, Percentage, ReliefSettings, ReliefState, THP,
+        THPSettings, Tuning,
+    },
 };
 
-const CONFIG: RSMallocConfig = RSMallocConfig::DEFAULT
-    .with_thp_settings(THPSettings::new(THP::Enabled, BuddyTHP::Force))
-    .with_refill_predictor_settings(RefillPredictorSettings::new(16))
-    .with_max_refill_retries(4)
-    .with_max_per_buddy_cache(PerCacheLimit::Bytes(512 * 1024 * 1024))
-    .with_relief_settings(ReliefSettings::new(
-        ReliefState::Enabled,
-        Percentage::new(85),
-        Percentage::new(80),
-    ))
-    .with_experimental_features(ExperimentalFeatures::DEFAULT)
-    .with_foreign_pointer(ForeignPointerSettings::DEFAULT);
+const CONFIG: Config = Config::new(
+    Tuning::DEFAULT
+        .with_thp(THPSettings::new(THP::Enabled, BuddyTHP::Force))
+        .with_refill_init_batch(16)
+        .with_max_refill_retries(4)
+        .with_max_per_buddy_cache(PerCacheLimit::Bytes(512 * 1024 * 1024))
+        .with_relief(ReliefSettings::new(
+            ReliefState::Enabled,
+            Percentage::new(85),
+            Percentage::new(80),
+        )),
+);
 
 #[global_allocator]
-static GLOBAL: RSMalloc = RSMalloc::new_with_config(CONFIG);
+static GLOBAL: RSMalloc = RSMalloc::new(CONFIG);
 ```
 
-Defaults: randomized magic values enabled, abort on foreign pointers, general THP enabled (buddy THP forcing off), default buddy cache limit, 256 MiB minimum slab arena, memory-pressure relief disabled, allocator-default refill predictor.
+Defaults: randomized magic values enabled, abort on foreign pointers, general THP enabled (buddy THP forcing off), a 64 MiB buddy per-cache target, a 256 MiB minimum slab arena, a 10 MiB background-trim threshold, memory-pressure relief disabled, and the allocator-default refill prediction.
 
-Weakening magic-value checks (for debugging/reproducible tests/security research) requires an explicit unsafe acknowledgement token — see `MagicSafety`/`MagicSafetyDisable` in the crate docs.
+Security-sensitive configuration is hidden unless the `expose-security-critical-settings` feature is enabled. Keeping fixed magic values additionally requires the explicit unsafe `MagicSafetyDisable::acknowledge_safety_risk()` token.
 
-`RSMalloc` also exposes direct helpers in non-preload builds — `rs_malloc`, `rs_calloc`, `rs_memalign`, `rs_realloc`, `rs_trim`, `rs_free`, `rs_usable_size` — for use only with pointers `RSMalloc` itself returned. `GLOBAL.get_capabilities()` reports version, THP state, and NUMA support without allocating.
+### Native allocation interface
+
+For allocator-specific use that does not depend on Rust's `GlobalAlloc` or unstable `Allocator` API, import `AllocationAPI` and construct byte-count requests with `AllocationSize`:
+
+```rust
+use std::mem::align_of;
+
+use rsmalloc::v2::{
+    alloc::RSMalloc,
+    allocation_api::{AllocationAPI, AllocationError, AllocationSize},
+};
+
+static ALLOCATOR: RSMalloc = RSMalloc::new_default();
+
+fn main() -> Result<(), AllocationError> {
+    let size = AllocationSize::array_bytes::<u64>(128)?;
+    let pointer = ALLOCATOR.allocate_aligned(size, align_of::<u64>())?;
+
+    // The allocation remains valid until it is deallocated or successfully reallocated.
+    unsafe { ALLOCATOR.deallocate(pointer) };
+    Ok(())
+}
+```
+
+`RSMalloc::raw()` exposes the lower-level malloc-style pointer interface through `v2::alloc::RawInterface`. Its operations are unsafe and are intended for callers that explicitly need raw-pointer semantics. Manual trimming and the safe `rs_usable_size` helper are available through `v2::alloc::RSMallocCoreAPI`.
 
 ### Runtime environment variables (preload builds)
 
@@ -106,6 +132,7 @@ Weakening magic-value checks (for debugging/reproducible tests/security research
 | Feature | Effect |
 |---|---|
 | `preload` | Builds the C ABI / `LD_PRELOAD` surface. |
+| `expose-security-critical-settings` | Exposes the v2 configuration knobs that can weaken magic randomization or foreign-pointer handling. |
 | `extended-header` | Wider per-allocation header metadata. |
 | `page-backend-no-huge-page` | No-huge-page advice for slab arenas — cuts RSS on THP-aggressive systems (e.g. CachyOS), costs TLB pressure. |
 | `page-backend-huge-page` | Huge-page advice for slab arenas (ignored if the above is also set). |

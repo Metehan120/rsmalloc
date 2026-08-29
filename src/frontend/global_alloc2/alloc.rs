@@ -151,12 +151,14 @@ unsafe impl AllocationAPI for RSMalloc {
     type Size = AllocationSize;
 
     fn allocate(&self, size: Self::Size) -> Result<NonNull<u8>, AllocationError> {
+        unsafe { self.init() };
         let pointer = unsafe { rs_alloc(size.bytes(), false) };
 
         NonNull::new(pointer.cast_as_ptr()).ok_or(AllocationError::OutOfMemory)
     }
 
     fn allocate_zeroed(&self, size: Self::Size) -> Result<NonNull<u8>, AllocationError> {
+        unsafe { self.init() };
         let pointer = unsafe { rs_calloc(1, size.bytes()) };
 
         NonNull::new(pointer.cast_as_ptr()).ok_or(AllocationError::OutOfMemory)
@@ -167,6 +169,7 @@ unsafe impl AllocationAPI for RSMalloc {
         size: Self::Size,
         alignment: usize,
     ) -> Result<NonNull<u8>, AllocationError> {
+        unsafe { self.init() };
         if !alignment.is_power_of_two() {
             return Err(AllocationError::InvalidAlignment);
         }
@@ -185,6 +188,7 @@ unsafe impl AllocationAPI for RSMalloc {
         pointer: NonNull<u8>,
         new_size: Self::Size,
     ) -> Result<NonNull<u8>, AllocationError> {
+        self.init();
         let pointer = rs_realloc(
             UnsafePointer::new(pointer.as_ptr()).cast(),
             new_size.bytes(),
@@ -194,6 +198,7 @@ unsafe impl AllocationAPI for RSMalloc {
     }
 
     unsafe fn usable_size(&self, pointer: NonNull<u8>) -> Result<usize, AllocationError> {
+        self.init();
         let size = usable_size(UnsafePointer::new(pointer.as_ptr()).cast());
         if size != 0 {
             return Ok(size);

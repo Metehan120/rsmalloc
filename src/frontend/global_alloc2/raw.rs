@@ -20,7 +20,7 @@ pub trait RawInterface {
     unsafe fn rs_realloc(&self, old: *mut u8, new_size: usize) -> *mut u8;
     unsafe fn rs_aligned(&self, alignment: usize, size: usize) -> *mut u8;
     unsafe fn rs_zeroed(&self, size: usize) -> *mut u8;
-    unsafe fn trim(&self, trim_size: Self::TrimIn) -> Self::TrimOut;
+    unsafe fn rs_trim(&self, trim_size: Self::TrimIn) -> Self::TrimOut;
 }
 
 pub struct RSMallocRaw {
@@ -82,7 +82,7 @@ impl RawInterface for RSMallocRaw {
     }
 
     #[inline(never)]
-    unsafe fn trim(&self, trim_size: Self::TrimIn) -> Self::TrimOut {
+    unsafe fn rs_trim(&self, trim_size: Self::TrimIn) -> Self::TrimOut {
         self.global.manual_init();
         match trim_size {
             AdvancedTrimSize::All => {

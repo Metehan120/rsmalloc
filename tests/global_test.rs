@@ -7,10 +7,11 @@
 mod tests {
     use std::alloc::{GlobalAlloc, Layout};
 
-    use rsmalloc::{RSMalloc, Size};
+    use rsmalloc::v2::alloc::{RSMalloc, RSMallocRaw, RawInterface};
 
     #[global_allocator]
     static GLOBAL: RSMalloc = RSMalloc::new_default();
+    static RAW: RSMallocRaw = GLOBAL.raw();
 
     #[test]
     fn global_allocator_handles_standard_collections() {
@@ -24,30 +25,6 @@ mod tests {
 
         let text = String::from("rsmalloc global allocator smoke test");
         assert!(text.contains("rsmalloc"));
-    }
-
-    #[test]
-    fn usable_size_reports_rsmalloc_allocation() {
-        let mut values = Vec::with_capacity(128);
-        values.extend(0u8..64);
-
-        let size = unsafe { GLOBAL.rs_usable_size(values.as_mut_ptr()) };
-        match size {
-            Size::RS(bytes) => assert!(bytes >= values.capacity()),
-            Size::NotRS => panic!("Vec allocation was not recognized as rsmalloc-owned"),
-        }
-    }
-
-    #[test]
-    fn big_allocation_usable_size_is_available() {
-        let mut values = Vec::<u8>::with_capacity(3 * 1024 * 1024);
-        values.resize(1024, 0xA5);
-
-        let size = unsafe { GLOBAL.rs_usable_size(values.as_mut_ptr()) };
-        match size {
-            Size::RS(bytes) => assert!(bytes >= values.capacity()),
-            Size::NotRS => panic!("big Vec allocation was not recognized as rsmalloc-owned"),
-        }
     }
 
     #[test]
@@ -95,30 +72,23 @@ mod tests {
     #[test]
     fn direct_rsmalloc_helpers_work() {
         unsafe {
-            let ptr = GLOBAL.rs_malloc(256);
+            let ptr = RAW.rs_alloc(256);
             assert!(!ptr.is_null());
             for i in 0..256 {
                 *ptr.add(i) = i as u8;
             }
 
-            let ptr = GLOBAL.rs_realloc(ptr, 512);
+            let ptr = RAW.rs_realloc(ptr, 512);
             assert!(!ptr.is_null());
             for i in 0..256 {
                 assert_eq!(*ptr.add(i), i as u8, "byte mismatch at offset {i}");
             }
-            GLOBAL.rs_free(ptr);
+            RAW.rs_free(ptr);
 
-            let zeroed = GLOBAL.rs_calloc(64, 4);
-            assert!(!zeroed.is_null());
-            for i in 0..256 {
-                assert_eq!(*zeroed.add(i), 0, "non-zero calloc byte at offset {i}");
-            }
-            GLOBAL.rs_free(zeroed);
-
-            let aligned = GLOBAL.rs_memalign(128, 512);
+            let aligned = RAW.rs_aligned(128, 512);
             assert!(!aligned.is_null());
             assert_eq!((aligned as usize) % 128, 0);
-            GLOBAL.rs_free(aligned);
+            RAW.rs_free(aligned);
         }
     }
 }

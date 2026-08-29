@@ -74,7 +74,7 @@ impl BootstrapConfig {
     }
 }
 
-#[inline(always)]
+#[inline(never)]
 pub unsafe fn main_bootstrap(config: BootstrapConfig) {
     if __rseq_size == 0 || __rseq_offset == 0 {
         RSMallocError::RSEQRegFailed.log_and_abort(

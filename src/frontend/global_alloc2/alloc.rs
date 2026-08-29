@@ -4,6 +4,7 @@ use std::{
     ptr::NonNull,
 };
 
+pub use crate::frontend::global_alloc2::{debug::*, raw::*};
 use crate::{
     GLOBAL_ALLOC_ONCE, Header,
     backend::{bootstrap::main_bootstrap, trim::trim_small},
@@ -28,7 +29,7 @@ pub trait RSMallocCoreAPI {
     type TrimOut;
 
     fn trim(&self, size: Self::TrimIn) -> Self::TrimOut;
-    fn usable_size(&self, pointer: NonNull<u8>) -> Option<usize>;
+    fn rs_usable_size(&self, pointer: NonNull<u8>) -> Option<usize>;
     fn manual_init(&self);
 }
 
@@ -225,7 +226,7 @@ impl RSMallocCoreAPI for RSMalloc {
     type TrimIn = SimpleTrimSize;
     type TrimOut = Option<usize>;
 
-    fn usable_size(&self, pointer: NonNull<u8>) -> Option<usize> {
+    fn rs_usable_size(&self, pointer: NonNull<u8>) -> Option<usize> {
         unsafe { self.init() };
 
         let usable = unsafe { usable_size(UnsafePointer::new(pointer.as_ptr()).cast()) };

@@ -2,15 +2,13 @@
 
 use std::{
     alloc::{GlobalAlloc, Layout},
-    collections::BTreeSet,
-    sync::{Arc, Barrier, Mutex, OnceLock},
+    sync::{Arc, Barrier, OnceLock},
 };
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 use rsmalloc::v2::alloc::RSMalloc;
 
-#[global_allocator]
 static ALLOC: RSMalloc = RSMalloc::new_default();
 
 const MAX_THREADS: usize = 12;
@@ -50,32 +48,21 @@ struct Live {
 
 unsafe impl Send for Live {}
 
-#[derive(Default)]
-struct LivePointers(Mutex<BTreeSet<usize>>);
+struct LaneOutput(OnceLock<Vec<Live>>);
 
-impl LivePointers {
-    fn insert(&self, ptr: *mut u8) {
-        assert!(
-            self.0.lock().unwrap().insert(ptr as usize),
-            "allocator returned a pointer that is already live"
-        );
+unsafe impl Sync for LaneOutput {}
+
+impl LaneOutput {
+    const fn new() -> Self {
+        Self(OnceLock::new())
     }
 
-    fn replace(&self, old_ptr: *mut u8, new_ptr: *mut u8) {
-        let mut pointers = self.0.lock().unwrap();
-        assert!(pointers.remove(&(old_ptr as usize)));
-        assert!(
-            pointers.insert(new_ptr as usize),
-            "realloc returned a pointer owned by another live allocation"
-        );
+    fn publish(&self, live: Vec<Live>) {
+        assert!(self.0.set(live).is_ok());
     }
 
-    fn remove(&self, ptr: *mut u8) {
-        assert!(self.0.lock().unwrap().remove(&(ptr as usize)));
-    }
-
-    fn is_empty(&self) -> bool {
-        self.0.lock().unwrap().is_empty()
+    fn into_live(self) -> Vec<Live> {
+        self.0.into_inner().unwrap()
     }
 }
 
@@ -102,13 +89,7 @@ fn next_pattern(thread_id: usize, sequence: &mut u8) -> u8 {
         .max(1)
 }
 
-fn run_lane(
-    thread_id: usize,
-    thread_count: usize,
-    ops: &[Op],
-    barrier: &Barrier,
-    pointers: &LivePointers,
-) -> Vec<Live> {
+fn run_lane(thread_id: usize, thread_count: usize, ops: &[Op], barrier: &Barrier) -> Vec<Live> {
     let mut live = Vec::new();
     let mut sequence = 0;
 
@@ -126,7 +107,6 @@ fn run_lane(
                 }
 
                 assert_eq!(ptr as usize % align, 0, "misaligned allocation");
-                pointers.insert(ptr);
 
                 let pattern = next_pattern(thread_id, &mut sequence);
                 unsafe { fill(ptr, size, pattern) };
@@ -151,7 +131,6 @@ fn run_lane(
                     slice.iter().all(|&byte| byte == 0),
                     "alloc_zeroed returned non-zeroed memory"
                 );
-                pointers.insert(ptr);
 
                 let pattern = next_pattern(thread_id, &mut sequence);
                 unsafe { fill(ptr, size, pattern) };
@@ -168,7 +147,6 @@ fn run_lane(
 
                 let entry = live.swap_remove(index as usize % live.len());
                 unsafe { check(&entry) };
-                pointers.remove(entry.ptr);
                 unsafe { ALLOC.dealloc(entry.ptr, entry.layout) };
             }
             Op::Realloc { index, new_size } => {
@@ -195,7 +173,6 @@ fn run_lane(
                     prefix.iter().all(|&byte| byte == old_pattern),
                     "realloc failed to preserve prefix"
                 );
-                pointers.replace(old_ptr, new_ptr);
 
                 let pattern = next_pattern(thread_id, &mut sequence);
                 unsafe { fill(new_ptr, new_size, pattern) };
@@ -211,51 +188,69 @@ fn run_lane(
     live
 }
 
+fn assert_disjoint(live_sets: &[Vec<Live>]) {
+    let mut ranges = live_sets
+        .iter()
+        .flatten()
+        .map(|live| {
+            let start = live.ptr as usize;
+            let end = start
+                .checked_add(live.layout.size())
+                .expect("live allocation range overflowed usize");
+            (start, end)
+        })
+        .collect::<Vec<_>>();
+
+    ranges.sort_unstable_by_key(|range| range.0);
+    for pair in ranges.windows(2) {
+        assert!(
+            pair[0].1 <= pair[1].0,
+            "allocator returned overlapping live allocations: {:#x}..{:#x} and {:#x}..{:#x}",
+            pair[0].0,
+            pair[0].1,
+            pair[1].0,
+            pair[1].1,
+        );
+    }
+}
+
 fuzz_target!(|input: Input| {
     let thread_count = 2 + input.thread_count as usize % (MAX_THREADS - 1);
     let ops = &input.ops[..input.ops.len().min(MAX_OPS)];
     let barrier = Arc::new(Barrier::new(thread_count));
-    let pointers = Arc::new(LivePointers::default());
-
-    let live_sets = Mutex::new(
-        (0..thread_count)
-            .map(|_| None)
-            .collect::<Vec<Option<Vec<Live>>>>(),
-    );
+    let live_sets = (0..thread_count)
+        .map(|_| LaneOutput::new())
+        .collect::<Vec<LaneOutput>>();
 
     workers().scope(|scope| {
         for thread_id in 0..thread_count {
             let barrier = Arc::clone(&barrier);
-            let pointers = Arc::clone(&pointers);
             let live_sets = &live_sets;
             scope.spawn(move |_| {
-                let live = run_lane(thread_id, thread_count, ops, &barrier, &pointers);
-                live_sets.lock().unwrap()[thread_id] = Some(live);
+                let live = run_lane(thread_id, thread_count, ops, &barrier);
+                live_sets[thread_id].publish(live);
             });
         }
     });
+
     let live_sets = live_sets
-        .into_inner()
-        .unwrap()
         .into_iter()
-        .map(Option::unwrap)
+        .map(LaneOutput::into_live)
         .collect::<Vec<_>>();
+
+    assert_disjoint(&live_sets);
 
     let cleanup_barrier = Arc::new(Barrier::new(live_sets.len()));
     workers().scope(|scope| {
         for live in live_sets {
-            let pointers = Arc::clone(&pointers);
             let cleanup_barrier = Arc::clone(&cleanup_barrier);
             scope.spawn(move |_| {
                 cleanup_barrier.wait();
                 for entry in live {
                     unsafe { check(&entry) };
-                    pointers.remove(entry.ptr);
                     unsafe { ALLOC.dealloc(entry.ptr, entry.layout) };
                 }
             });
         }
     });
-
-    assert!(pointers.is_empty());
 });

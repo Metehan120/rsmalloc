@@ -17,9 +17,9 @@ use rustix::{
 use crate::core_prim::hw::HardwareFeature;
 use crate::{
     AVERAGE_BLOCK_TIMES, CURRENT_STAMP, DISABLE_TRIM_THREAD, Flags, GLOBAL_TRIM_LOCK, Header, NCPU,
-    big_allocations::buddy::BUDDY_BACKEND,
+    big_allocations::buddy::{BUDDY_BACKEND, BUDDY_TOTAL_CACHED_VA},
     core_prim::predictor::TRIM_SMOOTHING,
-    global_vals::{TOTAL_CACHED_VA, TRIM_THRESHOLD},
+    global_vals::{BIG_TRIM_THRESHOLD, SMALL_TRIM_THRESHOLD, TOTAL_CACHED_VA},
     internals::lock::LockGuard,
     rseq_core::{aba::Tagging, slab_cache::SLAB_CACHE},
     traits::Lock,
@@ -43,7 +43,7 @@ pub unsafe fn spawn(entry: unsafe fn() -> !) -> bool {
 pub unsafe fn maybe_start_trimmer() {
     use std::sync::atomic::Ordering;
 
-    if TOTAL_CACHED_VA.load(Ordering::Relaxed) < TRIM_THRESHOLD
+    if TOTAL_CACHED_VA.load(Ordering::Relaxed) < SMALL_TRIM_THRESHOLD
         || TRIM_GUARD.load(Ordering::Relaxed) == true
     {
         return;
@@ -149,7 +149,9 @@ pub unsafe fn trimmer_main() -> ! {
 }
 
 pub unsafe fn trim_small(requested_size: usize) -> usize {
-    if TOTAL_CACHED_VA.load(Relaxed) < TRIM_THRESHOLD {
+    if TOTAL_CACHED_VA.load(Relaxed) < SMALL_TRIM_THRESHOLD
+        && BUDDY_TOTAL_CACHED_VA.load(Relaxed) < BIG_TRIM_THRESHOLD
+    {
         return 0;
     }
 

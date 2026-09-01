@@ -7,7 +7,8 @@
 use crate::{backend::bootstrap::BootstrapConfig, core_prim::predictor::DEFAULT_BATCH};
 
 const DEFAULT_BUDDY_CACHE: usize = 64 * 1024 * 1024;
-const DEFAULT_TRIM_THRESHOLD: usize = 10 * 1024 * 1024;
+const DEFAULT_SMALL_TRIM_THRESHOLD: usize = 10 * 1024 * 1024;
+const DEFAULT_BIG_TRIM_THRESHOLD: usize = 512 * 1024 * 1024;
 const DEFAULT_ARENA_SIZE: usize = 256 * 1024 * 1024;
 
 /// Transparent huge-page behavior for allocator-managed mappings.
@@ -87,8 +88,10 @@ impl PerCacheLimit {
 pub struct Bytes(pub usize);
 
 impl Bytes {
-    /// Default threshold for waking the background trimmer: 10 MiB.
-    pub const TRIM_DEFAULT: Self = Self(DEFAULT_TRIM_THRESHOLD);
+    /// Default small-allocation threshold for waking the background trimmer: 10 MiB.
+    pub const SMALL_TRIM_DEFAULT: Self = Self(DEFAULT_SMALL_TRIM_THRESHOLD);
+    /// Default big-allocation threshold for waking the background trimmer: 512 MiB.
+    pub const BIG_TRIM_DEFAULT: Self = Self(DEFAULT_BIG_TRIM_THRESHOLD);
     /// Default minimum slab arena size: 256 MiB.
     pub const ARENA_DEFAULT: Self = Self(DEFAULT_ARENA_SIZE);
 }
@@ -113,22 +116,31 @@ impl TrimThread {
 pub struct TrimSettings {
     /// Whether the background trimming worker runs.
     pub background_worker: TrimThread,
-    /// Cached-byte threshold that triggers background trimming.
-    pub threshold: Bytes,
+    /// Cached small-allocation bytes required to trigger background trimming.
+    pub small_threshold: Bytes,
+    /// Cached big-allocation bytes required to trigger background trimming.
+    pub big_threshold: Bytes,
 }
 
 impl TrimSettings {
-    /// Default trimming configuration: worker enabled with a 10 MiB threshold.
+    /// Default trimming configuration: worker enabled with 10 MiB small and
+    /// 512 MiB big-allocation thresholds.
     pub const DEFAULT: Self = Self {
         background_worker: TrimThread::Enabled,
-        threshold: Bytes::TRIM_DEFAULT,
+        small_threshold: Bytes::SMALL_TRIM_DEFAULT,
+        big_threshold: Bytes::BIG_TRIM_DEFAULT,
     };
 
     /// Creates background trimming settings.
-    pub const fn new(background_worker: TrimThread, threshold: Bytes) -> Self {
+    pub const fn new(
+        background_worker: TrimThread,
+        small_threshold: Bytes,
+        big_threshold: Bytes,
+    ) -> Self {
         Self {
             background_worker,
-            threshold,
+            small_threshold,
+            big_threshold,
         }
     }
 }
@@ -471,7 +483,8 @@ impl Config {
             self.tuning.max_per_buddy_cache.bytes(),
             self.tuning.thp.buddy_use_thp.enabled(),
             self.tuning.trim.background_worker.disabled(),
-            self.tuning.trim.threshold.0,
+            self.tuning.trim.small_threshold.0,
+            self.tuning.trim.big_threshold.0,
             self.tuning.relief.state.disabled(),
             disable_percentage,
             enable_percentage,

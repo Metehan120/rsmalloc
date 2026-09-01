@@ -21,7 +21,7 @@ use crate::rseq_core::rseq_offsets::__rseq_size;
 use crate::rseq_core::slab_cache::SLAB_CACHE;
 use crate::{
     ALIGN_TAG, BUDDY_ATTEMPT_HUGE, BUDDY_MAX_CACHE, DISABLE_TRIM_THREAD, FOREIGN_POINTER_ABORT,
-    GLOBAL_ALLOC_ONCE, Header, RS_DISABLE_THP, RSMallocError, TRIM_THRESHOLD, get_clock,
+    GLOBAL_ALLOC_ONCE, Header, RS_DISABLE_THP, RSMallocError, SMALL_TRIM_THRESHOLD, get_clock,
 };
 
 // ------------------
@@ -520,7 +520,7 @@ unsafe fn init(rs: &RSMalloc) {
     BUDDY_BACKEND.init(BUDDY_MAX_CACHE, BUDDY_ATTEMPT_HUGE && !RS_DISABLE_THP);
 
     DISABLE_TRIM_THREAD = rs.config.trim_thread.background_worker.is_disabled();
-    TRIM_THRESHOLD = rs.config.trim_thread.threshold.0;
+    SMALL_TRIM_THRESHOLD = rs.config.trim_thread.threshold.0;
     DISABLE_RELIEF = rs.config.relief.state.is_disabled();
     BUDDY_DISABLE_PERCENTAGE = rs.config.relief.buddy_disable_percentage.0.min(100);
     BUDDY_ENABLE_PERCENTAGE = rs

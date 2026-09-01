@@ -24,6 +24,8 @@ pub unsafe fn bootstrap() {
     let disable_trim = get_env_usize("RS_DISABLE_TRIM_THREAD".as_bytes()).unwrap_or(0) != 0;
     let trim_threshold =
         get_env_usize("RS_TRIMMER_THRESHOLD".as_bytes()).unwrap_or(1024 * 1024 * 10);
+    let big_trim_threshold =
+        get_env_usize("RS_BIG_TRIMMER_THRESHOLD".as_bytes()).unwrap_or(1024 * 1024 * 512);
 
     let disable_relief = get_env_usize("RS_ENABLE_RELIEF".as_bytes()).unwrap_or(1) != 0;
     let disable_percentage = get_env_usize("RS_BUDDY_RELIEF_DISABLE_PERCENTAGE".as_bytes())
@@ -44,6 +46,7 @@ pub unsafe fn bootstrap() {
         attempt_huge,
         disable_trim,
         trim_threshold,
+        big_trim_threshold,
         disable_relief,
         disable_percentage,
         enable_percentage,

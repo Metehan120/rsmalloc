@@ -78,7 +78,7 @@ unsafe fn fill(ptr: *mut u8, len: usize, pattern: u8) {
 }
 
 fn allocation_size(value: u32) -> usize {
-    (value as usize).max(1).min(1 << 18)
+    (value as usize).max(1).min((1024 * 1024 * 8))
 }
 
 fn next_pattern(thread_id: usize, sequence: &mut u8) -> u8 {

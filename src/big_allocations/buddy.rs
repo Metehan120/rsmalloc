@@ -19,7 +19,7 @@ use crate::{
     BUDDY_AVERAGE_BLOCK_TIMES, BUDDY_INIT, CURRENT_STAMP, Flags, GLOBAL_TRIM_LOCK,
     add_buddy_cached_va,
     core_prim::predictor::EMA_ALPHA,
-    global_vals::{TOTAL_CACHED_VA, TRIM_THRESHOLD},
+    global_vals::{BIG_TRIM_THRESHOLD, SMALL_TRIM_THRESHOLD, TOTAL_CACHED_VA},
     inner::alloc::MAX_REFILL_RETRIES,
     internals::{
         binder::NumaBind,
@@ -683,7 +683,10 @@ impl BuddyAllocator {
     }
 
     unsafe fn trim_inner(&mut self, requested_size: usize, force_trim: bool) -> usize {
-        if !force_trim && TOTAL_CACHED_VA.load(Relaxed) < TRIM_THRESHOLD {
+        if !force_trim
+            && TOTAL_CACHED_VA.load(Relaxed) < SMALL_TRIM_THRESHOLD
+            && BUDDY_TOTAL_CACHED_VA.load(Relaxed) < BIG_TRIM_THRESHOLD
+        {
             return 0;
         }
 

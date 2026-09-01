@@ -80,7 +80,7 @@ const CONFIG: Config = Config::new(
 static GLOBAL: RSMalloc = RSMalloc::new(CONFIG);
 ```
 
-Defaults: randomized magic values enabled, abort on foreign pointers, general THP enabled (buddy THP forcing off), a 64 MiB buddy per-cache target, a 256 MiB minimum slab arena, a 10 MiB background-trim threshold, memory-pressure relief disabled, and the allocator-default refill prediction.
+Defaults: randomized magic values enabled, abort on foreign pointers, general THP enabled (buddy THP forcing off), a 64 MiB buddy per-cache target, a 256 MiB minimum slab arena, 10 MiB small and 512 MiB big background-trim thresholds, memory-pressure relief disabled, and the allocator-default refill prediction.
 
 Security-sensitive configuration is hidden unless the `expose-security-critical-settings` feature is enabled. Keeping fixed magic values additionally requires the explicit unsafe `MagicSafetyDisable::acknowledge_safety_risk()` token.
 
@@ -120,7 +120,8 @@ fn main() -> Result<(), AllocationError> {
 | `RS_BUDDY_PER_CACHE_SIZE` | `268435456` | Initial buddy region size; clamped to at least this, rounded to a power of two. |
 | `RS_BUDDY_ATTEMPT_HUGEPAGE` | `0` | Set `1` to request THP for buddy regions. |
 | `RS_DISABLE_TRIM_THREAD` | `0` | Set nonzero to disable the background trim worker (manual `malloc_trim` still works). |
-| `RS_TRIMMER_THRESHOLD` | `10485760` | Minimum cached VA (bytes) before the background trim worker starts. |
+| `RS_TRIMMER_THRESHOLD` | `10485760` | Minimum cached small-allocation VA (bytes) before the background trim worker starts. |
+| `RS_BIG_TRIMMER_THRESHOLD` | `536870912` | Minimum cached big-allocation VA (bytes) before the background trim worker starts. |
 | `RS_ENABLE_RELIEF` | disabled | Set `0` to enable system-memory-pressure relief (yes, `0` enables it in the current alpha). |
 | `RS_BUDDY_RELIEF_DISABLE_PERCENTAGE` | `85` | System memory-usage % at/above which the buddy backend is disabled. |
 | `RS_BUDDY_RELIEF_ENABLE_PERCENTAGE` | `80` | System memory-usage % at/below which the buddy backend may re-enable. |

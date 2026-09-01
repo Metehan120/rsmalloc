@@ -27,7 +27,9 @@ pub static mut BUDDY_ATTEMPT_HUGE: bool = false;
 pub static mut FOREIGN_POINTER_ABORT: bool = false;
 pub static mut ALIGN_TAG: usize = usize::from_le_bytes(*b"RSMALIGN");
 pub static mut DISABLE_TRIM_THREAD: bool = false;
-pub static mut TRIM_THRESHOLD: usize = 1024 * 1024 * 10;
+
+pub static mut SMALL_TRIM_THRESHOLD: usize = 1024 * 1024 * 10;
+pub static mut BIG_TRIM_THRESHOLD: usize = 1024 * 1024 * 512;
 
 pub static TOTAL_CACHED_VA: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "debug")]

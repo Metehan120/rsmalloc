@@ -11,8 +11,8 @@ use crate::{
         random::{init_align, init_magic},
     },
     global_vals::{
-        ALIGN_TAG, BUDDY_ATTEMPT_HUGE, BUDDY_MAX_CACHE, DISABLE_TRIM_THREAD, RS_DISABLE_THP,
-        TRIM_THRESHOLD, get_clock,
+        ALIGN_TAG, BIG_TRIM_THRESHOLD, BUDDY_ATTEMPT_HUGE, BUDDY_MAX_CACHE, DISABLE_TRIM_THREAD,
+        RS_DISABLE_THP, SMALL_TRIM_THRESHOLD, get_clock,
     },
     inner::alloc::MAX_REFILL_RETRIES,
     internals::radix_tree::{RADIX, RadixTree},
@@ -30,7 +30,8 @@ pub struct BootstrapConfig {
     buddy_max_cache: usize,
     buddy_attempt_huge: bool,
     disable_trimmer: bool,
-    trim_threshold: usize,
+    small_trim_threshold: usize,
+    big_trim_threshold: usize,
     disable_relief: bool,
     buddy_disable_percentage: usize,
     buddy_enable_percentage: usize,
@@ -48,7 +49,8 @@ impl BootstrapConfig {
         buddy_max_cache: usize,
         buddy_attempt_huge: bool,
         disable_trimmer: bool,
-        trim_threshold: usize,
+        small_trim_threshold: usize,
+        big_trim_threshold: usize,
         disable_relief: bool,
         buddy_disable_percentage: usize,
         buddy_enable_percentage: usize,
@@ -63,7 +65,8 @@ impl BootstrapConfig {
             buddy_max_cache,
             buddy_attempt_huge,
             disable_trimmer,
-            trim_threshold,
+            small_trim_threshold,
+            big_trim_threshold,
             disable_relief,
             buddy_disable_percentage,
             buddy_enable_percentage,
@@ -101,7 +104,8 @@ pub unsafe fn main_bootstrap(config: BootstrapConfig) {
 
     BUDDY_ATTEMPT_HUGE = config.buddy_attempt_huge;
     DISABLE_TRIM_THREAD = config.disable_trimmer;
-    TRIM_THRESHOLD = config.trim_threshold;
+    SMALL_TRIM_THRESHOLD = config.small_trim_threshold;
+    BIG_TRIM_THRESHOLD = config.big_trim_threshold;
     DISABLE_RELIEF = config.disable_relief;
 
     BUDDY_DISABLE_PERCENTAGE = config.buddy_disable_percentage;

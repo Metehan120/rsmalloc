@@ -4,7 +4,7 @@ use std::alloc::{GlobalAlloc, Layout};
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use rsmalloc::RSMalloc;
+use rsmalloc::v2::alloc::RSMalloc;
 
 #[global_allocator]
 static ALLOC: RSMalloc = RSMalloc::new_default();

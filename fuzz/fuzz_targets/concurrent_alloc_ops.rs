@@ -85,7 +85,7 @@ pub fn get_fuzz_type() -> usize {
         env::var("RS_FUZZ_TYPE")
             .unwrap_or("1".to_string())
             .parse()
-            .expect("Wrong fuzz type. Fuzz types: 1 (small), 2 (big), 3 (big)")
+            .expect("Wrong fuzz type. Fuzz types: 1 (small), 2 (big), 3 (mixed)")
     })
 }
 
@@ -97,8 +97,8 @@ fn allocation_size(value: u32) -> usize {
             const MAX: usize = 64 * 1024 * 1024;
             MIN + value as usize % (MAX - MIN + 1)
         }
-        3 => 1 + value as usize % (8 * 1024 * 1024),
-        _ => panic!("Wrong fuzz type. Fuzz types: 1 (small), 2 (big), 3 (big)"),
+        3 => 1 + value as usize % (3 * 1024 * 1024),
+        _ => panic!("Wrong fuzz type. Fuzz types: 1 (small), 2 (big), 3 (mixed)"),
     }
 }
 

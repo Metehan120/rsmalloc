@@ -13,7 +13,6 @@ use rsmalloc::v2::alloc::RSMalloc;
 static ALLOC: RSMalloc = RSMalloc::new_default();
 
 const MAX_THREADS: usize = 12;
-const MAX_OPS: usize = 4096;
 
 static WORKERS: OnceLock<rayon::ThreadPool> = OnceLock::new();
 
@@ -238,7 +237,10 @@ fn assert_disjoint(live_sets: &[Vec<Live>]) {
 
 fuzz_target!(|input: Input| {
     let thread_count = 2 + input.thread_count as usize % (MAX_THREADS - 1);
-    let ops = &input.ops[..input.ops.len().min(MAX_OPS)];
+    let ops = &input.ops[..input.ops.len()];
+    if ops.len() < 2 {
+        return;
+    }
     let barrier = Arc::new(Barrier::new(thread_count));
     let live_sets = (0..thread_count)
         .map(|_| LaneOutput::new())

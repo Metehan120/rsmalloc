@@ -97,7 +97,7 @@ fn allocation_size(value: u32) -> usize {
             const MAX: usize = 64 * 1024 * 1024;
             MIN + value as usize % (MAX - MIN + 1)
         }
-        3 => 1 + value as usize % (3 * 1024 * 1024),
+        3 => 1 + value as usize % ((2 * 1024 * 1024) + 1024 * 256),
         _ => panic!("Wrong fuzz type. Fuzz types: 1 (small), 2 (big), 3 (mixed)"),
     }
 }

@@ -2,6 +2,7 @@
 
 use std::{
     alloc::{GlobalAlloc, Layout},
+    env,
     sync::{Arc, Barrier, OnceLock},
 };
 
@@ -77,8 +78,28 @@ unsafe fn fill(ptr: *mut u8, len: usize, pattern: u8) {
     unsafe { std::ptr::write_bytes(ptr, pattern, len) };
 }
 
+pub static TYPE: OnceLock<usize> = OnceLock::new();
+
+pub fn get_fuzz_type() -> usize {
+    *TYPE.get_or_init(|| {
+        env::var("RS_FUZZ_TYPE")
+            .unwrap_or("1".to_string())
+            .parse()
+            .expect("Wrong fuzz type. Fuzz types: 1 (small), 2 (big), 3 (big)")
+    })
+}
+
 fn allocation_size(value: u32) -> usize {
-    (value as usize).max(1).min((1024 * 1024 * 8))
+    match get_fuzz_type() {
+        1 => 1 + value as usize % (256 * 1024),
+        2 => {
+            const MIN: usize = 4 * 1024 * 1024;
+            const MAX: usize = 64 * 1024 * 1024;
+            MIN + value as usize % (MAX - MIN + 1)
+        }
+        3 => 1 + value as usize % (8 * 1024 * 1024),
+        _ => panic!("Wrong fuzz type. Fuzz types: 1 (small), 2 (big), 3 (big)"),
+    }
 }
 
 fn next_pattern(thread_id: usize, sequence: &mut u8) -> u8 {

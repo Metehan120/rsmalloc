@@ -666,16 +666,20 @@ impl SlabCache {
     unsafe fn clear_hint(
         &self,
         ptr: &AtomicU128,
+        other_ptr: &AtomicU128,
         inner: &SlabCacheInner,
         class: usize,
         cpu_id: usize,
     ) {
         self.clear_class_hint(inner, class, cpu_id);
-        // Trimmed list is oppurnatistic, no need to scan second time
         if !Tagging
             .untag_ptr(ptr.load(Ordering::Acquire))
             .current_header
             .is_null()
+            || !Tagging
+                .untag_ptr(other_ptr.load(Ordering::Acquire))
+                .current_header
+                .is_null()
         {
             self.mark_class_nonempty(inner, class, cpu_id);
         }
@@ -708,7 +712,7 @@ impl SlabCache {
                     list_ptr = &trimmed_ptr;
                     continue;
                 }
-                self.clear_hint(normal_ptr, inner, class, cpu_id);
+                self.clear_hint(normal_ptr, trimmed_ptr, inner, class, cpu_id);
                 return None;
             }
 
@@ -733,7 +737,7 @@ impl SlabCache {
                 if !next.is_null() {
                     HardwareFeature.prefetch(SafeToPrefetch::new(next), PrefetchHint::PreferL1)
                 } else {
-                    self.clear_hint(normal_ptr, inner, class, cpu_id);
+                    self.clear_hint(normal_ptr, trimmed_ptr, inner, class, cpu_id);
                 }
                 return Some(TransferReturn {
                     start: pack.current_header,

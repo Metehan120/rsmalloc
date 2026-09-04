@@ -303,8 +303,8 @@ impl GenericCache for SlabCache {
         let rseq = get_rseq();
 
         let current_cpu = read_volatile(&rseq.cpu_id) as usize;
-        let list = &mut inner.cache.get_offset(current_cpu).cache[class];
-        let usage_ptr = &mut list.usage;
+        let list = &inner.cache.get_offset(current_cpu).cache[class];
+        let usage_ptr = &list.usage;
 
         if usage_ptr.load(Ordering::Relaxed) >= CACHE_HIGH_BLOCKS[class] {
             self.transfer_push_batch(class, header, tail, current_cpu, inner);
@@ -342,8 +342,8 @@ impl GenericCache for SlabCache {
 
         loop {
             let current_cpu = read_volatile(&rseq.cpu_id) as usize;
-            let list = &mut inner.cache.get_offset(current_cpu).cache[class];
-            let usage_ptr = &mut list.usage;
+            let list = &inner.cache.get_offset(current_cpu).cache[class];
+            let usage_ptr = &list.usage;
 
             if usage_ptr.load(Ordering::Relaxed) >= CACHE_HIGH_BLOCKS[class] {
                 self.transfer_push_single(class, header, current_cpu, inner);
@@ -378,7 +378,7 @@ impl GenericCache for SlabCache {
 
         loop {
             let current_cpu = read_volatile(&rseq.cpu_id) as usize;
-            let list = &mut inner.cache.get_offset(current_cpu).cache[class];
+            let list = &inner.cache.get_offset(current_cpu).cache[class];
             let list_ptr = addr_of!(list.list) as *mut *mut Header;
             let usage_ptr = &list.usage;
             let result = RseqCore.pop(list_ptr, rseq, current_cpu, usage_ptr.as_ptr());
@@ -438,8 +438,8 @@ impl SlabCache {
         out
     }
 
-    pub fn get_inner(&self) -> &mut SlabCacheInner {
-        unsafe { &mut *self.inner.get() }
+    pub fn get_inner(&self) -> &SlabCacheInner {
+        unsafe { &*self.inner.get() }
     }
 
     #[inline(always)]
@@ -456,10 +456,10 @@ impl SlabCache {
         (&inner.numa, inner)
     }
 
-    pub unsafe fn get_list(&self, cpu_id: usize, class: usize) -> &mut TransferCache {
+    pub unsafe fn get_list(&self, cpu_id: usize, class: usize) -> &TransferCache {
         let inner = self.get_inner();
         let cache = inner.cache.get_offset(cpu_id).as_ptr();
-        let list = &mut (*cache).mail[class];
+        let list = &(*cache).mail[class];
         list
     }
 
@@ -561,12 +561,12 @@ impl SlabCache {
         start: *mut Header,
         tail: *mut Header,
         cpu_id: usize,
-        inner: &mut SlabCacheInner,
+        inner: &SlabCacheInner,
     ) {
         #[cfg(feature = "transfer-debug-exact")]
         crate::TOTAL_TRANSFER_PUSH_CALLS.fetch_add(1, Ordering::Relaxed);
 
-        let list = &mut inner.cache.get_offset(cpu_id).mail[class];
+        let list = &inner.cache.get_offset(cpu_id).mail[class];
         let list_ptr = &list.list;
 
         loop {
@@ -602,9 +602,9 @@ impl SlabCache {
         class: usize,
         header: *mut Header,
         cpu_id: usize,
-        inner: &mut SlabCacheInner,
+        inner: &SlabCacheInner,
     ) {
-        let list = &mut inner.cache.get_offset(cpu_id).mail[class];
+        let list = &inner.cache.get_offset(cpu_id).mail[class];
         let list_ptr = &list.list;
 
         self.transfer_push_single_to(list_ptr, class, header, cpu_id, inner);
@@ -615,9 +615,9 @@ impl SlabCache {
         class: usize,
         header: *mut Header,
         cpu_id: usize,
-        inner: &mut SlabCacheInner,
+        inner: &SlabCacheInner,
     ) {
-        let list = &mut inner.cache.get_offset(cpu_id).mail[class];
+        let list = &inner.cache.get_offset(cpu_id).mail[class];
         let list_ptr = &list.trimmed;
 
         self.transfer_push_single_to(list_ptr, class, header, cpu_id, inner);
@@ -630,7 +630,7 @@ impl SlabCache {
         class: usize,
         header: *mut Header,
         cpu_id: usize,
-        inner: &mut SlabCacheInner,
+        inner: &SlabCacheInner,
     ) {
         #[cfg(feature = "transfer-debug-exact")]
         crate::TOTAL_TRANSFER_PUSH_CALLS.fetch_add(1, Ordering::Relaxed);
@@ -692,7 +692,7 @@ impl SlabCache {
         crate::TOTAL_TRANSFER_POP_CALLS.fetch_add(1, Ordering::Relaxed);
 
         let inner = self.get_inner();
-        let list = &mut inner.cache.get_offset(cpu_id).mail[class];
+        let list = &inner.cache.get_offset(cpu_id).mail[class];
         let normal_ptr = &list.list;
         let trimmed_ptr = &list.trimmed;
         let mut list_ptr = normal_ptr;

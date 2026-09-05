@@ -1,2 +1,2 @@
 pub mod big_allocation;
-pub mod buddy;
+pub mod segmented_bitmap;

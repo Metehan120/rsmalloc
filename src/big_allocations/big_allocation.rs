@@ -9,7 +9,7 @@ use rustix::mm::{Advice, MapFlags, ProtFlags, madvise, mmap_anonymous, munmap};
 use crate::{
     BIG_MAGIC, BUDDY_INIT, BigAllocMeta, Flags, Header, RS_DISABLE_THP, RSMallocError,
     backend::trim::DISABLE_BUDDY,
-    big_allocations::buddy::BUDDY_BACKEND,
+    big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND,
     core_prim::wrappers::UnsafePointer,
     internals::{binder::NumaBind, radix_tree::RADIX, rbtree::BIG_MAP},
     record_mmap_call,
@@ -56,7 +56,7 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
     let node_id = SLAB_CACHE.node_for_cpu(cpu_id, inner);
 
     if size <= 1024 * 1024 * 64 && BUDDY_INIT && !DISABLE_BUDDY.load(Relaxed) {
-        let buddy = BUDDY_BACKEND.alloc(aligned_total, node_id, cpu_id);
+        let buddy = SEGMENTED_BITMAP_BACKEND.alloc(aligned_total, node_id, cpu_id);
 
         if let Some((addr, order, _, region)) = buddy {
             actual_ptr = addr as *mut u8;
@@ -148,7 +148,7 @@ pub unsafe fn big_free(ptr: usize) {
     });
 
     if header.buddy_region != 0 {
-        BUDDY_BACKEND.free(header.buddy_region, mapping_base as usize, header.order);
+        SEGMENTED_BITMAP_BACKEND.free(header.buddy_region, mapping_base as usize, header.order);
         return;
     }
 

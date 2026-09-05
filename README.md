@@ -2,7 +2,7 @@
 
 An RSEQ-based memory allocator for Rust, focused on low-overhead concurrent allocation for real applications rather than benchmark-only patterns. The small-allocation fast path uses Linux Restartable Sequences (RSEQ), so cache ownership follows the CPU, not the thread. Larger allocations go through a separate NUMA-aware buddy-cached path.
 
-**Status: `0.2.1-alpha`. Alpha-quality software — not production-ready.** See [Status & Limitations](#status--limitations) below.
+**Status: `0.3.0-alpha`. Alpha-quality software — not production-ready.** See [Status & Limitations](#status--limitations) below.
 
 [crates.io](https://crates.io/crates/rsmalloc) · [Architecture](ARCHITECTURE.md) · [Release Notes](UPDATES.md) · [Roadmap](TODO.md) · [Benchmarks](benchmarks/benchmarks.md) · [Contributing](CONTRIBUTING.md)
 

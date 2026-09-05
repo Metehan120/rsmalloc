@@ -2,7 +2,7 @@ use std::num::NonZero;
 
 use crate::{
     backend::trim::trim_small,
-    big_allocations::buddy::BUDDY_BACKEND,
+    big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND,
     core_prim::wrappers::UnsafePointer,
     inner::{
         align::memalign_inner, alloc::rs_alloc, calloc::rs_calloc, free::rs_free,
@@ -86,7 +86,7 @@ impl RawInterface for RSMallocRaw {
         self.global.manual_init();
         match trim_size {
             AdvancedTrimSize::All => {
-                let buddy = BUDDY_BACKEND.trim(0);
+                let buddy = SEGMENTED_BITMAP_BACKEND.trim(0);
                 let slab = trim_small(0);
                 TrimReport {
                     buddy_bytes: buddy,
@@ -94,7 +94,7 @@ impl RawInterface for RSMallocRaw {
                 }
             }
             AdvancedTrimSize::AllBuddy => {
-                let buddy = BUDDY_BACKEND.trim(0);
+                let buddy = SEGMENTED_BITMAP_BACKEND.trim(0);
                 TrimReport {
                     buddy_bytes: buddy,
                     slab_bytes: 0,
@@ -110,7 +110,7 @@ impl RawInterface for RSMallocRaw {
             AdvancedTrimSize::Bytes(requested) => {
                 let requested = requested.get();
 
-                let buddy = BUDDY_BACKEND.trim(requested);
+                let buddy = SEGMENTED_BITMAP_BACKEND.trim(requested);
                 let mut slab = 0;
                 if buddy < requested && requested != 0 {
                     slab = trim_small(requested.saturating_sub(buddy));
@@ -123,7 +123,7 @@ impl RawInterface for RSMallocRaw {
             AdvancedTrimSize::BuddyBytes(requested) => {
                 let requested = requested.get();
 
-                let buddy = BUDDY_BACKEND.trim(requested);
+                let buddy = SEGMENTED_BITMAP_BACKEND.trim(requested);
                 TrimReport {
                     buddy_bytes: buddy,
                     slab_bytes: 0,

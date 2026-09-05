@@ -59,7 +59,7 @@ pub fn add_slab_cached_va(bytes: usize) {
 
     #[cfg(feature = "debug")]
     {
-        let buddy = crate::big_allocations::buddy::BUDDY_TOTAL_CACHED_VA.load(Ordering::Relaxed);
+        let buddy = crate::big_allocations::segmented_bitmap::BUDDY_TOTAL_CACHED_VA.load(Ordering::Relaxed);
         update_high_water(&HIGH_WATER_SLAB_CACHED_VA, _slab);
         update_high_water(&HIGH_WATER_TOTAL_CACHED_VA, _slab.saturating_add(buddy));
     }
@@ -67,7 +67,7 @@ pub fn add_slab_cached_va(bytes: usize) {
 
 #[inline(always)]
 pub fn add_buddy_cached_va(bytes: usize) {
-    let _buddy = crate::big_allocations::buddy::BUDDY_TOTAL_CACHED_VA
+    let _buddy = crate::big_allocations::segmented_bitmap::BUDDY_TOTAL_CACHED_VA
         .fetch_add(bytes, Ordering::Relaxed)
         .saturating_add(bytes);
 

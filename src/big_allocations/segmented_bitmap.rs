@@ -1,14 +1,14 @@
 // Small note for developers considering this design:
 //
-// First of all this is proof-of-concept not a release-ready buddy. Designed by GPT-6-Astra and published on development branch.
+// First of all this is a proof-of-concept, not a release-ready allocator. Designed by GPT-6-Astra and published on development branch.
 //
-// GPT designed a way better buddy than I ever could (I've never been good with buddy allocators) so I decided to publish as proof-of-concept before release
+// GPT designed a way better large allocator than I ever could (I've never been good with buddy allocators) so I decided to publish as proof-of-concept before release
 // this design is going to change in future, not a final product or a pure generation.
 //
-// This version of buddy designed for least performance one-core performance impact with high core scalability,
-// this design skip most of the linear searches old buddy had.
+// This segmented bitmap allocator is designed for low single-core overhead and high-core scalability.
+// Buddy geometry defines its size classes, but atomic bitmaps replace the old buddy's linear searches.
 //
-// I did audit the buddy design; there is still some aggressive ordering where a weaker ordering can be used, a few optimization spots for arithmetics etc.
+// I did audit the design; there is still some aggressive ordering where a weaker ordering can be used, a few optimization spots for arithmetics etc.
 // which can be fixed easily. Overall a good design worth considering.
 //
 // Oh also ate my 5-hour limit for breakfast, it was pretty hungry I guess. I know this is such a dad joke.
@@ -183,14 +183,14 @@ impl State {
     }
 }
 
-pub struct BuddyAllocator {
+pub struct SegmentedBitmapAllocator {
     state: AtomicPtr<State>,
     once: Once,
 }
 
-unsafe impl Sync for BuddyAllocator {}
+unsafe impl Sync for SegmentedBitmapAllocator {}
 
-impl BuddyAllocator {
+impl SegmentedBitmapAllocator {
     pub const fn new() -> Self {
         Self {
             state: AtomicPtr::new(null_mut()),
@@ -572,10 +572,10 @@ fn trim_segment(
     }
 }
 
-pub static BUDDY_BACKEND: BuddyAllocator = BuddyAllocator::new();
+pub static SEGMENTED_BITMAP_BACKEND: SegmentedBitmapAllocator = SegmentedBitmapAllocator::new();
 
 #[cfg(feature = "debug")]
-pub struct BuddyBackendReport {
+pub struct SegmentedBitmapReport {
     pub regions: usize,
     pub total_region_bytes: usize,
     pub free_bytes: usize,
@@ -591,10 +591,10 @@ pub struct BuddyBackendReport {
 }
 
 #[cfg(feature = "debug")]
-impl BuddyAllocator {
-    pub unsafe fn report(&self) -> BuddyBackendReport {
+impl SegmentedBitmapAllocator {
+    pub unsafe fn report(&self) -> SegmentedBitmapReport {
         let state = self.state.load(Ordering::Acquire).as_ref();
-        let mut report = BuddyBackendReport {
+        let mut report = SegmentedBitmapReport {
             regions: 0,
             total_region_bytes: 0,
             free_bytes: 0,

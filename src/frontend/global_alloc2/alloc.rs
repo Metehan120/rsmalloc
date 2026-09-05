@@ -8,7 +8,7 @@ pub use crate::frontend::global_alloc2::{debug::*, raw::*};
 use crate::{
     GLOBAL_ALLOC_ONCE, Header,
     backend::{bootstrap::main_bootstrap, trim::trim_small},
-    big_allocations::buddy::BUDDY_BACKEND,
+    big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND,
     core_prim::wrappers::UnsafePointer,
     inner::{
         align::memalign_inner,
@@ -241,7 +241,7 @@ impl RSMallocCoreAPI for RSMalloc {
         unsafe { self.init() };
 
         let requested = size.get_size();
-        let size = unsafe { BUDDY_BACKEND.trim(requested) };
+        let size = unsafe { SEGMENTED_BITMAP_BACKEND.trim(requested) };
         if size < requested && requested != 0 {
             let small = unsafe { trim_small(requested.saturating_sub(size)) };
             if small > 0 {

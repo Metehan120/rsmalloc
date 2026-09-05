@@ -3,7 +3,7 @@ use std::hint::likely;
 
 use crate::backend::bootstrap::{BootstrapConfig, main_bootstrap};
 use crate::backend::trim::trim_small;
-use crate::big_allocations::buddy::{BIG_BUDDY_MAX_ORDER, BIG_BUDDY_MIN_ORDER, BUDDY_BACKEND};
+use crate::big_allocations::segmented_bitmap::{BIG_BUDDY_MAX_ORDER, BIG_BUDDY_MIN_ORDER, SEGMENTED_BITMAP_BACKEND};
 use crate::core_prim::predictor::DEFAULT_BATCH;
 use crate::core_prim::wrappers::UnsafePointer;
 use crate::inner::align::memalign_inner;
@@ -782,7 +782,7 @@ impl RSMalloc {
         self.init();
 
         let requested = trim.get_request_size();
-        let size = BUDDY_BACKEND.trim(requested);
+        let size = SEGMENTED_BITMAP_BACKEND.trim(requested);
         if size < requested && requested != 0 {
             let small = trim_small(requested.saturating_sub(size));
             if small > 0 {
@@ -832,7 +832,7 @@ impl RSMalloc {
             TOTAL_MMAP_CALLS, TOTAL_REFILL_CALLS,
             backend::page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR, TOTAL_LIVED, TOTAL_REMOVED},
             backend::trim::{DISABLE_BUDDY, TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA},
-            big_allocations::buddy::{BIG_BUDDY_MIN_ORDER, BUDDY_BACKEND, BUDDY_TOTAL_CACHED_VA},
+            big_allocations::segmented_bitmap::{BIG_BUDDY_MIN_ORDER, SEGMENTED_BITMAP_BACKEND, BUDDY_TOTAL_CACHED_VA},
             internals::radix_tree::{CHUNK_SIZE, RADIX},
             rseq_core::slab_cache::SLAB_CACHE,
             utility::{NUM_SIZE_CLASSES, SIZE_CLASSES},
@@ -924,7 +924,7 @@ impl RSMalloc {
         }
 
         let (numa, inner) = unsafe { SLAB_CACHE.get_numa_and_inner() };
-        let buddy = unsafe { BUDDY_BACKEND.report() };
+        let buddy = unsafe { SEGMENTED_BITMAP_BACKEND.report() };
         let radix = unsafe { RADIX.report() };
         let buddy_used_bytes = buddy.total_region_bytes.saturating_sub(buddy.free_bytes);
         let buddy_free_blocks = buddy.free_blocks.iter().sum();

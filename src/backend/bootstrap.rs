@@ -5,7 +5,7 @@ use crate::{
         page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR},
         trim::{BUDDY_DISABLE_PERCENTAGE, BUDDY_ENABLE_PERCENTAGE, DISABLE_RELIEF},
     },
-    big_allocations::buddy::BUDDY_BACKEND,
+    big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND,
     core_prim::{
         predictor::PREDICTOR_INIT_BATCH,
         random::{init_align, init_magic},
@@ -124,7 +124,7 @@ pub unsafe fn main_bootstrap(config: BootstrapConfig) {
     #[cfg(feature = "preload")]
     let _ = config.foreign_pointer_abort;
 
-    BUDDY_BACKEND.init(BUDDY_MAX_CACHE, BUDDY_ATTEMPT_HUGE && !RS_DISABLE_THP);
+    SEGMENTED_BITMAP_BACKEND.init(BUDDY_MAX_CACHE, BUDDY_ATTEMPT_HUGE && !RS_DISABLE_THP);
 
     #[cfg(feature = "preload")]
     crate::core_prim::fork::register_fork_handlers();

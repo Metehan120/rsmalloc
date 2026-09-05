@@ -1,8 +1,8 @@
 # RSMalloc Architecture
 
-This document is a working architecture draft for `rsmalloc` `0.2.1-alpha`. It describes the allocator as it exists today, not as a final stable design. Some pieces are intentionally experimental and may change before a production-ready release.
+This document is a working architecture draft for `rsmalloc` `0.3.0-alpha`. It describes the allocator as it exists today, not as a final stable design. Some pieces are intentionally experimental and may change before a production-ready release.
 
-The `0.2.x-alpha` line is a full allocator-architecture overhaul relative to the earlier `0.1.0-alpha` design. The current `0.2.1-alpha` pass also hardens transfer-cache ABA protection, simplifies the slab page backend to bump-only arenas, makes its newer locks fork-safe, and reorganizes public-facing modules under `frontend/`.
+The `0.3.x-alpha` line is a full allocator-architecture overhaul relative to the earlier `0.1.0-alpha` design. The current `0.3.0-alpha` pass also hardens transfer-cache ABA protection, simplifies the slab page backend to bump-only arenas, makes its newer locks fork-safe, and reorganizes public-facing modules under `frontend/`.
 
 ## Design Goal
 
@@ -245,7 +245,7 @@ Important details:
 
 ## Slab Cache Layout
 
-`SLAB_CACHE` owns an mmap-backed array of per-CPU cache state, one per configured CPU plus one extra spare slot. Current `0.2.1-alpha` treats working per-thread RSEQ state as required; invalid or unregistered RSEQ CPU IDs are not silently redirected through an allocation fallback path.
+`SLAB_CACHE` owns an mmap-backed array of per-CPU cache state, one per configured CPU plus one extra spare slot. Current `0.3.0-alpha` treats working per-thread RSEQ state as required; invalid or unregistered RSEQ CPU IDs are not silently redirected through an allocation fallback path.
 
 ```rust
 #[repr(C, align(4096))]

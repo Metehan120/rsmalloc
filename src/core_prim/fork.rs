@@ -7,7 +7,7 @@ use std::{
 use crate::{
     GLOBAL_TRIM_LOCK, RSMallocError,
     backend::page_allocator::PAGE_ALLOCATOR,
-    big_allocations::buddy::BUDDY_BACKEND,
+    big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND,
     inner::{fallback::fallback_reinit_on_fork, preload::libc_int::pthread_atfork},
     internals::{lock::SpinLockGuard, rbtree::BIG_MAP},
     rseq_core::{pending_queue::PENDING_QUEUE, rseq_offsets::__rseq_size},
@@ -25,7 +25,7 @@ unsafe extern "C" fn fork_prepare() {
     ));
     TRIM_ATFORK_GUARD = Some(GLOBAL_TRIM_LOCK.lock());
 
-    BUDDY_BACKEND.lock_all_for_fork();
+    SEGMENTED_BITMAP_BACKEND.lock_all_for_fork();
     BIG_MAP.lock_for_fork();
     PAGE_ALLOCATOR.lock_all_for_fork();
     PENDING_QUEUE.lock_all_for_fork();
@@ -35,7 +35,7 @@ unsafe extern "C" fn fork_parent() {
     PENDING_QUEUE.reset_locks_on_fork();
     PAGE_ALLOCATOR.reset_locks_on_fork();
     BIG_MAP.reset_lock_on_fork();
-    BUDDY_BACKEND.reset_locks_on_fork();
+    SEGMENTED_BITMAP_BACKEND.reset_locks_on_fork();
 
     if let Some(guard) = TRIM_ATFORK_GUARD.take() {
         drop(guard);
@@ -55,7 +55,7 @@ unsafe extern "C" fn fork_child() {
     }
 
     fallback_reinit_on_fork();
-    BUDDY_BACKEND.reset_locks_on_fork();
+    SEGMENTED_BITMAP_BACKEND.reset_locks_on_fork();
     BIG_MAP.reset_lock_on_fork();
     PAGE_ALLOCATOR.reset_locks_on_fork();
     PENDING_QUEUE.reset_locks_on_fork();

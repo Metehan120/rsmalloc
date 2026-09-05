@@ -17,7 +17,7 @@ use rustix::{
 use crate::core_prim::hw::HardwareFeature;
 use crate::{
     AVERAGE_BLOCK_TIMES, CURRENT_STAMP, DISABLE_TRIM_THREAD, Flags, GLOBAL_TRIM_LOCK, Header, NCPU,
-    big_allocations::buddy::{BUDDY_BACKEND, BUDDY_TOTAL_CACHED_VA},
+    big_allocations::segmented_bitmap::{SEGMENTED_BITMAP_BACKEND, BUDDY_TOTAL_CACHED_VA},
     core_prim::predictor::TRIM_SMOOTHING,
     global_vals::{BIG_TRIM_THRESHOLD, SMALL_TRIM_THRESHOLD, TOTAL_CACHED_VA},
     internals::lock::LockGuard,
@@ -100,7 +100,7 @@ pub unsafe fn relief_paths() {
     if pressure >= BUDDY_DISABLE_PERCENTAGE && !DISABLE_BUDDY.load(Relaxed) {
         DISABLE_BUDDY.store(true, Relaxed);
         UNDER_AFTER.store(0, Relaxed);
-        BUDDY_BACKEND.trim(0);
+        SEGMENTED_BITMAP_BACKEND.trim(0);
 
         return;
     }
@@ -139,11 +139,11 @@ pub unsafe fn trimmer_main() -> ! {
         if stamp.saturating_sub(latest_stamp) > AVERAGE_BLOCK_TIMES.load(Relaxed).max(30)
             && !DISABLE_TRIM_THREAD
         {
-            use crate::big_allocations::buddy::BUDDY_BACKEND;
+            use crate::big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND;
             latest_stamp = stamp;
 
             trim_small(0);
-            BUDDY_BACKEND.trim_old(0);
+            SEGMENTED_BITMAP_BACKEND.trim_old(0);
         }
     }
 }

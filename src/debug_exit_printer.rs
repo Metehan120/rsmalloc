@@ -12,7 +12,7 @@ use crate::{
     REFILL_OVER_PREDICTS, REFILL_UNDER_PREDICTS, REFILLS_BY_CLASS, START_TIME, TOTAL_CACHED_VA,
     TOTAL_MMAP_BYTES, TOTAL_MMAP_CALLS, TOTAL_REFILL_CALLS,
     backend::page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR, TOTAL_LIVED, TOTAL_REMOVED},
-    big_allocations::buddy::{BIG_BUDDY_MIN_ORDER, BUDDY_BACKEND, BUDDY_TOTAL_CACHED_VA},
+    big_allocations::segmented_bitmap::{BIG_BUDDY_MIN_ORDER, SEGMENTED_BITMAP_BACKEND, BUDDY_TOTAL_CACHED_VA},
     internals::radix_tree::{CHUNK_SIZE, RADIX},
     rseq_core::slab_cache::SLAB_CACHE,
     backend::trim::{DISABLE_BUDDY, TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA},
@@ -106,7 +106,7 @@ pub(crate) unsafe fn print_report() {
         .map(|start| start.elapsed().as_millis())
         .unwrap_or(0);
 
-    let buddy = BUDDY_BACKEND.report();
+    let buddy = SEGMENTED_BITMAP_BACKEND.report();
     let radix = RADIX.report();
 
     let mut cpu_total = 0usize;

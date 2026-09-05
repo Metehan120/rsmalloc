@@ -1,6 +1,6 @@
 [package]
 name = "rsmalloc-macro"
-version = "0.2.1-alpha"
+version = "0.3.0-alpha"
 edition = "2024"
 
 [dependencies]

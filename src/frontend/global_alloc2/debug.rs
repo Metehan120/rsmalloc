@@ -1,7 +1,7 @@
 #[cfg(any(feature = "debug", doc))]
 use crate::{Header, core_prim::wrappers::UnsafePointer, inner::alloc::rs_alloc};
 use crate::{
-    big_allocations::buddy::{BIG_BUDDY_MAX_ORDER, BIG_BUDDY_MIN_ORDER},
+    big_allocations::segmented_bitmap::{BIG_BUDDY_MAX_ORDER, BIG_BUDDY_MIN_ORDER},
     v2::alloc::RSMalloc,
 };
 
@@ -17,7 +17,7 @@ impl RSMalloc {
                 page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR, TOTAL_LIVED, TOTAL_REMOVED},
                 trim::{DISABLE_BUDDY, TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA},
             },
-            big_allocations::buddy::{BIG_BUDDY_MIN_ORDER, BUDDY_BACKEND, BUDDY_TOTAL_CACHED_VA},
+            big_allocations::segmented_bitmap::{BIG_BUDDY_MIN_ORDER, SEGMENTED_BITMAP_BACKEND, BUDDY_TOTAL_CACHED_VA},
             internals::radix_tree::{CHUNK_SIZE, RADIX},
             rseq_core::slab_cache::SLAB_CACHE,
             utility::{NUM_SIZE_CLASSES, SIZE_CLASSES},
@@ -110,7 +110,7 @@ impl RSMalloc {
         }
 
         let (numa, inner) = unsafe { SLAB_CACHE.get_numa_and_inner() };
-        let buddy = unsafe { BUDDY_BACKEND.report() };
+        let buddy = unsafe { SEGMENTED_BITMAP_BACKEND.report() };
         let radix = unsafe { RADIX.report() };
         let buddy_used_bytes = buddy.total_region_bytes.saturating_sub(buddy.free_bytes);
         let buddy_free_blocks = buddy.free_blocks.iter().sum();

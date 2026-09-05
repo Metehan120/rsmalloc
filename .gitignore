@@ -3,3 +3,4 @@ target-fuzzcov
 gpt-sol-audit.md
 book
 .claude
+fuzz1

@@ -199,7 +199,7 @@ impl PageAllocator {
     #[inline(always)]
     pub unsafe fn alloc(&self, node_id: u16, size: usize) -> Option<*mut c_void> {
         let size = (size.max(1)).align_to(PAGE_SIZE);
-        let inner = &mut *self.inner.get();
+        let inner = &*self.inner.get();
 
         if inner.arenas.is_null() || inner.node_count == 0 {
             return None;
@@ -323,7 +323,7 @@ impl PageAllocator {
             return true;
         }
 
-        let inner = &mut *self.inner.get();
+        let inner = &*self.inner.get();
         if inner.arenas.is_null() || inner.node_count == 0 {
             return false;
         }

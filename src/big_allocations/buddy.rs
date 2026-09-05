@@ -1,6 +1,6 @@
 // Small note for developers considering this design:
 //
-// First of this is proof-of-concept not a release-ready buddy. Designed by GPT-6-Astra and published on development branch.
+// First of all this is proof-of-concept not a release-ready buddy. Designed by GPT-6-Astra and published on development branch.
 //
 // GPT designed a way better buddy than I ever could (I've never been good with buddy allocators) so I decided to publish as proof-of-concept before release
 // this design is going to change in future, not a final product or a pure generation.

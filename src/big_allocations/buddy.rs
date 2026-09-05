@@ -11,7 +11,7 @@
 // I did audit the buddy design; there is still some aggressive ordering where a weaker ordering can be used, a few optimization spots for arithmetics etc.
 // which can be fixed easily. Overall a good design worth considering.
 //
-// Oh also eat my 5-hour limit for breakfast, it was pretty hungry I guess. I know its such a dad joke.
+// Oh also ate my 5-hour limit for breakfast, it was pretty hungry I guess. I know its such a dad joke.
 //
 // - Metehan
 

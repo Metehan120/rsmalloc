@@ -69,7 +69,7 @@ pub const BIG_BUDDY_MIN_ORDER: usize = 22;
 pub const BIG_BUDDY_MAX_ORDER: usize = 26;
 pub const BUDDY_NUM_ORDERS: usize = BIG_BUDDY_MAX_ORDER - BIG_BUDDY_MIN_ORDER + 1;
 const PAGE_SIZE: usize = 4096;
-const LANES: usize = 8;
+const MAX_LANES: usize = 96;
 type Allocation = (usize, usize, Flags, usize);
 
 #[repr(C, align(64))]
@@ -77,26 +77,32 @@ struct HintLane {
     orders: [AtomicPtr<Segment>; BUDDY_NUM_ORDERS],
 }
 
+impl HintLane {
+    fn new() -> Self {
+        Self {
+            orders: std::array::from_fn(|_| AtomicPtr::new(null_mut())),
+        }
+    }
+}
+
 #[repr(C, align(64))]
 struct Node {
     head: AtomicPtr<Region>,
     growth: SpinLock<()>,
-    lanes: [HintLane; LANES],
+    lanes: *mut HintLane,
 }
 
 impl Node {
-    fn new() -> Self {
+    fn new(lanes: *mut HintLane) -> Self {
         Self {
             head: AtomicPtr::new(null_mut()),
             growth: SpinLock::new(()),
-            lanes: std::array::from_fn(|_| HintLane {
-                orders: std::array::from_fn(|_| AtomicPtr::new(null_mut())),
-            }),
+            lanes,
         }
     }
 
     unsafe fn alloc(&self, order: usize, lane: usize) -> Option<Allocation> {
-        let hint = &self.lanes[lane].orders[order];
+        let hint = &(*self.lanes.add(lane)).orders[order];
         let preferred = hint.load(Ordering::Acquire);
         if !preferred.is_null()
             && let Some((addr, flags)) = (*preferred).alloc(order)
@@ -153,6 +159,7 @@ impl Region {
 struct State {
     nodes: *mut Node,
     node_count: usize,
+    lane_count: usize,
     active_ids: *const u16,
     active_count: usize,
     thp: bool,
@@ -197,14 +204,38 @@ impl BuddyAllocator {
             .max(SEGMENT_BYTES)
     }
 
+    #[inline(always)]
+    fn lane_count(ncpu: usize) -> usize {
+        ncpu.clamp(1, MAX_LANES)
+    }
+
+    #[inline(always)]
+    fn lane_for_cpu(cpu_id: usize, lane_count: usize) -> usize {
+        if cpu_id < lane_count {
+            cpu_id
+        } else {
+            cpu_id % lane_count
+        }
+    }
+
     #[inline(never)]
     pub unsafe fn init(&self, size: usize, thp: bool) {
         self.once.call_once(|| {
             let (numa, inner) = SLAB_CACHE.get_numa_and_inner();
             let count = numa.nranges.max(1);
-            let Some(bytes) = size_of::<Node>()
-                .checked_mul(count)
-                .and_then(|bytes| bytes.checked_add(size_of::<State>()))
+            let lane_count = Self::lane_count(numa.ncpu);
+            let Some(node_bytes) = size_of::<Node>().checked_mul(count) else {
+                return;
+            };
+            let Some(lane_bytes) = count
+                .checked_mul(lane_count)
+                .and_then(|lanes| lanes.checked_mul(size_of::<HintLane>()))
+            else {
+                return;
+            };
+            let Some(bytes) = size_of::<State>()
+                .checked_add(node_bytes)
+                .and_then(|bytes| bytes.checked_add(lane_bytes))
                 .and_then(|bytes| bytes.checked_align_to(PAGE_SIZE))
             else {
                 return;
@@ -214,12 +245,18 @@ impl BuddyAllocator {
             };
             let state = mem.cast::<State>();
             let nodes = mem.cast::<u8>().add(size_of::<State>()).cast::<Node>();
+            let lanes = nodes.cast::<u8>().add(node_bytes).cast::<HintLane>();
             for id in 0..count {
-                nodes.add(id).write(Node::new());
+                let node_lanes = lanes.add(id * lane_count);
+                for lane in 0..lane_count {
+                    node_lanes.add(lane).write(HintLane::new());
+                }
+                nodes.add(id).write(Node::new(node_lanes));
             }
             state.write(State {
                 nodes,
                 node_count: count,
+                lane_count,
                 active_ids: numa.node_ids,
                 active_count: numa.nnodes,
                 thp,
@@ -252,7 +289,7 @@ impl BuddyAllocator {
         } else {
             0
         };
-        let lane = cpu_id & (LANES - 1);
+        let lane = Self::lane_for_cpu(cpu_id, state.lane_count);
         let node = state.node(id);
         node.alloc(order, lane)
             .or_else(|| self.expand(state, id, order, lane))
@@ -277,7 +314,7 @@ impl BuddyAllocator {
                 let segment = (*region).segments();
                 let (addr, flags) = (*segment).alloc(order).unwrap();
                 node.publish(region);
-                node.lanes[lane].orders[order].store(segment, Ordering::Release);
+                (*node.lanes.add(lane)).orders[order].store(segment, Ordering::Release);
                 return Some((addr, order + BIG_BUDDY_MIN_ORDER, flags, segment as usize));
             }
         }

@@ -198,7 +198,7 @@ impl PageAllocator {
 
     #[inline(always)]
     pub unsafe fn alloc(&self, node_id: u16, size: usize) -> Option<*mut c_void> {
-        let size = (size.max(1)).align_to(PAGE_SIZE);
+        let size = (size.max(1)).checked_align_to(PAGE_SIZE)?;
         let inner = &*self.inner.get();
 
         if inner.arenas.is_null() || inner.node_count == 0 {
@@ -294,6 +294,8 @@ impl PageAllocator {
 
                     if arena_ref.end - arena_ref.current < MIN_REFILL_BYTES {
                         Self::remove_arena(state, arena);
+                    } else {
+                        state.current = arena;
                     }
 
                     return Some(ptr);
@@ -317,8 +319,10 @@ impl PageAllocator {
             return false;
         }
 
-        let old_size = (old_size.max(1)).align_to(PAGE_SIZE);
-        let new_size = (new_size.max(1)).align_to(PAGE_SIZE);
+        let old_size = old_size.max(1).align_to(PAGE_SIZE);
+        let Some(new_size) = new_size.max(1).checked_align_to(PAGE_SIZE) else {
+            return false;
+        };
         if new_size <= old_size {
             return true;
         }

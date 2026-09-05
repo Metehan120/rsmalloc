@@ -16,4 +16,3 @@
 13. Audit entire allocator before stable release
 
 14. Beta-2: arm64 support
-15. Beta: replace buddy for the 4-64MB big-allocation band with a size-classed (non-power-of-two, no split/merge) allocator layered on PageAllocator-like arena machinery - fixes buddy's merge-losing-zero-state problem for calloc and reduces power-of-two rounding waste

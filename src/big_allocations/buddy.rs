@@ -18,6 +18,7 @@ use crate::backend::trim::{TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA};
 use crate::{
     BUDDY_AVERAGE_BLOCK_TIMES, BUDDY_INIT, CURRENT_STAMP, Flags, GLOBAL_TRIM_LOCK,
     add_buddy_cached_va,
+    backend::page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR},
     core_prim::predictor::EMA_ALPHA,
     global_vals::{BIG_TRIM_THRESHOLD, SMALL_TRIM_THRESHOLD, TOTAL_CACHED_VA},
     inner::alloc::MAX_REFILL_RETRIES,
@@ -236,7 +237,7 @@ impl BuddyAllocator {
         Self::mark_order_empty_if_needed(region, order);
     }
 
-    unsafe fn alloc_region_node(region_size: usize) -> Option<*mut BuddyRegion> {
+    unsafe fn alloc_region_node(node_id: u16, region_size: usize) -> Option<*mut BuddyRegion> {
         let mut bitmap_bytes = 0usize;
         for order in BIG_BUDDY_MIN_ORDER..=BIG_BUDDY_MAX_ORDER {
             let blocks = region_size >> order;
@@ -246,13 +247,7 @@ impl BuddyAllocator {
         let node_size = Self::align_to_page(size_of::<BuddyRegion>().checked_add(bitmap_bytes)?);
 
         for _ in 0..MAX_REFILL_RETRIES {
-            record_mmap_call(node_size);
-            if let Ok(region) = mmap_anonymous(
-                null_mut(),
-                node_size,
-                ProtFlags::READ | ProtFlags::WRITE,
-                MapFlags::PRIVATE,
-            ) {
+            if let Some(region) = PAGE_ALLOCATOR.alloc(node_id, node_size) {
                 add_buddy_cached_va(node_size);
                 return Some(region as *mut BuddyRegion);
             }
@@ -268,19 +263,27 @@ impl BuddyAllocator {
         let mut retries = 0;
         let mut base = null_mut();
         while retries < MAX_REFILL_RETRIES {
-            record_mmap_call(normalized_size);
-            if let Ok(region) = mmap_anonymous(
-                base,
-                normalized_size,
-                ProtFlags::READ | ProtFlags::WRITE,
-                MapFlags::PRIVATE,
-            ) {
-                add_buddy_cached_va(normalized_size);
-                if is_numa {
-                    NumaBind.prefer_node(region, normalized_size, node_id);
+            if normalized_size < ARENA_SIZE {
+                if let Some(region) = PAGE_ALLOCATOR.alloc(node_id, normalized_size) {
+                    add_buddy_cached_va(normalized_size);
+                    base = region as *mut c_void;
+                    break;
                 }
-                base = region as *mut c_void;
-                break;
+            } else {
+                record_mmap_call(normalized_size);
+                if let Ok(region) = mmap_anonymous(
+                    base,
+                    normalized_size,
+                    ProtFlags::READ | ProtFlags::WRITE,
+                    MapFlags::PRIVATE,
+                ) {
+                    add_buddy_cached_va(normalized_size);
+                    if is_numa {
+                        NumaBind.prefer_node(region, normalized_size, node_id);
+                    }
+                    base = region as *mut c_void;
+                    break;
+                }
             }
             retries += 1;
         }
@@ -290,7 +293,7 @@ impl BuddyAllocator {
         }
         let base = base as usize;
 
-        let region_ptr = match Self::alloc_region_node(normalized_size) {
+        let region_ptr = match Self::alloc_region_node(node_id, normalized_size) {
             Some(ptr) => ptr,
             None => {
                 let _ = munmap(base as *mut c_void, normalized_size);

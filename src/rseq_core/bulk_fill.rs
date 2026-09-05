@@ -9,10 +9,9 @@ use std::{
     sync::atomic::Ordering,
 };
 
-use crate::{CURRENT_STAMP, Flags};
+use crate::{CURRENT_STAMP, Flags, backend::page_allocator::PAGE_ALLOCATOR};
 use crate::{
     FREED_MAGIC, Header, MetaData, add_slab_cached_va,
-    backend::page_allocator::PAGE_ALLOCATOR,
     internals::radix_tree::RADIX,
     utility::{ITERATIONS, NUM_SIZE_CLASSES, SIZE_CLASSES},
 };
@@ -142,7 +141,7 @@ unsafe fn alloc_metadata(
     block_size: usize,
     cpu_id: usize,
 ) -> Result<*mut MetaData, Err> {
-    let (numa, inner) = SLAB_CACHE.get_numa_and_inner();
+    let inner = SLAB_CACHE.get_inner();
     let node_id = SLAB_CACHE.node_for_cpu(cpu_id, inner);
 
     let pending = PENDING_QUEUE.pop(node_id, class);
@@ -162,7 +161,6 @@ unsafe fn alloc_metadata(
         total = size_of::<MetaData>() + (block_size * num_blocks);
     }
 
-    PAGE_ALLOCATOR.init(numa.nranges);
     let mem = PAGE_ALLOCATOR
         .alloc(node_id, total)
         .ok_or(Err::OutOfMemory)?;

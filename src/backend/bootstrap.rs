@@ -2,7 +2,7 @@ use std::ptr::null_mut;
 
 use crate::{
     backend::{
-        page_allocator::ARENA_SIZE,
+        page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR},
         trim::{BUDDY_DISABLE_PERCENTAGE, BUDDY_ENABLE_PERCENTAGE, DISABLE_RELIEF},
     },
     big_allocations::buddy::BUDDY_BACKEND,
@@ -100,6 +100,10 @@ pub unsafe fn main_bootstrap(config: BootstrapConfig) {
 
     RADIX = RadixTree::new();
     SLAB_CACHE.ensure_cache();
+
+    let node_count = SLAB_CACHE.get_numa_and_inner().0.nranges;
+    PAGE_ALLOCATOR.init(node_count);
+
     BUDDY_MAX_CACHE = config.buddy_max_cache;
 
     BUDDY_ATTEMPT_HUGE = config.buddy_attempt_huge;

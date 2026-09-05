@@ -1,28 +1,17 @@
 use std::alloc::{GlobalAlloc, Layout};
 use std::hint::likely;
-use std::ptr::null_mut;
 
-use crate::backend::page_allocator::ARENA_SIZE;
-use crate::backend::trim::{
-    BUDDY_DISABLE_PERCENTAGE, BUDDY_ENABLE_PERCENTAGE, DISABLE_RELIEF, trim_small,
-};
+use crate::backend::bootstrap::{BootstrapConfig, main_bootstrap};
+use crate::backend::trim::trim_small;
 use crate::big_allocations::buddy::{BIG_BUDDY_MAX_ORDER, BIG_BUDDY_MIN_ORDER, BUDDY_BACKEND};
-use crate::core_prim::predictor::{DEFAULT_BATCH, PREDICTOR_INIT_BATCH};
-use crate::core_prim::random::{init_align, init_magic};
+use crate::core_prim::predictor::DEFAULT_BATCH;
 use crate::core_prim::wrappers::UnsafePointer;
 use crate::inner::align::memalign_inner;
-use crate::inner::alloc::{MAX_REFILL_RETRIES, rs_alloc, usable_size};
+use crate::inner::alloc::{rs_alloc, usable_size};
 use crate::inner::calloc::{rs_calloc, zero};
 use crate::inner::free::rs_free;
 use crate::inner::realloc::rs_realloc;
-use crate::internals::radix_tree::{RADIX, RadixTree};
-use crate::rseq_core::rseq_offsets::__rseq_offset;
-use crate::rseq_core::rseq_offsets::__rseq_size;
-use crate::rseq_core::slab_cache::SLAB_CACHE;
-use crate::{
-    ALIGN_TAG, BUDDY_ATTEMPT_HUGE, BUDDY_MAX_CACHE, DISABLE_TRIM_THREAD, FOREIGN_POINTER_ABORT,
-    GLOBAL_ALLOC_ONCE, Header, RS_DISABLE_THP, RSMallocError, SMALL_TRIM_THRESHOLD, get_clock,
-};
+use crate::{GLOBAL_ALLOC_ONCE, Header};
 
 // ------------------
 
@@ -486,64 +475,25 @@ pub struct RSMalloc {
 
 #[inline(never)]
 unsafe fn init(rs: &RSMalloc) {
-    if __rseq_size == 0 || __rseq_offset == 0 {
-        RSMallocError::RSEQRegFailed.log_and_abort(
-            null_mut(),
-            "RSEQ register failed, cannot initialize rseq cache.",
-            None,
-        );
-    }
-
-    #[cfg(feature = "debug")]
-    {
-        use crate::START_TIME;
-        use std::time::Instant;
-
-        START_TIME = Some(Instant::now());
-    }
-
-    get_clock();
-
-    ARENA_SIZE = rs.config.arena_min_size.0.max(256 * 1024);
-    MAX_REFILL_RETRIES = rs.config.max_refill_retries as usize;
-    RS_DISABLE_THP = !rs.config.thp_settings.thp.enabled();
-    // Buddy initialization performs checked normalization after applying its
-    // minimum region size. Keep the raw configuration value here so an
-    // overflowing next-power-of-two request cannot wrap before validation.
-    BUDDY_MAX_CACHE = rs.config.max_per_buddy_cache.get_size();
-
-    PREDICTOR_INIT_BATCH = rs.config.predictor_settings.init_batch as usize;
-    BUDDY_ATTEMPT_HUGE = rs.config.thp_settings.buddy_use_thp.enabled();
-
-    RADIX = RadixTree::new();
-    SLAB_CACHE.ensure_cache();
-    BUDDY_BACKEND.init(BUDDY_MAX_CACHE, BUDDY_ATTEMPT_HUGE && !RS_DISABLE_THP);
-
-    DISABLE_TRIM_THREAD = rs.config.trim_thread.background_worker.is_disabled();
-    SMALL_TRIM_THRESHOLD = rs.config.trim_thread.threshold.0;
-    DISABLE_RELIEF = rs.config.relief.state.is_disabled();
-    BUDDY_DISABLE_PERCENTAGE = rs.config.relief.buddy_disable_percentage.0.min(100);
-    BUDDY_ENABLE_PERCENTAGE = rs
-        .config
-        .relief
-        .buddy_enable_percentage
-        .0
-        .min(BUDDY_DISABLE_PERCENTAGE);
-
-    if !rs.config.magic_safety.is_fixed() {
-        init_magic();
-        init_align();
-
-        if ALIGN_TAG == 0 {
-            while ALIGN_TAG == 0 {
-                init_align();
-            }
-        }
-    };
-
-    if rs.config.foreign_pointer.global_alloc.is_abort() {
-        FOREIGN_POINTER_ABORT = true;
-    }
+    let config = &rs.config;
+    let disable_percentage = config.relief.buddy_disable_percentage.0.min(100);
+    main_bootstrap(BootstrapConfig::new(
+        config.arena_min_size.0.max(256 * 1024),
+        config.max_refill_retries as usize,
+        config.predictor_settings.init_batch as usize,
+        config.max_per_buddy_cache.get_size(),
+        config.thp_settings.buddy_use_thp.enabled(),
+        config.trim_thread.background_worker.is_disabled(),
+        config.trim_thread.threshold.0,
+        // The legacy API has no separate big-allocation trim threshold.
+        crate::global_vals::BIG_TRIM_THRESHOLD,
+        config.relief.state.is_disabled(),
+        disable_percentage,
+        config.relief.buddy_enable_percentage.0.min(disable_percentage),
+        !config.thp_settings.thp.enabled(),
+        !config.magic_safety.is_fixed(),
+        config.foreign_pointer.global_alloc.is_abort(),
+    ));
 }
 
 impl RSMalloc {

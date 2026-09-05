@@ -1,3 +1,20 @@
+// Small note for developers considering this design:
+//
+// First of this is proof-of-concept not a release-ready buddy. Designed by GPT-6-Astra and published on development branch.
+//
+// GPT designed a way better buddy than I ever could (I've never been good with buddy allocators) so I decided to publish as proof-of-concept before release
+// this design is going to change in future, not a final product or a pure generation.
+//
+// This version of buddy designed for least performance one-core performance impact with high core scalability,
+// this design skip most of the linear searches old buddy had.
+//
+// I did audit the buddy design; there is still some aggressive ordering where a weaker ordering can be used, a few optimization spots for arithmetics etc.
+// which can be fixed easily. Overall a good design worth considering.
+//
+// Oh also eat my 5-hour limit for breakfast, it was pretty hungry I guess. I know its such a dad joke.
+//
+// - Metehan
+
 use crate::{
     BUDDY_AVERAGE_BLOCK_TIMES, BUDDY_INIT, CURRENT_STAMP, Flags, GLOBAL_TRIM_LOCK,
     add_buddy_cached_va,

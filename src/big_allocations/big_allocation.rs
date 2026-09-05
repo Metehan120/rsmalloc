@@ -52,11 +52,11 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
     let mut buddy_region = 0usize;
     let mut flags = Flags::Allocated;
     let cpu_id = get_rseq().cpu_id as usize;
-    let (numa, inner) = SLAB_CACHE.get_numa_and_inner();
+    let inner = SLAB_CACHE.get_inner();
     let node_id = SLAB_CACHE.node_for_cpu(cpu_id, inner);
 
     if size <= 1024 * 1024 * 64 && BUDDY_INIT && !DISABLE_BUDDY.load(Relaxed) {
-        let buddy = BUDDY_BACKEND.alloc(aligned_total, node_id, (numa, inner));
+        let buddy = BUDDY_BACKEND.alloc(aligned_total, node_id, cpu_id);
 
         if let Some((addr, order, _, region)) = buddy {
             actual_ptr = addr as *mut u8;

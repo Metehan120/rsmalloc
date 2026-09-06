@@ -231,16 +231,22 @@ impl PageAllocator {
         if let Some(ptr) = Self::allocate_from_arena(current, size) {
             return Some(ptr);
         }
-        Self::alloc_slow(node, size)
+        Self::alloc_slow(current, node, size)
     }
 
     #[inline(never)]
-    unsafe fn alloc_slow(node: &NodeArena, size: usize) -> Option<*mut c_void> {
+    unsafe fn alloc_slow(
+        old_arena: *mut PageArena,
+        node: &NodeArena,
+        size: usize,
+    ) -> Option<*mut c_void> {
         let state = &mut *node.lock.lock();
 
         let current = node.current.load(Ordering::Acquire);
-        if let Some(ptr) = Self::allocate_from_arena(current, size) {
-            return Some(ptr);
+        if current != old_arena {
+            if let Some(ptr) = Self::allocate_from_arena(current, size) {
+                return Some(ptr);
+            }
         }
         Self::maybe_remove(state, node, current);
 

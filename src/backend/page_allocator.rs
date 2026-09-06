@@ -15,6 +15,7 @@ use rustix::mm::{MprotectFlags, mprotect};
 use crate::{
     internals::{binder::NumaBind, lock::SpinLock, once::Once},
     record_mmap_call,
+    rseq_core::{rseq_offsets::get_rseq, slab_cache::SLAB_CACHE},
     traits::Lock,
     utility::{Alignment, MIN_REFILL_BYTES},
 };
@@ -197,13 +198,19 @@ impl PageAllocator {
     }
 
     #[inline(always)]
-    pub unsafe fn alloc(&self, node_id: u16, size: usize) -> Option<*mut c_void> {
+    pub unsafe fn alloc(&self, node_id: Option<u16>, size: usize) -> Option<*mut c_void> {
         let size = (size.max(1)).checked_align_to(PAGE_SIZE)?;
         let inner = &*self.inner.get();
 
         if inner.arenas.is_null() || inner.node_count == 0 {
             return None;
         }
+
+        let node_id = node_id.unwrap_or_else(|| {
+            let inner = SLAB_CACHE.get_inner();
+            let cpu_id = get_rseq().cpu_id as usize;
+            SLAB_CACHE.node_for_cpu(cpu_id, inner)
+        });
 
         let node = if node_id as usize >= inner.node_count {
             0

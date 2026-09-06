@@ -4,7 +4,6 @@ use crate::{
     core_prim::wrappers::UnsafePointer,
     internals::lock::SpinLock,
     record_mmap_call,
-    rseq_core::{rseq_offsets::get_rseq, slab_cache::SLAB_CACHE},
     traits::Lock,
 };
 
@@ -45,11 +44,7 @@ impl Radix {
     #[inline(never)]
     unsafe fn map_memory(size: usize) -> *mut u8 {
         if size < ARENA_SIZE {
-            let inner = SLAB_CACHE.get_inner();
-            let cpu_id = get_rseq().cpu_id as usize;
-            let node_id = SLAB_CACHE.node_for_cpu(cpu_id, inner);
-
-            if let Some(arena_mem) = PAGE_ALLOCATOR.alloc(node_id, size) {
+            if let Some(arena_mem) = PAGE_ALLOCATOR.alloc(None, size) {
                 return arena_mem as *mut u8;
             }
         }

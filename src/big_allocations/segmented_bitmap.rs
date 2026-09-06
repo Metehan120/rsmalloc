@@ -444,7 +444,7 @@ impl SegmentedBitmapAllocator {
 unsafe fn reserve(bytes: usize, node: u16, metadata: bool, is_numa: bool) -> Option<*mut c_void> {
     for _ in 0..MAX_REFILL_RETRIES {
         if metadata || bytes < ARENA_SIZE {
-            if let Some(mem) = PAGE_ALLOCATOR.alloc(node, bytes) {
+            if let Some(mem) = PAGE_ALLOCATOR.alloc(Some(node), bytes) {
                 return Some(mem);
             }
         } else {

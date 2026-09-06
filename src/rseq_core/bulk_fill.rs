@@ -162,7 +162,7 @@ unsafe fn alloc_metadata(
     }
 
     let mem = PAGE_ALLOCATOR
-        .alloc(node_id, total)
+        .alloc(Some(node_id), total)
         .ok_or(Err::OutOfMemory)?;
 
     add_slab_cached_va(total);

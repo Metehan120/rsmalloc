@@ -3,12 +3,10 @@ use std::{
     mem::size_of,
     os::raw::c_void,
     ptr::{null_mut, write},
+    sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
 };
 
-#[cfg(feature = "debug")]
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-use rustix::mm::{Advice, MapFlags, ProtFlags, madvise, mmap_anonymous};
+use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 #[cfg(feature = "guard-pages-thp")]
 use rustix::mm::{MprotectFlags, mprotect};
 
@@ -69,17 +67,17 @@ struct PageArena {
     prev: *mut PageArena,
     base: usize,
     end: usize,
-    current: usize,
+    current: AtomicUsize,
 }
 
 struct NodeArenaState {
-    current: *mut PageArena,
     arenas: *mut PageArena,
 }
 
 #[repr(C, align(64))]
 struct NodeArena {
     lock: SpinLock<NodeArenaState>,
+    current: AtomicPtr<PageArena>,
     node_id: u16,
 }
 
@@ -132,10 +130,8 @@ impl PageAllocator {
                     write(
                         arenas.add(node),
                         NodeArena {
-                            lock: SpinLock::new(NodeArenaState {
-                                current: null_mut(),
-                                arenas: null_mut(),
-                            }),
+                            lock: SpinLock::new(NodeArenaState { arenas: null_mut() }),
+                            current: AtomicPtr::new(null_mut()),
                             node_id: node as u16,
                         },
                     );
@@ -218,101 +214,110 @@ impl PageAllocator {
             node_id as usize
         };
 
-        let node = &*inner.arenas.add(node);
+        Self::alloc_inner(&*inner.arenas.add(node), size)
+    }
+
+    unsafe fn maybe_remove(state: &mut NodeArenaState, node: &NodeArena, current: *mut PageArena) {
+        if !current.is_null()
+            && (*current).end - (*current).current.load(Ordering::Relaxed) < MIN_REFILL_BYTES
+        {
+            Self::remove_arena(state, node, current);
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn alloc_inner(node: &NodeArena, size: usize) -> Option<*mut c_void> {
+        let current = node.current.load(Ordering::Acquire);
+        if let Some(ptr) = Self::allocate_from_arena(current, size) {
+            return Some(ptr);
+        }
+        Self::alloc_slow(node, size)
+    }
+
+    #[inline(never)]
+    unsafe fn alloc_slow(node: &NodeArena, size: usize) -> Option<*mut c_void> {
         let state = &mut *node.lock.lock();
 
-        if let Some(ptr) = Self::allocate_current(state, size) {
+        let current = node.current.load(Ordering::Acquire);
+        if let Some(ptr) = Self::allocate_from_arena(current, size) {
+            return Some(ptr);
+        }
+        Self::maybe_remove(state, node, current);
+
+        if let Some(ptr) = Self::allocate_search(state, node, size) {
             return Some(ptr);
         }
 
-        if let Some(ptr) = Self::allocate_search(state, size) {
-            return Some(ptr);
-        }
-
-        Self::new_arena_locked(state, node.node_id, size)?;
-        Self::allocate_current(state, size)
+        let arena = Self::new_arena_locked(state, node.node_id, size)?;
+        node.current.store(arena, Ordering::Release);
+        Self::allocate_from_arena(arena, size)
     }
 
     #[inline(always)]
-    unsafe fn allocate_current(state: &mut NodeArenaState, size: usize) -> Option<*mut c_void> {
-        if state.current.is_null() {
-            return None;
-        }
-
-        let arena = &mut *state.current;
-
-        #[cfg(feature = "guard-pages-thp")]
-        {
-            arena.current = skip_guard_page(arena.current, arena.end);
-            if let Some(guard) = guard_page_in_range(arena.current, size) {
-                arena.current = skip_guard_page(guard, arena.end);
-            }
-        }
-
-        let next = arena.current.checked_add(size)?;
-        if next > arena.end {
-            return None;
-        }
-
-        #[cfg(feature = "guard-pages-thp")]
-        if fits_within_guard_segment(size) && guard_page_in_range(arena.current, size).is_some() {
-            return None;
-        }
-
-        let ptr = arena.current as *mut c_void;
-        arena.current = next;
-
-        if arena.end - arena.current < MIN_REFILL_BYTES {
-            Self::remove_arena(state, arena);
-        }
-
-        Some(ptr)
-    }
-
-    #[inline(always)]
-    unsafe fn allocate_search(state: &mut NodeArenaState, size: usize) -> Option<*mut c_void> {
+    unsafe fn allocate_search(
+        state: &mut NodeArenaState,
+        node: &NodeArena,
+        size: usize,
+    ) -> Option<*mut c_void> {
         let mut arena = state.arenas;
 
         while !arena.is_null() {
-            let arena_ref = &mut *arena;
+            let next_arena = (*arena).next;
 
-            if arena != state.current {
-                #[cfg(feature = "guard-pages-thp")]
-                {
-                    arena_ref.current = skip_guard_page(arena_ref.current, arena_ref.end);
-                    if let Some(guard) = guard_page_in_range(arena_ref.current, size) {
-                        arena_ref.current = skip_guard_page(guard, arena_ref.end);
-                    }
-                }
-
-                #[cfg(feature = "guard-pages-thp")]
-                let blocked_by_guard = fits_within_guard_segment(size)
-                    && guard_page_in_range(arena_ref.current, size).is_some();
-
-                #[cfg(not(feature = "guard-pages-thp"))]
-                let blocked_by_guard = false;
-
-                if let Some(next) = arena_ref.current.checked_add(size)
-                    && next <= arena_ref.end
-                    && !blocked_by_guard
-                {
-                    let ptr = arena_ref.current as *mut c_void;
-                    arena_ref.current = next;
-
-                    if arena_ref.end - arena_ref.current < MIN_REFILL_BYTES {
-                        Self::remove_arena(state, arena);
-                    } else {
-                        state.current = arena;
-                    }
-
-                    return Some(ptr);
-                }
+            if let Some(ptr) = Self::allocate_from_arena(arena, size) {
+                node.current.store(arena, Ordering::Release);
+                return Some(ptr);
             }
 
-            arena = arena_ref.next;
+            Self::maybe_remove(state, node, arena);
+
+            arena = next_arena;
         }
 
         None
+    }
+
+    #[inline(always)]
+    unsafe fn allocate_from_arena(arena: *mut PageArena, size: usize) -> Option<*mut c_void> {
+        if arena.is_null() {
+            return None;
+        }
+        let end = (*arena).end;
+        let mut observed = (*arena).current.load(Ordering::Acquire);
+
+        loop {
+            #[cfg(not(feature = "guard-pages-thp"))]
+            let start = observed;
+
+            #[cfg(feature = "guard-pages-thp")]
+            let start = {
+                let mut start = skip_guard_page(observed, end);
+                if let Some(guard) = guard_page_in_range(start, size) {
+                    start = skip_guard_page(guard, end);
+                }
+                start
+            };
+
+            let next = start.checked_add(size)?;
+            if next > end {
+                return None;
+            }
+
+            #[cfg(feature = "guard-pages-thp")]
+            if fits_within_guard_segment(size) && guard_page_in_range(start, size).is_some() {
+                return None;
+            }
+
+            match (*arena).current.compare_exchange_weak(
+                observed,
+                next,
+                Ordering::Release,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return Some(start as *mut c_void),
+                Err(current) => observed = current,
+            }
+        }
     }
 
     pub unsafe fn try_grow_inplace(
@@ -362,10 +367,6 @@ impl PageAllocator {
                     return false;
                 };
 
-                if old_end != arena_ref.current {
-                    return false;
-                }
-
                 let Some(new_end) = addr.checked_add(new_size) else {
                     return false;
                 };
@@ -381,10 +382,16 @@ impl PageAllocator {
                     return false;
                 }
 
-                arena_ref.current = new_end;
+                if arena_ref
+                    .current
+                    .compare_exchange(old_end, new_end, Ordering::Release, Ordering::Relaxed)
+                    .is_err()
+                {
+                    return false;
+                }
 
-                if arena_ref.end - arena_ref.current < MIN_REFILL_BYTES {
-                    Self::remove_arena(state, arena);
+                if arena_ref.end - new_end < MIN_REFILL_BYTES {
+                    Self::remove_arena(state, node, arena);
                 }
 
                 return true;
@@ -396,7 +403,11 @@ impl PageAllocator {
         false
     }
 
-    unsafe fn remove_arena(state: &mut NodeArenaState, arena_base: *mut PageArena) {
+    unsafe fn remove_arena(
+        state: &mut NodeArenaState,
+        node: &NodeArena,
+        arena_base: *mut PageArena,
+    ) {
         if arena_base.is_null() {
             return;
         }
@@ -416,20 +427,12 @@ impl PageAllocator {
             (*next).prev = prev;
         }
 
-        if state.current == arena_base {
-            state.current = next;
-        }
+        let _ =
+            node.current
+                .compare_exchange(arena_base, next, Ordering::Release, Ordering::Relaxed);
 
         #[cfg(feature = "debug")]
         TOTAL_REMOVED.fetch_add(1, Ordering::Relaxed);
-
-        // avoid too much madvise calls on small arena sizes
-        // important for overall performance of the allocator;
-        // we shouldnt stall too much even in the slowest path
-        if ARENA_SIZE >= 1024 * 1024 * 16 {
-            let metadata_size = size_of::<PageArena>().align_to(PAGE_SIZE);
-            let _ = madvise(arena_base as *mut c_void, metadata_size, Advice::DontNeed);
-        }
     }
 
     #[cold]
@@ -438,7 +441,7 @@ impl PageAllocator {
         state: &mut NodeArenaState,
         node_id: u16,
         requested: usize,
-    ) -> Option<()> {
+    ) -> Option<*mut PageArena> {
         let data_size = requested.max(ARENA_SIZE).align_to(PAGE_SIZE);
 
         #[cfg(feature = "guard-pages-thp")]
@@ -459,13 +462,13 @@ impl PageAllocator {
             feature = "page-backend-no-huge-page",
             not(feature = "page-backend-huge-page")
         ))]
-        let _ = madvise(mem, map_size, Advice::LinuxNoHugepage);
+        let _ = rustix::mm::madvise(mem, map_size, rustix::mm::Advice::LinuxNoHugepage);
 
         #[cfg(all(
             feature = "page-backend-huge-page",
             not(feature = "page-backend-no-huge-page")
         ))]
-        let _ = madvise(mem, map_size, Advice::LinuxHugepage);
+        let _ = rustix::mm::madvise(mem, map_size, rustix::mm::Advice::LinuxHugepage);
 
         NumaBind.prefer_node(mem, map_size, node_id);
 
@@ -479,7 +482,7 @@ impl PageAllocator {
                 prev: null_mut(),
                 base,
                 end: base.checked_add(data_size)?,
-                current: base,
+                current: AtomicUsize::new(base),
             },
         );
 
@@ -488,12 +491,11 @@ impl PageAllocator {
         }
 
         state.arenas = arena;
-        state.current = arena;
 
         #[cfg(feature = "debug")]
         TOTAL_LIVED.fetch_add(1, Ordering::Relaxed);
 
-        Some(())
+        Some(arena)
     }
 }
 

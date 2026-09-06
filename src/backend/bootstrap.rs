@@ -94,7 +94,7 @@ pub unsafe fn main_bootstrap(config: BootstrapConfig) {
 
     get_clock();
 
-    ARENA_SIZE = config.arena_size;
+    ARENA_SIZE = config.arena_size.max(1024 * 512);
     MAX_REFILL_RETRIES = config.max_refill;
     PREDICTOR_INIT_BATCH = config.init_batch;
 

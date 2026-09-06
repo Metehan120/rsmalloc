@@ -470,11 +470,7 @@ impl Config {
             requested_enable_percentage
         };
         let requested_arena_size = self.tuning.arena_min_size.0;
-        let arena_size = if requested_arena_size < 256 * 1024 {
-            256 * 1024
-        } else {
-            requested_arena_size
-        };
+        let arena_size = requested_arena_size;
 
         BootstrapConfig::new(
             arena_size,

@@ -7,10 +7,7 @@ use crate::{
 
 #[inline(never)]
 pub unsafe fn bootstrap() {
-    let arena_size = get_env_usize("RS_ARENA_SIZE".as_bytes())
-        .unwrap_or(ARENA_SIZE)
-        .max(256 * 1024);
-
+    let arena_size = get_env_usize("RS_ARENA_SIZE".as_bytes()).unwrap_or(ARENA_SIZE);
     let max_refill = get_env_usize("RS_MAX_REFILL_RETRIES".as_bytes()).unwrap_or(3);
 
     let init_batch = get_env_usize("RS_PREDICTOR_INIT_BATCH".as_bytes()).unwrap_or(DEFAULT_BATCH);

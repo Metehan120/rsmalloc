@@ -16,3 +16,4 @@
 13. Audit entire allocator before stable release
 
 14. Beta-2: arm64 support
+15. Alpha-3: Lock-free page allocator

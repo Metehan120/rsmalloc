@@ -35,7 +35,6 @@ pub unsafe fn estimate_and_align_2mb(size: usize) -> Option<usize> {
     size.checked_align_to(4096)
 }
 
-#[cold]
 #[inline(never)]
 pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
     let Some(requested_total) = size.checked_add(Header::SIZE) else {

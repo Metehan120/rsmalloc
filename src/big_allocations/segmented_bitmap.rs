@@ -15,6 +15,13 @@
 //
 // - Metehan
 
+// September 6 note:
+//
+// I frogot to mention that GPT and I designed this together; it is not purely LLM-generated.
+// GPT designed the bitmap design, etc. while I designed its concurrency model.
+//
+// - Metehan
+
 use crate::{
     BUDDY_AVERAGE_BLOCK_TIMES, BUDDY_INIT, CURRENT_STAMP, Flags, GLOBAL_TRIM_LOCK,
     add_buddy_cached_va,

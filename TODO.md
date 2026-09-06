@@ -15,5 +15,6 @@
 12. Add special benchmark to stress test every subsystem at once - Done
 13. Audit entire allocator before stable release
 
-14. Beta-2: arm64 support
-15. Alpha-3: Lock-free page allocator
+14. Alpha-3: Rewrite Buddy with a better scalable design - PoC Segmented Bitmap allocator
+15. Beta-2: arm64 support
+16. Alpha-3: Lock-free page allocator

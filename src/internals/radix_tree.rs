@@ -1,10 +1,14 @@
-// Readers use acquire loads while writers publish new radix nodes with CAS and
-// update bitmap words with release RMWs. A reader racing with a writer may
-// observe either the old or new state; the allocator only requires eventual
-// visibility, not a perfectly up-to-date view of the radix.
+use crate::{
+    RSMallocError,
+    backend::page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR},
+    core_prim::wrappers::UnsafePointer,
+    internals::lock::SpinLock,
+    record_mmap_call,
+    rseq_core::{rseq_offsets::get_rseq, slab_cache::SLAB_CACHE},
+    traits::Lock,
+};
 
-use crate::{RSMallocError, core_prim::wrappers::UnsafePointer, record_mmap_call};
-use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous, munmap};
+use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 use std::{
     hint::{cold_path, unlikely},
     os::raw::c_void,
@@ -34,10 +38,22 @@ const RADIX_MAX_CHUNKS: usize = 1 << (L0_BITS + L1_BITS + L2_BITS + L3_BITS);
 
 pub struct Radix {
     pub l0: UnsafePointer<AtomicUsize>,
+    alloc_lock: SpinLock<()>,
 }
 
 impl Radix {
+    #[inline(never)]
     unsafe fn map_memory(size: usize) -> *mut u8 {
+        if size < ARENA_SIZE {
+            let inner = SLAB_CACHE.get_inner();
+            let cpu_id = get_rseq().cpu_id as usize;
+            let node_id = SLAB_CACHE.node_for_cpu(cpu_id, inner);
+
+            if let Some(arena_mem) = PAGE_ALLOCATOR.alloc(node_id, size) {
+                return arena_mem as *mut u8;
+            }
+        }
+
         record_mmap_call(size);
         match mmap_anonymous(
             null_mut(),
@@ -54,19 +70,10 @@ impl Radix {
         }
     }
 
-    #[inline(always)]
-    unsafe fn unmap_memory(ptr: *mut u8, size: usize) {
-        let _ = munmap(ptr as *mut c_void, size);
-    }
-
-    #[inline(always)]
-    unsafe fn alloc_l3_bitmap_leaf() -> *mut AtomicU64 {
-        Self::map_memory(L3_BITMAP_WORDS * size_of::<AtomicU64>()) as *mut AtomicU64
-    }
-
     pub unsafe fn new() -> Self {
         let ptr = Self::map_memory(L0_SIZE * size_of::<AtomicUsize>()) as *mut AtomicUsize;
         Self {
+            alloc_lock: SpinLock::new(()),
             l0: UnsafePointer::new(ptr),
         }
     }
@@ -85,6 +92,7 @@ impl Radix {
         ptr: *mut AtomicUsize,
         idx: usize,
         level_size: usize,
+        lock: &SpinLock<()>,
     ) -> *mut AtomicUsize {
         let entry = ptr.add(idx);
         let val = (*entry).load(Acquire) as *mut AtomicUsize;
@@ -92,34 +100,42 @@ impl Radix {
             return val;
         }
 
+        let _guard = lock.lock();
+
+        let existing = (*entry).load(Acquire);
+        if existing != 0 {
+            return existing as *mut _;
+        }
+
         let size = level_size * size_of::<AtomicUsize>();
         let new = Self::map_memory(size) as *mut AtomicUsize;
-        match (*entry).compare_exchange(0, new as usize, Release, Acquire) {
-            Ok(_) => new,
-            Err(existing) => {
-                Self::unmap_memory(new as *mut u8, size);
-                existing as *mut AtomicUsize
-            }
-        }
+        (*entry).store(new as usize, Release);
+        new
     }
 
     #[inline(always)]
-    unsafe fn get_or_alloc_l3(l2: *mut AtomicUsize, idx: usize) -> *mut AtomicU64 {
+    unsafe fn get_or_alloc_l3(
+        l2: *mut AtomicUsize,
+        idx: usize,
+        lock: &SpinLock<()>,
+    ) -> *mut AtomicU64 {
         let entry = l2.add(idx);
         let val = (*entry).load(Acquire) as *mut AtomicU64;
         if !val.is_null() {
             return val;
         }
 
-        let size = L3_BITMAP_WORDS * size_of::<AtomicU64>();
-        let new = Self::alloc_l3_bitmap_leaf();
-        match (*entry).compare_exchange(0, new as usize, Release, Acquire) {
-            Ok(_) => new,
-            Err(existing) => {
-                Self::unmap_memory(new as *mut u8, size);
-                existing as *mut AtomicU64
-            }
+        let _guard = lock.lock();
+
+        let existing = (*entry).load(Acquire);
+        if existing != 0 {
+            return existing as *mut _;
         }
+
+        let size = L3_BITMAP_WORDS * size_of::<AtomicU64>();
+        let new = Self::map_memory(size) as *mut AtomicU64;
+        (*entry).store(new as usize, Release);
+        new
     }
 
     #[inline(always)]
@@ -128,9 +144,10 @@ impl Radix {
             return;
         }
         let (i0, i1, i2, i3) = Self::split(chunk_idx);
-        let l1 = Self::get_or_alloc(self.l0.as_ptr(), i0, L1_SIZE);
-        let l2 = Self::get_or_alloc(l1, i1, L2_SIZE);
-        let l3 = Self::get_or_alloc_l3(l2, i2);
+        let lock = &self.alloc_lock;
+        let l1 = Self::get_or_alloc(self.l0.as_ptr(), i0, L1_SIZE, lock);
+        let l2 = Self::get_or_alloc(l1, i1, L2_SIZE, lock);
+        let l3 = Self::get_or_alloc_l3(l2, i2, lock);
 
         let word_idx = i3 / L3_WORD_BITS;
         let bit_idx = i3 % L3_WORD_BITS;
@@ -149,9 +166,10 @@ impl Radix {
         let mut chunk_idx = start_idx;
         loop {
             let (i0, i1, i2, i3) = Self::split(chunk_idx);
-            let l1 = Self::get_or_alloc(self.l0.as_ptr(), i0, L1_SIZE);
-            let l2 = Self::get_or_alloc(l1, i1, L2_SIZE);
-            let l3 = Self::get_or_alloc_l3(l2, i2);
+            let lock = &self.alloc_lock;
+            let l1 = Self::get_or_alloc(self.l0.as_ptr(), i0, L1_SIZE, lock);
+            let l2 = Self::get_or_alloc(l1, i1, L2_SIZE, lock);
+            let l3 = Self::get_or_alloc_l3(l2, i2, lock);
 
             let chunks_left_in_leaf = L3_SIZE - i3;
             let chunks_left_in_range = end_idx - chunk_idx + 1;
@@ -242,6 +260,7 @@ impl RadixTree {
         Self {
             nodes: Radix {
                 l0: UnsafePointer::new(null_mut()),
+                alloc_lock: SpinLock::new(()),
             },
         }
     }

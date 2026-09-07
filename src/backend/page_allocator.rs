@@ -419,6 +419,7 @@ impl PageAllocator {
         }
 
         let arena = &mut *arena_base;
+        arena.current.swap(arena.end, Ordering::AcqRel);
 
         let next = arena.next;
         let prev = arena.prev;

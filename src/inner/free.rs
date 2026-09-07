@@ -36,11 +36,7 @@ pub unsafe fn find_original_ptr(ptr: UnsafePointer<Header>) -> UnsafePointer<Hea
         // verified the offset preceding an arbitrary pointer is untrusted and may
         // contain forged allocator metadata
         if !RADIX.is_owned(presumed_original_ptr as usize) {
-            RSMallocError::AttackOrCorruption.log_and_abort(
-                header_search_ptr.as_ptr() as *mut c_void,
-                "CRITICAL: possible aligned-path metadata injection: recovered pointer is not owned by rsmalloc",
-                None,
-            );
+            RSMallocError::Corruption { ptr: presumed_original_ptr as *mut u8, reason: "CRITICAL: possible aligned-path metadata injection: recovered pointer is not owned by rsmalloc" }.log_and_abort();
         }
 
         header_search_ptr = UnsafePointer::new(presumed_original_ptr as *mut Header);
@@ -71,11 +67,10 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
         #[cfg(not(feature = "preload"))]
         {
             if crate::FOREIGN_POINTER_ABORT {
-                RSMallocError::ForeignPointer.log_and_abort(
-                    ptr.as_ptr() as *mut c_void,
-                    "Foreign pointer",
-                    None,
-                );
+                RSMallocError::ForeignPointer {
+                    ptr: ptr.cast_as_ptr(),
+                }
+                .log_and_abort();
             }
         }
 
@@ -105,13 +100,16 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
     // if it is not double free, we have a memory corruption or a security violation
     if !cfg!(feature = "disable-magic-security-checks") {
         if header.magic == FREED_MAGIC {
-            RSMallocError::DoubleFree.log_and_abort(header.cast_as_ptr(), "magic mismatch", None)
+            RSMallocError::DoubleFree {
+                ptr: header.cast_as_ptr(),
+            }
+            .log_and_abort()
         }
 
-        RSMallocError::AttackOrCorruption.log_and_abort(
-            header.cast_as_ptr(),
-            "magic mismatch",
-            None,
-        )
+        RSMallocError::Corruption {
+            ptr: header.cast_as_ptr(),
+            reason: "magic mismatch",
+        }
+        .log_and_abort()
     }
 }

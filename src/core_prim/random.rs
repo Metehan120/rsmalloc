@@ -1,5 +1,3 @@
-use std::ptr::null_mut;
-
 use rsmalloc_macro::stable_api_surface;
 use rustix::rand::{GetRandomFlags, getrandom};
 
@@ -15,46 +13,46 @@ pub unsafe fn init_magic() {
         let mut big = 0u16.to_le_bytes();
 
         if let Some(err) = getrandom(&mut main, GetRandomFlags::empty()).err() {
-            RSMallocError::SecurityViolation.log_and_abort(
-                null_mut(),
-                "calling getrandom failed, cannot initialize magic",
-                Some(err.raw_os_error()),
-            );
+            RSMallocError::SecurityViolation {
+                reason: "calling getrandom failed, cannot initialize freed magic",
+                errno: Some(err.raw_os_error()),
+            }
+            .log_and_abort();
         }
 
         if let Some(err) = getrandom(&mut freed, GetRandomFlags::empty()).err() {
-            RSMallocError::SecurityViolation.log_and_abort(
-                null_mut(),
-                "calling getrandom failed, cannot initialize freed magic",
-                Some(err.raw_os_error()),
-            );
+            RSMallocError::SecurityViolation {
+                reason: "calling getrandom failed, cannot initialize freed magic",
+                errno: Some(err.raw_os_error()),
+            }
+            .log_and_abort();
         }
 
         if let Some(err) = getrandom(&mut big, GetRandomFlags::empty()).err() {
-            RSMallocError::SecurityViolation.log_and_abort(
-                null_mut(),
-                "calling getrandom failed, cannot initialize big magic",
-                Some(err.raw_os_error()),
-            );
+            RSMallocError::SecurityViolation {
+                reason: "calling getrandom failed, cannot initialize freed magic",
+                errno: Some(err.raw_os_error()),
+            }
+            .log_and_abort();
         }
 
         while freed == main {
             if let Some(err) = getrandom(&mut freed, GetRandomFlags::empty()).err() {
-                RSMallocError::SecurityViolation.log_and_abort(
-                    null_mut(),
-                    "calling getrandom failed, cannot initialize freed magic",
-                    Some(err.raw_os_error()),
-                );
+                RSMallocError::SecurityViolation {
+                    reason: "calling getrandom failed, cannot initialize freed magic",
+                    errno: Some(err.raw_os_error()),
+                }
+                .log_and_abort();
             }
         }
 
         while big == freed || big == main {
             if let Some(err) = getrandom(&mut big, GetRandomFlags::empty()).err() {
-                RSMallocError::SecurityViolation.log_and_abort(
-                    null_mut(),
-                    "calling getrandom failed, cannot initialize big magic",
-                    Some(err.raw_os_error()),
-                );
+                RSMallocError::SecurityViolation {
+                    reason: "calling getrandom failed, cannot initialize freed magic",
+                    errno: Some(err.raw_os_error()),
+                }
+                .log_and_abort();
             }
         }
 
@@ -70,46 +68,46 @@ pub unsafe fn init_magic() {
         let mut big = 0u64.to_le_bytes();
 
         if let Some(err) = getrandom(&mut main, GetRandomFlags::empty()).err() {
-            RSMallocError::SecurityViolation.log_and_abort(
-                null_mut(),
-                "calling getrandom failed, cannot initialize magic",
-                Some(err.raw_os_error()),
-            );
+            RSMallocError::SecurityViolation {
+                reason: "calling getrandom failed, cannot initialize magic",
+                errno: Some(err.raw_os_error()),
+            }
+            .log_and_abort();
         }
 
         if let Some(err) = getrandom(&mut freed, GetRandomFlags::empty()).err() {
-            RSMallocError::SecurityViolation.log_and_abort(
-                null_mut(),
-                "calling getrandom failed, cannot initialize freed magic",
-                Some(err.raw_os_error()),
-            );
+            RSMallocError::SecurityViolation {
+                reason: "calling getrandom failed, cannot initialize freed magic",
+                errno: Some(err.raw_os_error()),
+            }
+            .log_and_abort();
         }
 
         if let Some(err) = getrandom(&mut big, GetRandomFlags::empty()).err() {
-            RSMallocError::SecurityViolation.log_and_abort(
-                null_mut(),
-                "calling getrandom failed, cannot initialize big magic",
-                Some(err.raw_os_error()),
-            );
+            RSMallocError::SecurityViolation {
+                reason: "calling getrandom failed, cannot initialize big magic",
+                errno: Some(err.raw_os_error()),
+            }
+            .log_and_abort();
         }
 
         while freed == main {
             if let Some(err) = getrandom(&mut freed, GetRandomFlags::empty()).err() {
-                RSMallocError::SecurityViolation.log_and_abort(
-                    null_mut(),
-                    "calling getrandom failed, cannot initialize freed magic",
-                    Some(err.raw_os_error()),
-                );
+                RSMallocError::SecurityViolation {
+                    reason: "calling getrandom failed, cannot initialize freed magic",
+                    errno: Some(err.raw_os_error()),
+                }
+                .log_and_abort();
             }
         }
 
         while big == freed || big == main {
             if let Some(err) = getrandom(&mut big, GetRandomFlags::empty()).err() {
-                RSMallocError::SecurityViolation.log_and_abort(
-                    null_mut(),
-                    "calling getrandom failed, cannot initialize big magic",
-                    Some(err.raw_os_error()),
-                );
+                RSMallocError::SecurityViolation {
+                    reason: "calling getrandom failed, cannot initialize big magic",
+                    errno: Some(err.raw_os_error()),
+                }
+                .log_and_abort();
             }
         }
 
@@ -124,11 +122,11 @@ pub unsafe fn init_magic() {
 pub unsafe fn init_align() {
     let mut main = 0usize.to_le_bytes();
     if let Err(err) = getrandom(&mut main, GetRandomFlags::empty()) {
-        RSMallocError::SecurityViolation.log_and_abort(
-            null_mut(),
-            "calling getrandom failed, cannot initialize align tag",
-            Some(err.raw_os_error()),
-        )
+        RSMallocError::SecurityViolation {
+            reason: "calling getrandom failed, cannot initialize freed magic",
+            errno: Some(err.raw_os_error()),
+        }
+        .log_and_abort();
     }
     ALIGN_TAG = usize::from_le_bytes(main);
 }

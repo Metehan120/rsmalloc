@@ -131,11 +131,11 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
         1usize << old_meta.order
     } else {
         estimate_and_align_2mb(old_meta.size + Header::SIZE).unwrap_or_else(|| {
-            RSMallocError::MemoryCorruption.log_and_abort(
-                null_mut(),
-                "impossible overflow recomputing size for already-live big allocation",
-                None,
-            )
+            RSMallocError::Corruption {
+                ptr: null_mut(),
+                reason: "impossible overflow recomputing size for already-live big allocation",
+            }
+            .log_and_abort()
         })
     };
 
@@ -197,9 +197,11 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
                 break;
             }
 
-            if let Some((new_addr, new_order)) =
-                SEGMENTED_BITMAP_BACKEND.try_grow_inplace(old_meta.buddy_region, current_addr, current_order)
-            {
+            if let Some((new_addr, new_order)) = SEGMENTED_BITMAP_BACKEND.try_grow_inplace(
+                old_meta.buddy_region,
+                current_addr,
+                current_order,
+            ) {
                 current_addr = new_addr;
                 current_order = new_order;
 
@@ -273,11 +275,11 @@ pub unsafe fn rs_realloc(ptr: UnsafePointer<Header>, new_size: usize) -> UnsafeP
 
         if !cfg!(feature = "disable-magic-security-checks") {
             if searched_header.magic != BIG_MAGIC && searched_header.magic != MAGIC {
-                RSMallocError::DoubleFree.log_and_abort(
-                    searched.cast_as_ptr(),
-                    "magic mismatch",
-                    None,
-                );
+                RSMallocError::Corruption {
+                    ptr: searched.cast_as_ptr(),
+                    reason: "magic mismatch",
+                }
+                .log_and_abort();
             }
         }
 
@@ -326,14 +328,12 @@ pub unsafe fn rs_realloc(ptr: UnsafePointer<Header>, new_size: usize) -> UnsafeP
     #[cfg(not(feature = "preload"))]
     {
         use crate::FOREIGN_POINTER_ABORT;
-        use std::os::raw::c_void;
 
         if FOREIGN_POINTER_ABORT {
-            crate::RSMallocError::ForeignPointer.log_and_abort(
-                ptr.as_ptr() as *mut c_void,
-                "Foreign pointer",
-                None,
-            );
+            crate::RSMallocError::ForeignPointer {
+                ptr: ptr.cast_as_ptr(),
+            }
+            .log_and_abort();
         }
 
         UnsafePointer::NULL

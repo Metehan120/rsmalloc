@@ -1,5 +1,3 @@
-use std::ptr::null_mut;
-
 use crate::{
     backend::{
         page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR},
@@ -80,11 +78,7 @@ impl BootstrapConfig {
 #[inline(never)]
 pub unsafe fn main_bootstrap(config: BootstrapConfig) {
     if __rseq_size == 0 || __rseq_offset == 0 {
-        RSMallocError::RSEQRegFailed.log_and_abort(
-            null_mut(),
-            "RSEQ register failed, cannot initialize rseq cache.",
-            None,
-        );
+        RSMallocError::RseqUnavailable.log_and_abort();
     }
 
     #[cfg(feature = "debug")]

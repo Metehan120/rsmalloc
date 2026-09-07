@@ -616,6 +616,7 @@ dependencies = [
  "rusqlite",
  "rustix",
  "syscalls",
+ "thiserror",
 ]
 
 [[package]]

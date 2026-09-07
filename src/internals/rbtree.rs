@@ -385,7 +385,11 @@ impl RBTree {
         let ptr = if size < ARENA_SIZE {
             PAGE_ALLOCATOR
                 .alloc(None, size)
-                .ok_or(RSMallocError::OutOfMemory)
+                .ok_or(RSMallocError::OutOfMemory {
+                    subsystem: "rbtree.rs alloc_chunk",
+                    size,
+                    errno: None,
+                })
         } else {
             record_mmap_call(size);
             mmap_anonymous(
@@ -394,11 +398,13 @@ impl RBTree {
                 ProtFlags::READ | ProtFlags::WRITE,
                 MapFlags::PRIVATE | MapFlags::NORESERVE,
             )
-            .map_err(|_| RSMallocError::OutOfMemory)
+            .map_err(|e| RSMallocError::OutOfMemory {
+                subsystem: "rbtree.rs alloc_chunk",
+                size,
+                errno: Some(e.raw_os_error()),
+            })
         }
-        .unwrap_or_else(|e| {
-            e.log_and_abort(null_mut(), "Cannot allocate BigAllocMap node chunk", None)
-        }) as *mut Node;
+        .unwrap_or_else(|e| e.log_and_abort()) as *mut Node;
 
         for i in 0..NODE_CHUNK {
             let node = ptr.add(i);

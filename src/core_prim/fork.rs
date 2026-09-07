@@ -1,6 +1,5 @@
 use std::{
     mem::transmute,
-    ptr::null_mut,
     sync::{Mutex, MutexGuard},
 };
 
@@ -68,11 +67,7 @@ unsafe extern "C" fn fork_child() {
     }
 
     if __rseq_size == 0 || __rseq_offset == 0 {
-        RSMallocError::RSEQRegFailed.log_and_abort(
-            null_mut(),
-            "RSEQ register failed, cannot initialize rseq cache.",
-            None,
-        );
+        RSMallocError::RseqUnavailable.log_and_abort();
     }
 }
 

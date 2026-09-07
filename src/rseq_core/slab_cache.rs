@@ -128,11 +128,12 @@ impl SlabCache {
                 MapFlags::PRIVATE,
             )
             .unwrap_or_else(|err| {
-                RSMallocError::OutOfMemory.log_and_abort(
-                    null_mut(),
-                    "cannot create main cache",
-                    Some(err.raw_os_error()),
-                )
+                RSMallocError::OutOfMemory {
+                    errno: Some(err.raw_os_error()),
+                    size: cache_bytes,
+                    subsystem: "slab_cache.rs mmap rseq_cache",
+                }
+                .log_and_abort()
             });
 
             inner.cache = SafePointer::from(list as *mut MainCache);
@@ -181,11 +182,12 @@ impl SlabCache {
                 MapFlags::PRIVATE,
             )
             .unwrap_or_else(|err| {
-                RSMallocError::OutOfMemory.log_and_abort(
-                    null_mut(),
-                    "cannot initialize empty bitmap",
-                    Some(err.raw_os_error()),
-                )
+                RSMallocError::OutOfMemory {
+                    errno: Some(err.raw_os_error()),
+                    size: cache_bytes,
+                    subsystem: "slab_cache.rs mmap bitmap",
+                }
+                .log_and_abort()
             }) as *mut AtomicU64;
             inner.bitmap.nonempty = bitmap;
             inner.bitmap.being_stolen = bitmap.add(bitmaps_each);

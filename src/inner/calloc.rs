@@ -89,11 +89,11 @@ pub unsafe fn rs_calloc(size: usize, zero_size: usize) -> UnsafePointer<Header> 
                 .get(ptr.cast_usize())
                 .map(|meta| meta.size)
                 .unwrap_or_else(|| {
-                    RSMallocError::AttackOrCorruption.log_and_abort(
-                        header.as_ptr() as *mut c_void,
-                        "missing big allocation metadata during calloc",
-                        None,
-                    )
+                    RSMallocError::Corruption {
+                        ptr: header.cast_as_ptr(),
+                        reason: "missing big allocation metadata during calloc, possible double free",
+                    }
+                    .log_and_abort()
                 });
 
             calloc_zero!(header, ptr, payload_size, effective_size);

@@ -225,11 +225,11 @@ macro_rules! is_owned {
         #[cfg(feature = "check-owned-on-alloc")]
         {
             if !RADIX.is_owned($ptr.cast_usize()) {
-                RSMallocError::AttackOrCorruption.log_and_abort(
-                    $ptr.cast_as_ptr(),
-                    "CRITICAL: possible metadata injection: popped pointer is not owned by rsmalloc",
-                    None,
-                );
+                RSMallocError::Corruption {
+                    ptr: $ptr.cast_as_ptr(),
+                    reason: "CRITICAL: possible metadata injection: popped pointer is not owned by rsmalloc",
+                }
+                .log_and_abort();
             }
         }
     };
@@ -307,11 +307,11 @@ pub unsafe fn usable_size(ptr: UnsafePointer<Header>) -> usize {
 
         if header.magic == BIG_MAGIC {
             let meta = BIG_META_MAP.get(original_payload_addr).unwrap_or_else(|| {
-                RSMallocError::MemoryCorruption.log_and_abort(
-                    null_mut(),
-                    "missing header for big allocation",
-                    None,
-                )
+                RSMallocError::Corruption {
+                    ptr: header.cast_as_ptr(),
+                    reason: "missing header for big allocation, possible double free",
+                }
+                .log_and_abort()
             });
 
             return meta.size.saturating_sub(offset);

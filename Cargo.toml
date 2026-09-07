@@ -8,8 +8,8 @@ repository = "https://github.com/Metehan120/rsmalloc"
 edition = "2024"
 
 [dependencies]
-syscalls = { version = "0.8.1", default-features = false }
-rustix = { version = "1.1.4", features = [
+syscalls = { version = "=0.8.1", default-features = false }
+rustix = { version = "=1.1.4", features = [
     "linux_latest",
     "mm",
     "rand",
@@ -19,12 +19,11 @@ rustix = { version = "1.1.4", features = [
 ] }
 rsmalloc-macro = { path = "./rsmalloc-macro" }
 portable-atomic = "1"
+thiserror = { version = "2", default-features = false }
 
 [features]
 default = []
 preload = []
-
-print-cpu-on-double-free = []
 check-owned-on-alloc = []
 
 # Debug options

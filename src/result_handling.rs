@@ -1,64 +1,49 @@
-use std::{fmt::Debug, mem::transmute, process::abort};
+use std::{fmt::Debug, io::Error, mem::transmute, process::abort};
+
+use thiserror::Error;
 
 use crate::Header;
 
-#[repr(u32)]
-#[derive(PartialEq, Eq)]
+#[derive(Debug, Error)]
 pub enum RSMallocError {
-    DoubleFree = 0x1000,
-    MemoryCorruption = 0x1001,
-    OutOfMemory = 0x1003,
-    VAIinitFailed = 0x1005,
-    AttackOrCorruption = 0x100B,
-    SecurityViolation = 0x100C,
-    RSEQRegFailed = 0x100D,
+    #[error("out of memory while allocating {size} bytes in {subsystem}")]
+    OutOfMemory {
+        subsystem: &'static str,
+        size: usize,
+        errno: Option<i32>,
+    },
+    #[error("double free at {ptr:p}")]
+    DoubleFree { ptr: *mut u8 },
+    #[error("allocator metadata corruption at {ptr:p}: {reason}")]
+    Corruption { ptr: *mut u8, reason: &'static str },
+    #[error("invalid pointer {ptr:p}")]
+    InvalidPointer { ptr: *mut u8 },
+    #[error("rseq unavailable")]
+    RseqUnavailable,
     #[cfg(not(feature = "preload"))]
-    ForeignPointer = 0x100E,
-    InvalidPointer = 0x100F,
-    #[cfg(feature = "abort-on-rseq-failure")]
-    RseqCeasedToExist = 0x1010,
-}
-
-impl Debug for RSMallocError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::DoubleFree => write!(f, "DoubleFree (0x1000)"),
-            Self::MemoryCorruption => write!(f, "MemoryCorruption (0x1001)"),
-            Self::OutOfMemory => write!(f, "OutOfMemory (0x1003)"),
-            Self::VAIinitFailed => write!(f, "VAIinitFailed (0x1005)"),
-            Self::AttackOrCorruption => write!(f, "AttackOrCorruption (0x100B)"),
-            Self::SecurityViolation => write!(f, "SecurityViolation (0x100C)"),
-            Self::RSEQRegFailed => write!(f, "RSEQRegFailed (0x100D)"),
-            #[cfg(not(feature = "preload"))]
-            Self::ForeignPointer => write!(f, "ForeignPointer (0x100E)"),
-            Self::InvalidPointer => write!(f, "InvalidPointer (0x100F)"),
-            #[cfg(feature = "abort-on-rseq-failure")]
-            Self::RseqCeasedToExist => write!(f, "RseqCeasedToExist (0x1010)"),
-        }
-    }
+    #[error("foreign pointer {ptr:p}")]
+    ForeignPointer { ptr: *mut u8 },
+    #[error("security violation, reason: {reason}")]
+    SecurityViolation {
+        reason: &'static str,
+        errno: Option<i32>,
+    },
 }
 
 impl RSMallocError {
     #[inline(never)]
-    pub fn log_and_abort(&self, ptr: *mut std::ffi::c_void, extra: &str, errno: Option<i32>) -> ! {
-        #[cfg(feature = "print-cpu-on-double-free")]
-        let current_cpu = unsafe {
-            use crate::rseq_core::rseq_offsets::get_rseq;
-            get_rseq().cpu_id
-        };
-
-        if let Some(errno) = errno {
-            eprintln!(
-                "[RSMALLOC FATAL] {:?} at ptr={:p} | {} | errno({})",
-                self, ptr, extra, errno
-            );
-        } else {
-            eprintln!("[RSMALLOC FATAL] {:?} at ptr={:p} | {}", self, ptr, extra);
-        }
-
-        #[cfg(feature = "print-cpu-on-double-free")]
-        if *self == Self::DoubleFree {
-            eprintln!("[RSMALLOC] Double free on CPU {}", current_cpu)
+    pub fn log_and_abort(&self) -> ! {
+        match self {
+            Self::OutOfMemory {
+                errno: Some(errno), ..
+            }
+            | Self::SecurityViolation {
+                errno: Some(errno), ..
+            } => eprintln!(
+                "[RSMALLOC FATAL] {self} | os_err: {} | errno({errno})",
+                Error::from_raw_os_error(*errno),
+            ),
+            _ => eprintln!("[RSMALLOC FATAL] {self}"),
         }
 
         abort();

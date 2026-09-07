@@ -131,19 +131,19 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
 #[inline(never)]
 pub unsafe fn big_free(ptr: usize) {
     let header = BIG_MAP.remove(ptr).unwrap_or_else(|| {
-        RSMallocError::MemoryCorruption.log_and_abort(
-            null_mut(),
-            "missing header for big allocation, possibly double free",
-            None,
-        )
+        RSMallocError::Corruption {
+            ptr: ptr as *mut u8,
+            reason: "missing header for big allocation, possible double free",
+        }
+        .log_and_abort()
     });
     let mapping_base = (ptr - Header::SIZE) as *mut u8;
     let payload_size = estimate_and_align_2mb(header.size + Header::SIZE).unwrap_or_else(|| {
-        RSMallocError::MemoryCorruption.log_and_abort(
-            null_mut(),
-            "impossible overflow recomputing size for already-live big allocation",
-            None,
-        )
+        RSMallocError::Corruption {
+            ptr: ptr as *mut u8,
+            reason: "impossible overflow recomputing size for already-live big allocation",
+        }
+        .log_and_abort()
     });
 
     if header.buddy_region != 0 {

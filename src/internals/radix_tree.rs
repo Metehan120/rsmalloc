@@ -10,7 +10,6 @@ use crate::{
 use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 use std::{
     hint::{cold_path, unlikely},
-    os::raw::c_void,
     ptr::null_mut,
     sync::atomic::{
         AtomicU64, AtomicUsize,
@@ -57,11 +56,12 @@ impl Radix {
             MapFlags::PRIVATE,
         ) {
             Ok(ptr) => ptr as *mut u8,
-            Err(err) => RSMallocError::VAIinitFailed.log_and_abort(
-                null_mut(),
-                "Cannot allocate memory for RadixTree (L3)",
-                Some(err.raw_os_error()),
-            ),
+            Err(err) => RSMallocError::OutOfMemory {
+                subsystem: "radix_tree.rs map_memory",
+                size,
+                errno: Some(err.raw_os_error()),
+            }
+            .log_and_abort(),
         }
     }
 
@@ -301,11 +301,10 @@ impl RadixTree {
         }
 
         if unlikely(!Self::valid_user_addr(addr)) {
-            RSMallocError::InvalidPointer.log_and_abort(
-                addr as *mut c_void,
-                "invalid pointer address",
-                None,
-            );
+            RSMallocError::InvalidPointer {
+                ptr: addr as *mut u8,
+            }
+            .log_and_abort();
         }
 
         self.nodes.get(addr / CHUNK_SIZE)

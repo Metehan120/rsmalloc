@@ -5,7 +5,7 @@ use rsmalloc_macro::stable_api_surface;
 #[cfg(feature = "abort-on-rseq-failure")]
 use crate::RSMallocError;
 #[cfg(feature = "abort-on-rseq-failure")]
-use std::{hint::unlikely, ptr::null_mut};
+use std::hint::unlikely;
 
 #[repr(C, align(32))]
 #[derive(Debug, Clone, Copy)]
@@ -53,11 +53,7 @@ pub unsafe fn get_rseq() -> &'static rseq {
     let pointer = &*rseq_ptr;
     #[cfg(feature = "abort-on-rseq-failure")]
     if unlikely(pointer.cpu_id == u32::MAX) {
-        RSMallocError::RseqCeasedToExist.log_and_abort(
-            null_mut(),
-            "RSEQ reported CPU ID (UINT_MAX/u32::MAX). This indicates a kernel or hardware failure. Please report this issue. If your system uses ECC memory, inspect corrected/uncorrected memory error logs.",
-            None,
-        );
+        RSMallocError::RseqUnavailable.log_and_abort();
     }
 
     pointer

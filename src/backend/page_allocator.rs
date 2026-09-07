@@ -449,7 +449,7 @@ impl PageAllocator {
         node_id: u16,
         requested: usize,
     ) -> Option<*mut PageArena> {
-        let data_size = requested.max(ARENA_SIZE).align_to(PAGE_SIZE);
+        let data_size = requested.max(ARENA_SIZE).checked_align_to(PAGE_SIZE)?;
 
         #[cfg(feature = "guard-pages-thp")]
         let data_size = data_size.checked_add(PAGE_SIZE)?;

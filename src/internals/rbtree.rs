@@ -10,7 +10,11 @@
 use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 
 use crate::{
-    BigAllocMeta, RSMallocError, internals::lock::SpinLock, record_mmap_call, traits::Lock,
+    BigAllocMeta, RSMallocError,
+    backend::page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR},
+    internals::lock::SpinLock,
+    record_mmap_call,
+    traits::Lock,
 };
 use std::{
     mem::size_of,
@@ -378,19 +382,22 @@ impl RBTree {
 
     unsafe fn alloc_chunk(&self) {
         let size = NODE_CHUNK * size_of::<Node>();
-        record_mmap_call(size);
-        let ptr = mmap_anonymous(
-            null_mut(),
-            size,
-            ProtFlags::READ | ProtFlags::WRITE,
-            MapFlags::PRIVATE | MapFlags::NORESERVE,
-        )
-        .unwrap_or_else(|_| {
-            RSMallocError::OutOfMemory.log_and_abort(
+        let ptr = if size < ARENA_SIZE {
+            PAGE_ALLOCATOR
+                .alloc(None, size)
+                .ok_or(RSMallocError::OutOfMemory)
+        } else {
+            record_mmap_call(size);
+            mmap_anonymous(
                 null_mut(),
-                "Cannot allocate BigAllocMap node chunk",
-                None,
+                size,
+                ProtFlags::READ | ProtFlags::WRITE,
+                MapFlags::PRIVATE | MapFlags::NORESERVE,
             )
+            .map_err(|_| RSMallocError::OutOfMemory)
+        }
+        .unwrap_or_else(|e| {
+            e.log_and_abort(null_mut(), "Cannot allocate BigAllocMap node chunk", None)
         }) as *mut Node;
 
         for i in 0..NODE_CHUNK {

@@ -40,10 +40,10 @@ impl RSMallocError {
             | Self::SecurityViolation {
                 errno: Some(errno), ..
             } => eprintln!(
-                "[RSMALLOC FATAL] {self} | os_err: {} | errno({errno})",
+                "[rsmalloc error] {self} | os_err: {} | errno({errno})",
                 Error::from_raw_os_error(*errno),
             ),
-            _ => eprintln!("[RSMALLOC FATAL] {self}"),
+            _ => eprintln!("[rsmalloc error] {self}"),
         }
 
         abort();

@@ -232,7 +232,7 @@ pub struct Tuning {
     pub relief: ReliefSettings,
     /// Minimum slab page-backend arena data size.
     ///
-    /// Initialization enforces an absolute minimum of 256 KiB. The default is
+    /// Initialization enforces an absolute minimum of 512 KiB. The default is
     /// 256 MiB.
     pub arena_min_size: Bytes,
 }

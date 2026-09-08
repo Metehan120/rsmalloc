@@ -440,26 +440,23 @@ impl SegmentedBitmapAllocator {
     }
 }
 
-/// Metadata always uses page allocation; payloads use the configured threshold.
 unsafe fn reserve(bytes: usize, node: u16, metadata: bool, is_numa: bool) -> Option<*mut c_void> {
-    for _ in 0..MAX_REFILL_RETRIES {
-        if metadata || bytes < ARENA_SIZE {
-            if let Some(mem) = PAGE_ALLOCATOR.alloc(Some(node), bytes) {
-                return Some(mem);
+    if metadata || bytes < ARENA_SIZE {
+        return PAGE_ALLOCATOR.alloc(Some(node), bytes);
+    }
+
+    for _ in 0..MAX_REFILL_RETRIES.max(1) {
+        record_mmap_call(bytes);
+        if let Ok(mem) = mmap_anonymous(
+            null_mut(),
+            bytes,
+            ProtFlags::READ | ProtFlags::WRITE,
+            MapFlags::PRIVATE,
+        ) {
+            if is_numa {
+                NumaBind.prefer_node(mem, bytes, node);
             }
-        } else {
-            record_mmap_call(bytes);
-            if let Ok(mem) = mmap_anonymous(
-                null_mut(),
-                bytes,
-                ProtFlags::READ | ProtFlags::WRITE,
-                MapFlags::PRIVATE,
-            ) {
-                if is_numa {
-                    NumaBind.prefer_node(mem, bytes, node);
-                }
-                return Some(mem);
-            }
+            return Some(mem);
         }
     }
     None

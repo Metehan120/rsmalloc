@@ -11,6 +11,7 @@ use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 use rustix::mm::{MprotectFlags, mprotect};
 
 use crate::{
+    inner::alloc::MAX_REFILL_RETRIES,
     internals::{binder::NumaBind, lock::SpinLock, once::Once},
     record_mmap_call,
     rseq_core::{rseq_offsets::get_rseq, slab_cache::SLAB_CACHE},
@@ -457,13 +458,24 @@ impl PageAllocator {
         let map_size = metadata_size.checked_add(data_size)?;
 
         record_mmap_call(map_size);
-        let mem = mmap_anonymous(
-            null_mut(),
-            map_size,
-            ProtFlags::READ | ProtFlags::WRITE,
-            MapFlags::PRIVATE,
-        )
-        .ok()?;
+        let mut mem = null_mut();
+        for _ in 0..MAX_REFILL_RETRIES.max(1) {
+            let allocated_mem = mmap_anonymous(
+                null_mut(),
+                map_size,
+                ProtFlags::READ | ProtFlags::WRITE,
+                MapFlags::PRIVATE,
+            )
+            .ok();
+            if let Some(memory) = allocated_mem {
+                mem = memory;
+                break;
+            }
+        }
+
+        if mem.is_null() {
+            return None;
+        }
 
         #[cfg(all(
             feature = "page-backend-no-huge-page",

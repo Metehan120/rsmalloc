@@ -140,37 +140,32 @@ macro_rules! bulk_refill {
 
 #[inline(never)]
 pub unsafe fn refill(class: usize, cpu_id: usize) -> UnsafePointer<Header> {
-    for _ in 0..MAX_REFILL_RETRIES {
-        let bulk_batch = bulk_refill!(class);
+    let bulk_batch = bulk_refill!(class);
 
-        match bulk_fill(class, cpu_id, bulk_batch) {
-            Ok((start, tail, count)) => {
-                let observed = if count == bulk_batch && bulk_batch < ITERATIONS[class] {
-                    bulk_batch.saturating_add((bulk_batch / 4).max(1))
-                } else {
-                    count
-                };
+    if let Ok((start, tail, count)) = bulk_fill(class, cpu_id, bulk_batch) {
+        let observed = if count == bulk_batch && bulk_batch < ITERATIONS[class] {
+            bulk_batch.saturating_add((bulk_batch / 4).max(1))
+        } else {
+            count
+        };
 
-                BULK_FILL_BATCHING[class].update_refill(observed, ITERATIONS[class]);
-                let result = take_one_from_batch(
-                    class,
-                    start,
-                    tail,
-                    count,
-                    #[cfg(feature = "debug")]
-                    bulk_batch,
-                    #[cfg(feature = "debug")]
-                    cpu_id,
-                    #[cfg(feature = "debug")]
-                    false,
-                );
+        BULK_FILL_BATCHING[class].update_refill(observed, ITERATIONS[class]);
+        let result = take_one_from_batch(
+            class,
+            start,
+            tail,
+            count,
+            #[cfg(feature = "debug")]
+            bulk_batch,
+            #[cfg(feature = "debug")]
+            cpu_id,
+            #[cfg(feature = "debug")]
+            false,
+        );
 
-                maybe_start_trimmer();
+        maybe_start_trimmer();
 
-                return result;
-            }
-            Err(_) => continue,
-        }
+        return result;
     }
 
     UnsafePointer::NULL

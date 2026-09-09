@@ -3,7 +3,9 @@ use std::hint::likely;
 
 use crate::backend::bootstrap::{BootstrapConfig, main_bootstrap};
 use crate::backend::trim::trim_small;
-use crate::big_allocations::segmented_bitmap::{BIG_BUDDY_MAX_ORDER, BIG_BUDDY_MIN_ORDER, SEGMENTED_BITMAP_BACKEND};
+use crate::big_allocations::segmented_bitmap::{
+    BIG_SEGMENTED_BITMAP_MAX_ORDER, BIG_SEGMENTED_BITMAP_MIN_ORDER, SEGMENTED_BITMAP_BACKEND,
+};
 use crate::core_prim::predictor::DEFAULT_BATCH;
 use crate::core_prim::wrappers::UnsafePointer;
 use crate::inner::align::memalign_inner;
@@ -70,14 +72,14 @@ impl THP {
 
 /// Transparent huge page behavior for buddy allocator regions.
 #[derive(Clone, Copy, Debug)]
-pub enum BuddyTHP {
+pub enum SegmentedBitmapTHP {
     /// Do not force huge-page requests for buddy regions.
     Disabled,
     /// Request huge pages for buddy regions when general THP is enabled.
     Force,
 }
 
-impl BuddyTHP {
+impl SegmentedBitmapTHP {
     const fn enabled(self) -> bool {
         matches!(self, Self::Force)
     }
@@ -87,17 +89,20 @@ impl BuddyTHP {
 #[derive(Clone, Copy, Debug)]
 pub struct THPSettings {
     pub thp: THP,
-    pub buddy_use_thp: BuddyTHP,
+    pub segmented_bitmap_use_thp: SegmentedBitmapTHP,
 }
 
 impl THPSettings {
     pub const DEFAULT: Self = Self {
         thp: THP::Enabled,
-        buddy_use_thp: BuddyTHP::Disabled,
+        segmented_bitmap_use_thp: SegmentedBitmapTHP::Disabled,
     };
 
-    pub const fn new(thp: THP, buddy_use_thp: BuddyTHP) -> Self {
-        Self { thp, buddy_use_thp }
+    pub const fn new(thp: THP, segmented_bitmap_use_thp: SegmentedBitmapTHP) -> Self {
+        Self {
+            thp,
+            segmented_bitmap_use_thp,
+        }
     }
 }
 
@@ -314,27 +319,27 @@ impl Percentage {
 #[derive(Clone, Copy, Debug)]
 pub struct ReliefSettings {
     pub state: ReliefState,
-    pub buddy_disable_percentage: Percentage,
-    pub buddy_enable_percentage: Percentage,
+    pub segmented_bitmap_disable_percentage: Percentage,
+    pub segmented_bitmap_enable_percentage: Percentage,
 }
 
 impl ReliefSettings {
     pub const DEFAULT: ReliefSettings = ReliefSettings {
         state: ReliefState::Disabled,
-        buddy_disable_percentage: Percentage::new(85),
-        buddy_enable_percentage: Percentage::new(80),
+        segmented_bitmap_disable_percentage: Percentage::new(85),
+        segmented_bitmap_enable_percentage: Percentage::new(80),
     };
 
     #[must_use]
     pub const fn new(
         state: ReliefState,
-        buddy_disable_percentage: Percentage,
-        buddy_enable_percentage: Percentage,
+        segmented_bitmap_disable_percentage: Percentage,
+        segmented_bitmap_enable_percentage: Percentage,
     ) -> ReliefSettings {
         ReliefSettings {
             state,
-            buddy_disable_percentage,
-            buddy_enable_percentage,
+            segmented_bitmap_disable_percentage,
+            segmented_bitmap_enable_percentage,
         }
     }
 }
@@ -358,7 +363,7 @@ pub struct RSMallocConfig {
     pub magic_safety: MagicSafety,
     pub foreign_pointer: ForeignPointerSettings,
     pub max_refill_retries: u8,
-    pub max_per_buddy_cache: PerCacheLimit,
+    pub max_per_segmented_bitmap_cache: PerCacheLimit,
     pub experimental_features: ExperimentalFeatures,
     pub trim_thread: TrimThreadSettings,
     pub relief: ReliefSettings,
@@ -380,7 +385,7 @@ impl RSMallocConfig {
         foreign_pointer: ForeignPointerSettings::DEFAULT,
         trim_thread: TrimThreadSettings::DEFAULT,
         relief: ReliefSettings::DEFAULT,
-        max_per_buddy_cache: PerCacheLimit::Default,
+        max_per_segmented_bitmap_cache: PerCacheLimit::Default,
         magic_safety: MagicSafety::MagicRandomization,
         experimental_features: ExperimentalFeatures::DEFAULT,
         arena_min_size: Bytes::ARENA_DEFAULT,
@@ -432,9 +437,9 @@ impl RSMallocConfig {
     }
 
     #[must_use]
-    pub const fn with_max_per_buddy_cache(&self, cache: PerCacheLimit) -> Self {
+    pub const fn with_max_per_segmented_bitmap_cache(&self, cache: PerCacheLimit) -> Self {
         Self {
-            max_per_buddy_cache: cache,
+            max_per_segmented_bitmap_cache: cache,
             ..*self
         }
     }
@@ -476,20 +481,24 @@ pub struct RSMalloc {
 #[inline(never)]
 unsafe fn init(rs: &RSMalloc) {
     let config = &rs.config;
-    let disable_percentage = config.relief.buddy_disable_percentage.0.min(100);
+    let disable_percentage = config.relief.segmented_bitmap_disable_percentage.0.min(100);
     main_bootstrap(BootstrapConfig::new(
         config.arena_min_size.0.max(256 * 1024),
         config.max_refill_retries as usize,
         config.predictor_settings.init_batch as usize,
-        config.max_per_buddy_cache.get_size(),
-        config.thp_settings.buddy_use_thp.enabled(),
+        config.max_per_segmented_bitmap_cache.get_size(),
+        config.thp_settings.segmented_bitmap_use_thp.enabled(),
         config.trim_thread.background_worker.is_disabled(),
         config.trim_thread.threshold.0,
         // The legacy API has no separate big-allocation trim threshold.
         crate::global_vals::BIG_TRIM_THRESHOLD,
         config.relief.state.is_disabled(),
         disable_percentage,
-        config.relief.buddy_enable_percentage.0.min(disable_percentage),
+        config
+            .relief
+            .segmented_bitmap_enable_percentage
+            .0
+            .min(disable_percentage),
         !config.thp_settings.thp.enabled(),
         !config.magic_safety.is_fixed(),
         config.foreign_pointer.global_alloc.is_abort(),
@@ -826,13 +835,16 @@ impl RSMalloc {
     #[cfg(feature = "debug")]
     pub fn get_stats(&self) -> RSMallocStats {
         use crate::{
-            ABORTS, BUDDY_AVERAGE_BLOCK_TIMES, CURRENT_STAMP, HIGH_WATER_BUDDY_CACHED_VA,
+            ABORTS, CURRENT_STAMP, HIGH_WATER_SEGMENTED_BITMAP_CACHED_VA,
             HIGH_WATER_SLAB_CACHED_VA, HIGH_WATER_TOTAL_CACHED_VA, NCPU, REFILL_OVER_PREDICTS,
-            REFILL_UNDER_PREDICTS, REFILLS_BY_CLASS, START_TIME, TOTAL_CACHED_VA, TOTAL_MMAP_BYTES,
-            TOTAL_MMAP_CALLS, TOTAL_REFILL_CALLS,
+            REFILL_UNDER_PREDICTS, REFILLS_BY_CLASS, SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES,
+            START_TIME, TOTAL_CACHED_VA, TOTAL_MMAP_BYTES, TOTAL_MMAP_CALLS, TOTAL_REFILL_CALLS,
             backend::page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR, TOTAL_LIVED, TOTAL_REMOVED},
-            backend::trim::{DISABLE_BUDDY, TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA},
-            big_allocations::segmented_bitmap::{BIG_BUDDY_MIN_ORDER, SEGMENTED_BITMAP_BACKEND, BUDDY_TOTAL_CACHED_VA},
+            backend::trim::{DISABLE_SEGMENTED_BITMAP, TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA},
+            big_allocations::segmented_bitmap::{
+                BIG_SEGMENTED_BITMAP_MIN_ORDER, SEGMENTED_BITMAP_BACKEND,
+                SEGMENTED_BITMAP_TOTAL_CACHED_VA,
+            },
             internals::radix_tree::{CHUNK_SIZE, RADIX},
             rseq_core::slab_cache::SLAB_CACHE,
             utility::{NUM_SIZE_CLASSES, SIZE_CLASSES},
@@ -862,8 +874,8 @@ impl RSMalloc {
         let aborts = ABORTS.load(Ordering::Relaxed);
 
         let slab_cached_va = TOTAL_CACHED_VA.load(Relaxed);
-        let buddy_cached_va = BUDDY_TOTAL_CACHED_VA.load(Relaxed);
-        let total_cached_va = slab_cached_va.saturating_add(buddy_cached_va);
+        let segmented_bitmap_cached_va = SEGMENTED_BITMAP_TOTAL_CACHED_VA.load(Relaxed);
+        let total_cached_va = slab_cached_va.saturating_add(segmented_bitmap_cached_va);
 
         let mut rseq_cpu_total_cached_bytes = 0usize;
         let mut rseq_cpu_min_cached_bytes = usize::MAX;
@@ -924,27 +936,35 @@ impl RSMalloc {
         }
 
         let (numa, inner) = unsafe { SLAB_CACHE.get_numa_and_inner() };
-        let buddy = unsafe { SEGMENTED_BITMAP_BACKEND.report() };
+        let segmented_bitmap = unsafe { SEGMENTED_BITMAP_BACKEND.report() };
         let radix = unsafe { RADIX.report() };
-        let buddy_used_bytes = buddy.total_region_bytes.saturating_sub(buddy.free_bytes);
-        let buddy_free_blocks = buddy.free_blocks.iter().sum();
-        let buddy_never_allocated_bytes = buddy
+        let segmented_bitmap_used_bytes = segmented_bitmap
+            .total_region_bytes
+            .saturating_sub(segmented_bitmap.free_bytes);
+        let segmented_bitmap_free_blocks = segmented_bitmap.free_blocks.iter().sum();
+        let segmented_bitmap_never_allocated_bytes = segmented_bitmap
             .never_allocated_by_order
             .iter()
             .enumerate()
-            .map(|(index, blocks)| blocks.saturating_mul(1usize << (BIG_BUDDY_MIN_ORDER + index)))
+            .map(|(index, blocks)| {
+                blocks.saturating_mul(1usize << (BIG_SEGMENTED_BITMAP_MIN_ORDER + index))
+            })
             .sum();
-        let buddy_reused_bytes = buddy
+        let segmented_bitmap_reused_bytes = segmented_bitmap
             .reused_by_order
             .iter()
             .enumerate()
-            .map(|(index, blocks)| blocks.saturating_mul(1usize << (BIG_BUDDY_MIN_ORDER + index)))
+            .map(|(index, blocks)| {
+                blocks.saturating_mul(1usize << (BIG_SEGMENTED_BITMAP_MIN_ORDER + index))
+            })
             .sum();
-        let buddy_trimmed_bytes = buddy
+        let segmented_bitmap_trimmed_bytes = segmented_bitmap
             .trimmed_by_order
             .iter()
             .enumerate()
-            .map(|(index, blocks)| blocks.saturating_mul(1usize << (BIG_BUDDY_MIN_ORDER + index)))
+            .map(|(index, blocks)| {
+                blocks.saturating_mul(1usize << (BIG_SEGMENTED_BITMAP_MIN_ORDER + index))
+            })
             .sum();
         let radix_owned_bytes = radix.owned_chunks.saturating_mul(CHUNK_SIZE);
         let radix_metadata_per_chunk = if radix.owned_chunks == 0 {
@@ -972,9 +992,10 @@ impl RSMalloc {
             rseq_aborts: aborts,
             total_cached_va,
             slab_cached_va,
-            buddy_cached_va,
+            segmented_bitmap_cached_va,
             high_water_slab_cached_va: HIGH_WATER_SLAB_CACHED_VA.load(Relaxed),
-            high_water_buddy_cached_va: HIGH_WATER_BUDDY_CACHED_VA.load(Relaxed),
+            high_water_segmented_bitmap_cached_va: HIGH_WATER_SEGMENTED_BITMAP_CACHED_VA
+                .load(Relaxed),
             high_water_total_cached_va: HIGH_WATER_TOTAL_CACHED_VA.load(Relaxed),
             numa_enabled: inner.is_numa,
             numa_cpus: numa.ncpu,
@@ -997,25 +1018,27 @@ impl RSMalloc {
             trim_calls: TOTAL_TRIM_CALLS.load(Relaxed),
             trimmed_va: TOTAL_TRIMMED_VA.load(Relaxed),
             avg_small_life_ms: crate::AVERAGE_BLOCK_TIMES.load(Relaxed).saturating_mul(100),
-            avg_buddy_life_ms: BUDDY_AVERAGE_BLOCK_TIMES.load(Relaxed).saturating_mul(100),
-            buddy_disabled: DISABLE_BUDDY.load(Relaxed),
-            buddy_regions: buddy.regions,
-            buddy_total_region_bytes: buddy.total_region_bytes,
-            buddy_used_bytes,
-            buddy_free_bytes: buddy.free_bytes,
-            buddy_free_blocks,
-            buddy_never_allocated_blocks: buddy.never_allocated_blocks,
-            buddy_reused_blocks: buddy.reused_blocks,
-            buddy_trimmed_blocks: buddy.trimmed_blocks,
-            buddy_never_allocated_bytes,
-            buddy_reused_bytes,
-            buddy_trimmed_bytes,
-            buddy_free_blocks_by_order: buddy.free_blocks,
-            buddy_never_allocated_by_order: buddy.never_allocated_by_order,
-            buddy_reused_by_order: buddy.reused_by_order,
-            buddy_trimmed_by_order: buddy.trimmed_by_order,
-            buddy_grow_order: buddy.grow_order,
-            buddy_thp: buddy.thp,
+            avg_segmented_bitmap_life_ms: SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES
+                .load(Relaxed)
+                .saturating_mul(100),
+            segmented_bitmap_disabled: DISABLE_SEGMENTED_BITMAP.load(Relaxed),
+            segmented_bitmap_regions: segmented_bitmap.regions,
+            segmented_bitmap_total_region_bytes: segmented_bitmap.total_region_bytes,
+            segmented_bitmap_used_bytes,
+            segmented_bitmap_free_bytes: segmented_bitmap.free_bytes,
+            segmented_bitmap_free_blocks,
+            segmented_bitmap_never_allocated_blocks: segmented_bitmap.never_allocated_blocks,
+            segmented_bitmap_reused_blocks: segmented_bitmap.reused_blocks,
+            segmented_bitmap_trimmed_blocks: segmented_bitmap.trimmed_blocks,
+            segmented_bitmap_never_allocated_bytes,
+            segmented_bitmap_reused_bytes,
+            segmented_bitmap_trimmed_bytes,
+            segmented_bitmap_free_blocks_by_order: segmented_bitmap.free_blocks,
+            segmented_bitmap_never_allocated_by_order: segmented_bitmap.never_allocated_by_order,
+            segmented_bitmap_reused_by_order: segmented_bitmap.reused_by_order,
+            segmented_bitmap_trimmed_by_order: segmented_bitmap.trimmed_by_order,
+            segmented_bitmap_grow_order: segmented_bitmap.grow_order,
+            segmented_bitmap_thp: segmented_bitmap.thp,
             radix_l1_nodes: radix.l1_nodes,
             radix_l2_nodes: radix.l2_nodes,
             radix_leaves: radix.leaves,
@@ -1089,7 +1112,8 @@ impl RSMalloc {
     }
 }
 
-pub const RSMALLOC_BUDDY_NUM_ORDERS: usize = BIG_BUDDY_MAX_ORDER - BIG_BUDDY_MIN_ORDER + 1;
+pub const RSMALLOC_SEGMENTED_BITMAP_NUM_ORDERS: usize =
+    BIG_SEGMENTED_BITMAP_MAX_ORDER - BIG_SEGMENTED_BITMAP_MIN_ORDER + 1;
 
 #[cfg(any(feature = "debug", doc))]
 unsafe fn alloc_usize_array(count: usize) -> UnsafePointer<Header> {
@@ -1125,9 +1149,9 @@ pub struct RSMallocStats {
 
     pub total_cached_va: usize,
     pub slab_cached_va: usize,
-    pub buddy_cached_va: usize,
+    pub segmented_bitmap_cached_va: usize,
     pub high_water_slab_cached_va: usize,
-    pub high_water_buddy_cached_va: usize,
+    pub high_water_segmented_bitmap_cached_va: usize,
     pub high_water_total_cached_va: usize,
 
     pub numa_enabled: bool,
@@ -1154,26 +1178,26 @@ pub struct RSMallocStats {
     pub trim_calls: usize,
     pub trimmed_va: usize,
     pub avg_small_life_ms: u32,
-    pub avg_buddy_life_ms: u32,
-    pub buddy_disabled: bool,
+    pub avg_segmented_bitmap_life_ms: u32,
+    pub segmented_bitmap_disabled: bool,
 
-    pub buddy_regions: usize,
-    pub buddy_total_region_bytes: usize,
-    pub buddy_used_bytes: usize,
-    pub buddy_free_bytes: usize,
-    pub buddy_free_blocks: usize,
-    pub buddy_never_allocated_blocks: usize,
-    pub buddy_reused_blocks: usize,
-    pub buddy_trimmed_blocks: usize,
-    pub buddy_never_allocated_bytes: usize,
-    pub buddy_reused_bytes: usize,
-    pub buddy_trimmed_bytes: usize,
-    pub buddy_free_blocks_by_order: [usize; RSMALLOC_BUDDY_NUM_ORDERS],
-    pub buddy_never_allocated_by_order: [usize; RSMALLOC_BUDDY_NUM_ORDERS],
-    pub buddy_reused_by_order: [usize; RSMALLOC_BUDDY_NUM_ORDERS],
-    pub buddy_trimmed_by_order: [usize; RSMALLOC_BUDDY_NUM_ORDERS],
-    pub buddy_grow_order: usize,
-    pub buddy_thp: bool,
+    pub segmented_bitmap_regions: usize,
+    pub segmented_bitmap_total_region_bytes: usize,
+    pub segmented_bitmap_used_bytes: usize,
+    pub segmented_bitmap_free_bytes: usize,
+    pub segmented_bitmap_free_blocks: usize,
+    pub segmented_bitmap_never_allocated_blocks: usize,
+    pub segmented_bitmap_reused_blocks: usize,
+    pub segmented_bitmap_trimmed_blocks: usize,
+    pub segmented_bitmap_never_allocated_bytes: usize,
+    pub segmented_bitmap_reused_bytes: usize,
+    pub segmented_bitmap_trimmed_bytes: usize,
+    pub segmented_bitmap_free_blocks_by_order: [usize; RSMALLOC_SEGMENTED_BITMAP_NUM_ORDERS],
+    pub segmented_bitmap_never_allocated_by_order: [usize; RSMALLOC_SEGMENTED_BITMAP_NUM_ORDERS],
+    pub segmented_bitmap_reused_by_order: [usize; RSMALLOC_SEGMENTED_BITMAP_NUM_ORDERS],
+    pub segmented_bitmap_trimmed_by_order: [usize; RSMALLOC_SEGMENTED_BITMAP_NUM_ORDERS],
+    pub segmented_bitmap_grow_order: usize,
+    pub segmented_bitmap_thp: bool,
 
     pub radix_l1_nodes: usize,
     pub radix_l2_nodes: usize,

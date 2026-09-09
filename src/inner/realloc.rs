@@ -15,7 +15,7 @@ use crate::{
     backend::page_allocator::PAGE_ALLOCATOR,
     big_allocations::{
         big_allocation::estimate_and_align_2mb,
-        segmented_bitmap::{BIG_BUDDY_MAX_ORDER, SEGMENTED_BITMAP_BACKEND},
+        segmented_bitmap::{BIG_SEGMENTED_BITMAP_MAX_ORDER, SEGMENTED_BITMAP_BACKEND},
     },
     core_prim::wrappers::{SafePointer, UnsafePointer},
     inner::{
@@ -125,9 +125,9 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
     if new_size <= old_meta.size {
         return ptr.apply_unsafe();
     }
-    let is_in_buddy = old_meta.buddy_region != 0;
+    let is_in_segmented_bitmap = old_meta.segmented_bitmap_region != 0;
 
-    let old_mapped_size = if is_in_buddy {
+    let old_mapped_size = if is_in_segmented_bitmap {
         1usize << old_meta.order
     } else {
         estimate_and_align_2mb(old_meta.size + Header::SIZE).unwrap_or_else(|| {
@@ -163,25 +163,25 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
         return UnsafePointer::NULL;
     };
 
-    if is_in_buddy && old_mapped_size >= aligned_new {
+    if is_in_segmented_bitmap && old_mapped_size >= aligned_new {
         let new_meta = BigAllocMeta {
             next: std::ptr::null_mut(),
             size: new_size,
             order: old_meta.order,
-            buddy_region: old_meta.buddy_region,
+            segmented_bitmap_region: old_meta.segmented_bitmap_region,
             aligned: old_meta.aligned,
         };
         let _ = BIG_META_MAP.replace(old_ptr, new_meta);
         return ptr.apply_unsafe();
     }
 
-    if !is_in_buddy {
+    if !is_in_segmented_bitmap {
         if let Ok(new_addr) = mremap(old_mapping, old_total, aligned_new, MremapFlags::empty()) {
             let new_meta = BigAllocMeta {
                 next: std::ptr::null_mut(),
                 size: new_size,
                 order: aligned_new.next_power_of_two().trailing_zeros() as usize,
-                buddy_region: 0,
+                segmented_bitmap_region: 0,
                 aligned: false,
             };
 
@@ -192,13 +192,15 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
         let mut current_addr = old_mapping as usize;
         let mut current_order = old_meta.order;
 
-        while current_order < BIG_BUDDY_MAX_ORDER {
-            if aligned_new.next_power_of_two().trailing_zeros() as usize > BIG_BUDDY_MAX_ORDER {
+        while current_order < BIG_SEGMENTED_BITMAP_MAX_ORDER {
+            if aligned_new.next_power_of_two().trailing_zeros() as usize
+                > BIG_SEGMENTED_BITMAP_MAX_ORDER
+            {
                 break;
             }
 
             if let Some((new_addr, new_order)) = SEGMENTED_BITMAP_BACKEND.try_grow_inplace(
-                old_meta.buddy_region,
+                old_meta.segmented_bitmap_region,
                 current_addr,
                 current_order,
             ) {
@@ -211,7 +213,7 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
                         next: std::ptr::null_mut(),
                         size: old_meta.size,
                         order: current_order,
-                        buddy_region: old_meta.buddy_region,
+                        segmented_bitmap_region: old_meta.segmented_bitmap_region,
                         aligned: old_meta.aligned,
                     },
                 );
@@ -222,7 +224,7 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
                         next: std::ptr::null_mut(),
                         size: new_size,
                         order: current_order,
-                        buddy_region: old_meta.buddy_region,
+                        segmented_bitmap_region: old_meta.segmented_bitmap_region,
                         aligned: old_meta.aligned,
                     };
                     let _ = BIG_META_MAP.replace(old_ptr, new_meta);

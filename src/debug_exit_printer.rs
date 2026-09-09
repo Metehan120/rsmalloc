@@ -2,20 +2,22 @@
 
 use std::sync::atomic::Ordering::{self, Relaxed};
 
-#[cfg(feature = "debug-full-critic")]
-use crate::inner::{alloc::RS_ALLOC_CALLS_DEBUG, free::RS_FREE_CALLS_DEBUG};
 #[cfg(feature = "debug-exact")]
 use crate::backend::trim::{TOTAL_TRIMMED_BLOCKS, TOTAL_TRIMMED_TIME};
+#[cfg(feature = "debug-full-critic")]
+use crate::inner::{alloc::RS_ALLOC_CALLS_DEBUG, free::RS_FREE_CALLS_DEBUG};
 use crate::{
-    ABORTS, AVERAGE_BLOCK_TIMES, BUDDY_AVERAGE_BLOCK_TIMES, CURRENT_STAMP,
-    HIGH_WATER_BUDDY_CACHED_VA, HIGH_WATER_SLAB_CACHED_VA, HIGH_WATER_TOTAL_CACHED_VA, NCPU,
-    REFILL_OVER_PREDICTS, REFILL_UNDER_PREDICTS, REFILLS_BY_CLASS, START_TIME, TOTAL_CACHED_VA,
-    TOTAL_MMAP_BYTES, TOTAL_MMAP_CALLS, TOTAL_REFILL_CALLS,
+    ABORTS, AVERAGE_BLOCK_TIMES, CURRENT_STAMP, HIGH_WATER_SEGMENTED_BITMAP_CACHED_VA,
+    HIGH_WATER_SLAB_CACHED_VA, HIGH_WATER_TOTAL_CACHED_VA, NCPU, REFILL_OVER_PREDICTS,
+    REFILL_UNDER_PREDICTS, REFILLS_BY_CLASS, SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES, START_TIME,
+    TOTAL_CACHED_VA, TOTAL_MMAP_BYTES, TOTAL_MMAP_CALLS, TOTAL_REFILL_CALLS,
     backend::page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR, TOTAL_LIVED, TOTAL_REMOVED},
-    big_allocations::segmented_bitmap::{BIG_BUDDY_MIN_ORDER, SEGMENTED_BITMAP_BACKEND, BUDDY_TOTAL_CACHED_VA},
+    backend::trim::{DISABLE_SEGMENTED_BITMAP, TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA},
+    big_allocations::segmented_bitmap::{
+        BIG_SEGMENTED_BITMAP_MIN_ORDER, SEGMENTED_BITMAP_BACKEND, SEGMENTED_BITMAP_TOTAL_CACHED_VA,
+    },
     internals::radix_tree::{CHUNK_SIZE, RADIX},
     rseq_core::slab_cache::SLAB_CACHE,
-    backend::trim::{DISABLE_BUDDY, TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA},
     utility::SIZE_CLASSES,
 };
 
@@ -91,8 +93,8 @@ unsafe extern "C" fn rsmalloc_debug_exit_print() {
 
 pub(crate) unsafe fn print_report() {
     let slab_cached = TOTAL_CACHED_VA.load(Relaxed);
-    let buddy_cached = BUDDY_TOTAL_CACHED_VA.load(Relaxed);
-    let total_cached = slab_cached.saturating_add(buddy_cached);
+    let segmented_bitmap_cached = SEGMENTED_BITMAP_TOTAL_CACHED_VA.load(Relaxed);
+    let total_cached = slab_cached.saturating_add(segmented_bitmap_cached);
     let total_refills = TOTAL_REFILL_CALLS.load(Relaxed);
     let under = REFILL_UNDER_PREDICTS.load(Relaxed);
     let over = REFILL_OVER_PREDICTS.load(Relaxed);
@@ -106,7 +108,7 @@ pub(crate) unsafe fn print_report() {
         .map(|start| start.elapsed().as_millis())
         .unwrap_or(0);
 
-    let buddy = SEGMENTED_BITMAP_BACKEND.report();
+    let segmented_bitmap = SEGMENTED_BITMAP_BACKEND.report();
     let radix = RADIX.report();
 
     let mut cpu_total = 0usize;
@@ -205,14 +207,14 @@ pub(crate) unsafe fn print_report() {
     section(&mut report, "cached virtual memory");
     line(&mut report, "  current");
     byte_item(&mut report, "slab", slab_cached);
-    byte_item(&mut report, "buddy", buddy_cached);
+    byte_item(&mut report, "segmented_bitmap", segmented_bitmap_cached);
     byte_item(&mut report, "total", total_cached);
     line(&mut report, "  high water");
     byte_item(&mut report, "slab", HIGH_WATER_SLAB_CACHED_VA.load(Relaxed));
     byte_item(
         &mut report,
-        "buddy",
-        HIGH_WATER_BUDDY_CACHED_VA.load(Relaxed),
+        "segmented_bitmap",
+        HIGH_WATER_SEGMENTED_BITMAP_CACHED_VA.load(Relaxed),
     );
     byte_item(
         &mut report,
@@ -354,59 +356,83 @@ pub(crate) unsafe fn print_report() {
     );
     item(
         &mut report,
-        "avg buddy life",
+        "avg segmented_bitmap life",
         format!(
             "{} ms",
-            BUDDY_AVERAGE_BLOCK_TIMES.load(Relaxed) as u64 * 100
+            SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES.load(Relaxed) as u64 * 100
         ),
     );
-    item(&mut report, "buddy disabled", DISABLE_BUDDY.load(Relaxed));
+    item(
+        &mut report,
+        "segmented_bitmap disabled",
+        DISABLE_SEGMENTED_BITMAP.load(Relaxed),
+    );
 
-    section(&mut report, "buddy backend");
-    let used_bytes = buddy.total_region_bytes.saturating_sub(buddy.free_bytes);
-    let free_pct = if buddy.total_region_bytes == 0 {
+    section(&mut report, "segmented_bitmap backend");
+    let used_bytes = segmented_bitmap
+        .total_region_bytes
+        .saturating_sub(segmented_bitmap.free_bytes);
+    let free_pct = if segmented_bitmap.total_region_bytes == 0 {
         0.0
     } else {
-        (buddy.free_bytes as f64 * 100.0) / buddy.total_region_bytes as f64
+        (segmented_bitmap.free_bytes as f64 * 100.0) / segmented_bitmap.total_region_bytes as f64
     };
     let used_pct = 100.0 - free_pct;
-    let free_blocks: usize = buddy.free_blocks.iter().sum();
-    let never_bytes: usize = buddy
+    let free_blocks: usize = segmented_bitmap.free_blocks.iter().sum();
+    let never_bytes: usize = segmented_bitmap
         .never_allocated_by_order
         .iter()
         .enumerate()
-        .map(|(index, blocks)| blocks.saturating_mul(1usize << (BIG_BUDDY_MIN_ORDER + index)))
+        .map(|(index, blocks)| {
+            blocks.saturating_mul(1usize << (BIG_SEGMENTED_BITMAP_MIN_ORDER + index))
+        })
         .sum();
-    let reused_bytes: usize = buddy
+    let reused_bytes: usize = segmented_bitmap
         .reused_by_order
         .iter()
         .enumerate()
-        .map(|(index, blocks)| blocks.saturating_mul(1usize << (BIG_BUDDY_MIN_ORDER + index)))
+        .map(|(index, blocks)| {
+            blocks.saturating_mul(1usize << (BIG_SEGMENTED_BITMAP_MIN_ORDER + index))
+        })
         .sum();
-    let trimmed_bytes: usize = buddy
+    let trimmed_bytes: usize = segmented_bitmap
         .trimmed_by_order
         .iter()
         .enumerate()
-        .map(|(index, blocks)| blocks.saturating_mul(1usize << (BIG_BUDDY_MIN_ORDER + index)))
+        .map(|(index, blocks)| {
+            blocks.saturating_mul(1usize << (BIG_SEGMENTED_BITMAP_MIN_ORDER + index))
+        })
         .sum();
 
-    item(&mut report, "regions", buddy.regions);
-    item(&mut report, "grow order", buddy.grow_order);
-    item(&mut report, "thp", buddy.thp);
-    byte_item(&mut report, "region bytes", buddy.total_region_bytes);
+    item(&mut report, "regions", segmented_bitmap.regions);
+    item(&mut report, "grow order", segmented_bitmap.grow_order);
+    item(&mut report, "thp", segmented_bitmap.thp);
+    byte_item(
+        &mut report,
+        "region bytes",
+        segmented_bitmap.total_region_bytes,
+    );
     byte_item(&mut report, "used bytes", used_bytes);
-    byte_item(&mut report, "free bytes", buddy.free_bytes);
+    byte_item(&mut report, "free bytes", segmented_bitmap.free_bytes);
     item(
         &mut report,
         "used / free",
         format!("{:.2}% / {:.2}%", used_pct, free_pct),
     );
     item(&mut report, "free blocks", free_blocks);
-    item(&mut report, "never allocated", buddy.never_allocated_blocks);
+    item(
+        &mut report,
+        "never allocated",
+        segmented_bitmap.never_allocated_blocks,
+    );
     byte_item(&mut report, "never alloc bytes", never_bytes);
-    item(&mut report, "reused", buddy.reused_blocks);
+    item(&mut report, "reused", segmented_bitmap.reused_blocks);
     byte_item(&mut report, "reused bytes", reused_bytes);
-    item(&mut report, "trimmed blocks", buddy.trimmed_blocks);
+    item(
+        &mut report,
+        "trimmed blocks",
+        segmented_bitmap.trimmed_blocks,
+    );
     byte_item(&mut report, "trimmed bytes", trimmed_bytes);
 
     line(&mut report, "  free lists by order");
@@ -414,8 +440,8 @@ pub(crate) unsafe fn print_report() {
         &mut report,
         "  order  block size                  blocks  never  reused  trimmed  bytes",
     );
-    for (index, blocks) in buddy.free_blocks.iter().enumerate() {
-        let order = BIG_BUDDY_MIN_ORDER + index;
+    for (index, blocks) in segmented_bitmap.free_blocks.iter().enumerate() {
+        let order = BIG_SEGMENTED_BITMAP_MIN_ORDER + index;
         let block_size = 1usize << order;
         let bytes = blocks.saturating_mul(block_size);
         line(
@@ -425,9 +451,9 @@ pub(crate) unsafe fn print_report() {
                 order,
                 fmt_bytes(block_size),
                 blocks,
-                buddy.never_allocated_by_order[index],
-                buddy.reused_by_order[index],
-                buddy.trimmed_by_order[index],
+                segmented_bitmap.never_allocated_by_order[index],
+                segmented_bitmap.reused_by_order[index],
+                segmented_bitmap.trimmed_by_order[index],
                 fmt_bytes(bytes)
             ),
         );

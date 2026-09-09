@@ -1,10 +1,10 @@
 use super::{
-    BIG_BUDDY_MIN_ORDER, BUDDY_NUM_ORDERS, Flags,
+    BIG_SEGMENTED_BITMAP_MIN_ORDER, Flags, SEGMENTED_BITMAP_NUM_ORDERS,
     atomics::{AtomicU32, AtomicU64, Ordering},
 };
 
 pub(super) const SLOTS: usize = 16;
-pub(super) const SLOT_BYTES: usize = 1 << BIG_BUDDY_MIN_ORDER;
+pub(super) const SLOT_BYTES: usize = 1 << BIG_SEGMENTED_BITMAP_MIN_ORDER;
 pub(super) const SEGMENT_BYTES: usize = SLOTS * SLOT_BYTES;
 const DIRTY_SHIFT: u32 = 16;
 const USED_SHIFT: u32 = 32;
@@ -88,7 +88,7 @@ impl Segment {
 
     #[inline(always)]
     pub(super) fn alloc(&self, order: usize) -> Option<(usize, Flags)> {
-        debug_assert!(order < BUDDY_NUM_ORDERS);
+        debug_assert!(order < SEGMENTED_BITMAP_NUM_ORDERS);
         #[cfg(all(test, feature = "debug-exact"))]
         super::atomics::probe();
         let mut word = self.snapshot();
@@ -123,7 +123,7 @@ impl Segment {
 
     #[inline(always)]
     fn allocation_mask(&self, addr: usize, order: usize) -> Option<u16> {
-        if order >= BUDDY_NUM_ORDERS {
+        if order >= SEGMENTED_BITMAP_NUM_ORDERS {
             return None;
         }
         let offset = addr.checked_sub(self.base())?;
@@ -148,7 +148,7 @@ impl Segment {
 
     #[inline(always)]
     pub(super) unsafe fn grow(&self, addr: usize, order: usize) -> bool {
-        if order >= BUDDY_NUM_ORDERS - 1 {
+        if order >= SEGMENTED_BITMAP_NUM_ORDERS - 1 {
             return false;
         }
         let Some(whole) = self.allocation_mask(addr, order + 1) else {

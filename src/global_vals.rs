@@ -20,9 +20,9 @@ pub static mut FREED_MAGIC: u64 = u64::from_le_bytes(*b"RMMAGICF");
 pub static mut BIG_MAGIC: u64 = u64::from_le_bytes(*b"RBMAGICB");
 
 pub static mut RS_DISABLE_THP: bool = false;
-pub static mut BUDDY_INIT: bool = false;
-pub static mut BUDDY_MAX_CACHE: usize = 0;
-pub static mut BUDDY_ATTEMPT_HUGE: bool = false;
+pub static mut SEGMENTED_BITMAP_INIT: bool = false;
+pub static mut SEGMENTED_BITMAP_MAX_CACHE: usize = 0;
+pub static mut SEGMENTED_BITMAP_ATTEMPT_HUGE: bool = false;
 #[cfg(not(feature = "preload"))]
 pub static mut FOREIGN_POINTER_ABORT: bool = false;
 pub static mut ALIGN_TAG: usize = usize::from_le_bytes(*b"RSMALIGN");
@@ -35,7 +35,7 @@ pub static TOTAL_CACHED_VA: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "debug")]
 pub static HIGH_WATER_SLAB_CACHED_VA: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "debug")]
-pub static HIGH_WATER_BUDDY_CACHED_VA: AtomicUsize = AtomicUsize::new(0);
+pub static HIGH_WATER_SEGMENTED_BITMAP_CACHED_VA: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "debug")]
 pub static HIGH_WATER_TOTAL_CACHED_VA: AtomicUsize = AtomicUsize::new(0);
 
@@ -59,23 +59,32 @@ pub fn add_slab_cached_va(bytes: usize) {
 
     #[cfg(feature = "debug")]
     {
-        let buddy = crate::big_allocations::segmented_bitmap::BUDDY_TOTAL_CACHED_VA.load(Ordering::Relaxed);
+        let segmented_bitmap =
+            crate::big_allocations::segmented_bitmap::SEGMENTED_BITMAP_TOTAL_CACHED_VA
+                .load(Ordering::Relaxed);
         update_high_water(&HIGH_WATER_SLAB_CACHED_VA, _slab);
-        update_high_water(&HIGH_WATER_TOTAL_CACHED_VA, _slab.saturating_add(buddy));
+        update_high_water(
+            &HIGH_WATER_TOTAL_CACHED_VA,
+            _slab.saturating_add(segmented_bitmap),
+        );
     }
 }
 
 #[inline(always)]
-pub fn add_buddy_cached_va(bytes: usize) {
-    let _buddy = crate::big_allocations::segmented_bitmap::BUDDY_TOTAL_CACHED_VA
-        .fetch_add(bytes, Ordering::Relaxed)
-        .saturating_add(bytes);
+pub fn add_segmented_bitmap_cached_va(bytes: usize) {
+    let _segmented_bitmap =
+        crate::big_allocations::segmented_bitmap::SEGMENTED_BITMAP_TOTAL_CACHED_VA
+            .fetch_add(bytes, Ordering::Relaxed)
+            .saturating_add(bytes);
 
     #[cfg(feature = "debug")]
     {
         let slab = TOTAL_CACHED_VA.load(Ordering::Relaxed);
-        update_high_water(&HIGH_WATER_BUDDY_CACHED_VA, _buddy);
-        update_high_water(&HIGH_WATER_TOTAL_CACHED_VA, slab.saturating_add(_buddy));
+        update_high_water(&HIGH_WATER_SEGMENTED_BITMAP_CACHED_VA, _segmented_bitmap);
+        update_high_water(
+            &HIGH_WATER_TOTAL_CACHED_VA,
+            slab.saturating_add(_segmented_bitmap),
+        );
     }
 }
 
@@ -122,7 +131,7 @@ pub static GLOBAL_SPIN_WAITS: AtomicUsize = AtomicUsize::new(0);
 pub static TIME_STAMP: OnceLock<Instant> = OnceLock::new();
 pub static CURRENT_STAMP: AtomicU32 = AtomicU32::new(0);
 pub static AVERAGE_BLOCK_TIMES: AtomicU32 = AtomicU32::new(10);
-pub static BUDDY_AVERAGE_BLOCK_TIMES: AtomicU32 = AtomicU32::new(100);
+pub static SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES: AtomicU32 = AtomicU32::new(100);
 pub static GLOBAL_TRIM_LOCK: SpinLock<()> = SpinLock::new(());
 pub static mut NCPU: usize = 0;
 

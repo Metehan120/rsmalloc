@@ -6,7 +6,7 @@
 
 use crate::{backend::bootstrap::BootstrapConfig, core_prim::predictor::DEFAULT_BATCH};
 
-const DEFAULT_BUDDY_CACHE: usize = 64 * 1024 * 1024;
+const DEFAULT_SEGMENTED_BITMAP_CACHE: usize = 64 * 1024 * 1024;
 const DEFAULT_SMALL_TRIM_THRESHOLD: usize = 10 * 1024 * 1024;
 const DEFAULT_BIG_TRIM_THRESHOLD: usize = 512 * 1024 * 1024;
 const DEFAULT_ARENA_SIZE: usize = 256 * 1024 * 1024;
@@ -28,14 +28,14 @@ impl THP {
 
 /// Transparent huge-page behavior for buddy allocator regions.
 #[derive(Clone, Copy, Debug)]
-pub enum BuddyTHP {
+pub enum SegmentedBitmapTHP {
     /// Do not explicitly request huge pages for buddy regions.
     Disabled,
     /// Request huge pages when global THP support is enabled.
     Force,
 }
 
-impl BuddyTHP {
+impl SegmentedBitmapTHP {
     const fn enabled(self) -> bool {
         matches!(self, Self::Force)
     }
@@ -49,19 +49,22 @@ pub struct THPSettings {
     /// Whether buddy regions should explicitly request huge pages.
     ///
     /// [`BuddyTHP::Force`] has no effect while [`THP::Disabled`] is selected.
-    pub buddy_use_thp: BuddyTHP,
+    pub segmented_bitmap_use_thp: SegmentedBitmapTHP,
 }
 
 impl THPSettings {
     /// Default policy: enable general THP support without forcing it for buddy regions.
     pub const DEFAULT: Self = Self {
         thp: THP::Enabled,
-        buddy_use_thp: BuddyTHP::Disabled,
+        segmented_bitmap_use_thp: SegmentedBitmapTHP::Disabled,
     };
 
     /// Creates a transparent huge-page configuration.
-    pub const fn new(thp: THP, buddy_use_thp: BuddyTHP) -> Self {
-        Self { thp, buddy_use_thp }
+    pub const fn new(thp: THP, segmented_bitmap_use_thp: SegmentedBitmapTHP) -> Self {
+        Self {
+            thp,
+            segmented_bitmap_use_thp,
+        }
     }
 }
 
@@ -78,7 +81,7 @@ impl PerCacheLimit {
     const fn bytes(self) -> usize {
         match self {
             Self::Bytes(bytes) => bytes,
-            Self::Default => DEFAULT_BUDDY_CACHE,
+            Self::Default => DEFAULT_SEGMENTED_BITMAP_CACHE,
         }
     }
 }
@@ -187,9 +190,9 @@ pub struct ReliefSettings {
     /// Whether memory-pressure relief is active.
     pub state: ReliefState,
     /// Pressure percentage at which buddy caching is disabled.
-    pub buddy_disable_percentage: Percentage,
+    pub segmented_bitmap_disable_percentage: Percentage,
     /// Pressure percentage at or below which buddy caching may be re-enabled.
-    pub buddy_enable_percentage: Percentage,
+    pub segmented_bitmap_enable_percentage: Percentage,
 }
 
 impl ReliefSettings {
@@ -197,20 +200,20 @@ impl ReliefSettings {
     /// Relief itself is disabled by default.
     pub const DEFAULT: Self = Self {
         state: ReliefState::Disabled,
-        buddy_disable_percentage: Percentage::new(85),
-        buddy_enable_percentage: Percentage::new(80),
+        segmented_bitmap_disable_percentage: Percentage::new(85),
+        segmented_bitmap_enable_percentage: Percentage::new(80),
     };
 
     /// Creates buddy memory-pressure relief settings.
     pub const fn new(
         state: ReliefState,
-        buddy_disable_percentage: Percentage,
-        buddy_enable_percentage: Percentage,
+        segmented_bitmap_disable_percentage: Percentage,
+        segmented_bitmap_enable_percentage: Percentage,
     ) -> Self {
         Self {
             state,
-            buddy_disable_percentage,
-            buddy_enable_percentage,
+            segmented_bitmap_disable_percentage,
+            segmented_bitmap_enable_percentage,
         }
     }
 }
@@ -225,7 +228,7 @@ pub struct Tuning {
     /// Maximum number of small-cache refill retries.
     pub max_refill_retries: u8,
     /// Target maximum size of each buddy cache region.
-    pub max_per_buddy_cache: PerCacheLimit,
+    pub max_per_segmented_bitmap_cache: PerCacheLimit,
     /// Background trimming policy.
     pub trim: TrimSettings,
     /// Buddy memory-pressure relief policy.
@@ -243,7 +246,7 @@ impl Tuning {
         thp: THPSettings::DEFAULT,
         refill_init_batch: DEFAULT_BATCH as u8,
         max_refill_retries: 3,
-        max_per_buddy_cache: PerCacheLimit::Default,
+        max_per_segmented_bitmap_cache: PerCacheLimit::Default,
         trim: TrimSettings::DEFAULT,
         relief: ReliefSettings::DEFAULT,
         arena_min_size: Bytes::ARENA_DEFAULT,
@@ -275,9 +278,12 @@ impl Tuning {
 
     /// Replaces the buddy per-cache size limit.
     #[must_use]
-    pub const fn with_max_per_buddy_cache(self, max_per_buddy_cache: PerCacheLimit) -> Self {
+    pub const fn with_max_per_segmented_bitmap_cache(
+        self,
+        max_per_segmented_bitmap_cache: PerCacheLimit,
+    ) -> Self {
         Self {
-            max_per_buddy_cache,
+            max_per_segmented_bitmap_cache,
             ..self
         }
     }
@@ -462,8 +468,9 @@ impl Config {
     }
 
     pub(crate) const fn bootstrap(self) -> BootstrapConfig {
-        let disable_percentage = self.tuning.relief.buddy_disable_percentage.get();
-        let requested_enable_percentage = self.tuning.relief.buddy_enable_percentage.get();
+        let disable_percentage = self.tuning.relief.segmented_bitmap_disable_percentage.get();
+        let requested_enable_percentage =
+            self.tuning.relief.segmented_bitmap_enable_percentage.get();
         let enable_percentage = if requested_enable_percentage > disable_percentage {
             disable_percentage
         } else {
@@ -475,8 +482,8 @@ impl Config {
             arena_size,
             self.tuning.max_refill_retries as usize,
             self.tuning.refill_init_batch as usize,
-            self.tuning.max_per_buddy_cache.bytes(),
-            self.tuning.thp.buddy_use_thp.enabled(),
+            self.tuning.max_per_segmented_bitmap_cache.bytes(),
+            self.tuning.thp.segmented_bitmap_use_thp.enabled(),
             self.tuning.trim.background_worker.disabled(),
             self.tuning.trim.small_threshold.0,
             self.tuning.trim.big_threshold.0,

@@ -17,7 +17,9 @@ use rustix::{
 use crate::core_prim::hw::HardwareFeature;
 use crate::{
     AVERAGE_BLOCK_TIMES, CURRENT_STAMP, DISABLE_TRIM_THREAD, Flags, GLOBAL_TRIM_LOCK, Header, NCPU,
-    big_allocations::segmented_bitmap::{SEGMENTED_BITMAP_BACKEND, BUDDY_TOTAL_CACHED_VA},
+    big_allocations::segmented_bitmap::{
+        SEGMENTED_BITMAP_BACKEND, SEGMENTED_BITMAP_TOTAL_CACHED_VA,
+    },
     core_prim::predictor::TRIM_SMOOTHING,
     global_vals::{BIG_TRIM_THRESHOLD, SMALL_TRIM_THRESHOLD, TOTAL_CACHED_VA},
     internals::lock::LockGuard,
@@ -80,9 +82,9 @@ fn check_memory_pressure() -> usize {
 }
 
 const ENABLE_AFTER: usize = 2;
-pub static DISABLE_BUDDY: AtomicBool = AtomicBool::new(false);
-pub static mut BUDDY_DISABLE_PERCENTAGE: usize = 85;
-pub static mut BUDDY_ENABLE_PERCENTAGE: usize = 80;
+pub static DISABLE_SEGMENTED_BITMAP: AtomicBool = AtomicBool::new(false);
+pub static mut SEGMENTED_BITMAP_DISABLE_PERCENTAGE: usize = 85;
+pub static mut SEGMENTED_BITMAP_ENABLE_PERCENTAGE: usize = 80;
 pub static mut DISABLE_RELIEF: bool = true;
 pub static UNDER_AFTER: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "debug")]
@@ -97,19 +99,19 @@ pub static TOTAL_TRIMMED_TIME: AtomicUsize = AtomicUsize::new(0);
 pub unsafe fn relief_paths() {
     let pressure = check_memory_pressure();
 
-    if pressure >= BUDDY_DISABLE_PERCENTAGE && !DISABLE_BUDDY.load(Relaxed) {
-        DISABLE_BUDDY.store(true, Relaxed);
+    if pressure >= SEGMENTED_BITMAP_DISABLE_PERCENTAGE && !DISABLE_SEGMENTED_BITMAP.load(Relaxed) {
+        DISABLE_SEGMENTED_BITMAP.store(true, Relaxed);
         UNDER_AFTER.store(0, Relaxed);
         SEGMENTED_BITMAP_BACKEND.trim(0);
 
         return;
     }
 
-    if DISABLE_BUDDY.load(Relaxed) && pressure <= BUDDY_ENABLE_PERCENTAGE {
+    if DISABLE_SEGMENTED_BITMAP.load(Relaxed) && pressure <= SEGMENTED_BITMAP_ENABLE_PERCENTAGE {
         let under = UNDER_AFTER.fetch_add(1, Relaxed) + 1;
 
         if under >= ENABLE_AFTER {
-            DISABLE_BUDDY.store(false, Relaxed);
+            DISABLE_SEGMENTED_BITMAP.store(false, Relaxed);
             UNDER_AFTER.store(0, Relaxed);
         }
     } else {
@@ -150,7 +152,7 @@ pub unsafe fn trimmer_main() -> ! {
 
 pub unsafe fn trim_small(requested_size: usize) -> usize {
     if TOTAL_CACHED_VA.load(Relaxed) < SMALL_TRIM_THRESHOLD
-        && BUDDY_TOTAL_CACHED_VA.load(Relaxed) < BIG_TRIM_THRESHOLD
+        && SEGMENTED_BITMAP_TOTAL_CACHED_VA.load(Relaxed) < BIG_TRIM_THRESHOLD
     {
         return 0;
     }

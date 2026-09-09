@@ -42,14 +42,14 @@ impl RSMallocRaw {
 pub enum AdvancedTrimSize {
     All,
     AllSlab,
-    AllBuddy,
+    AllSegmentedBitmap,
     Bytes(NonZero<usize>),
     SlabBytes(NonZero<usize>),
-    BuddyBytes(NonZero<usize>),
+    SegmentedBitmapBytes(NonZero<usize>),
 }
 
 pub struct TrimReport {
-    pub buddy_bytes: usize,
+    pub segmented_bitmap_bytes: usize,
     pub slab_bytes: usize,
 }
 
@@ -86,46 +86,46 @@ impl RawInterface for RSMallocRaw {
         self.global.manual_init();
         match trim_size {
             AdvancedTrimSize::All => {
-                let buddy = SEGMENTED_BITMAP_BACKEND.trim(0);
+                let segmented_bitmap = SEGMENTED_BITMAP_BACKEND.trim(0);
                 let slab = trim_small(0);
                 TrimReport {
-                    buddy_bytes: buddy,
+                    segmented_bitmap_bytes: segmented_bitmap,
                     slab_bytes: slab,
                 }
             }
-            AdvancedTrimSize::AllBuddy => {
-                let buddy = SEGMENTED_BITMAP_BACKEND.trim(0);
+            AdvancedTrimSize::AllSegmentedBitmap => {
+                let segmented_bitmap = SEGMENTED_BITMAP_BACKEND.trim(0);
                 TrimReport {
-                    buddy_bytes: buddy,
+                    segmented_bitmap_bytes: segmented_bitmap,
                     slab_bytes: 0,
                 }
             }
             AdvancedTrimSize::AllSlab => {
                 let slab = trim_small(0);
                 TrimReport {
-                    buddy_bytes: 0,
+                    segmented_bitmap_bytes: 0,
                     slab_bytes: slab,
                 }
             }
             AdvancedTrimSize::Bytes(requested) => {
                 let requested = requested.get();
 
-                let buddy = SEGMENTED_BITMAP_BACKEND.trim(requested);
+                let segmented_bitmap = SEGMENTED_BITMAP_BACKEND.trim(requested);
                 let mut slab = 0;
-                if buddy < requested && requested != 0 {
-                    slab = trim_small(requested.saturating_sub(buddy));
+                if segmented_bitmap < requested && requested != 0 {
+                    slab = trim_small(requested.saturating_sub(segmented_bitmap));
                 }
                 TrimReport {
-                    buddy_bytes: buddy,
+                    segmented_bitmap_bytes: segmented_bitmap,
                     slab_bytes: slab,
                 }
             }
-            AdvancedTrimSize::BuddyBytes(requested) => {
+            AdvancedTrimSize::SegmentedBitmapBytes(requested) => {
                 let requested = requested.get();
 
-                let buddy = SEGMENTED_BITMAP_BACKEND.trim(requested);
+                let segmented_bitmap = SEGMENTED_BITMAP_BACKEND.trim(requested);
                 TrimReport {
-                    buddy_bytes: buddy,
+                    segmented_bitmap_bytes: segmented_bitmap,
                     slab_bytes: 0,
                 }
             }
@@ -134,7 +134,7 @@ impl RawInterface for RSMallocRaw {
 
                 let slab = trim_small(requested);
                 TrimReport {
-                    buddy_bytes: 0,
+                    segmented_bitmap_bytes: 0,
                     slab_bytes: slab,
                 }
             }

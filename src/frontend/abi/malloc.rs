@@ -20,12 +20,12 @@ pub unsafe extern "C" fn malloc_usable_size(ptr: *mut c_void) -> usize {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn malloc_trim(requested_size: usize) -> c_int {
-    let buddy_trim = SEGMENTED_BITMAP_BACKEND.trim_old(requested_size);
+    let segmented_bitmap_trim = SEGMENTED_BITMAP_BACKEND.trim_old(requested_size);
     let mut small_trim = 0;
-    if requested_size.saturating_sub(buddy_trim) != 0 || requested_size == 0 {
-        small_trim = trim_small(requested_size.saturating_sub(buddy_trim));
+    if requested_size.saturating_sub(segmented_bitmap_trim) != 0 || requested_size == 0 {
+        small_trim = trim_small(requested_size.saturating_sub(segmented_bitmap_trim));
     }
-    let total = buddy_trim.saturating_add(small_trim);
+    let total = segmented_bitmap_trim.saturating_add(small_trim);
 
     if total != 0 { 1 } else { 0 }
 }

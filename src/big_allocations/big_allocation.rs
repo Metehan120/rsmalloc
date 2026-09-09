@@ -7,8 +7,8 @@ use std::{
 use rustix::mm::{Advice, MapFlags, ProtFlags, madvise, mmap_anonymous, munmap};
 
 use crate::{
-    BIG_MAGIC, BUDDY_INIT, BigAllocMeta, Flags, Header, RS_DISABLE_THP, RSMallocError,
-    backend::trim::DISABLE_BUDDY,
+    BIG_MAGIC, BigAllocMeta, Flags, Header, RS_DISABLE_THP, RSMallocError, SEGMENTED_BITMAP_INIT,
+    backend::trim::DISABLE_SEGMENTED_BITMAP,
     big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND,
     core_prim::wrappers::UnsafePointer,
     internals::{binder::NumaBind, radix_tree::RADIX, rbtree::BIG_MAP},
@@ -48,18 +48,19 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
     let mut registered = false;
     let mut mapped_total = aligned_total;
     let mut actual_ptr: *mut u8 = null_mut();
-    let mut buddy_region = 0usize;
+    let mut segmented_bitmap_region = 0usize;
     let mut flags = Flags::Allocated;
     let cpu_id = get_rseq().cpu_id as usize;
     let inner = SLAB_CACHE.get_inner();
     let node_id = SLAB_CACHE.node_for_cpu(cpu_id, inner);
 
-    if size <= 1024 * 1024 * 64 && BUDDY_INIT && !DISABLE_BUDDY.load(Relaxed) {
-        let buddy = SEGMENTED_BITMAP_BACKEND.alloc(aligned_total, node_id, cpu_id);
+    if size <= 1024 * 1024 * 64 && SEGMENTED_BITMAP_INIT && !DISABLE_SEGMENTED_BITMAP.load(Relaxed)
+    {
+        let segmented_bitmap = SEGMENTED_BITMAP_BACKEND.alloc(aligned_total, node_id, cpu_id);
 
-        if let Some((addr, order, _, region)) = buddy {
+        if let Some((addr, order, _, region)) = segmented_bitmap {
             actual_ptr = addr as *mut u8;
-            buddy_region = region;
+            segmented_bitmap_region = region;
             registered = true;
             mapped_total = 1 << order;
 
@@ -120,7 +121,7 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
             next: null_mut(),
             size,
             order: mapped_total.next_power_of_two().trailing_zeros() as usize,
-            buddy_region,
+            segmented_bitmap_region,
             aligned,
         },
     );
@@ -146,8 +147,12 @@ pub unsafe fn big_free(ptr: usize) {
         .log_and_abort()
     });
 
-    if header.buddy_region != 0 {
-        SEGMENTED_BITMAP_BACKEND.free(header.buddy_region, mapping_base as usize, header.order);
+    if header.segmented_bitmap_region != 0 {
+        SEGMENTED_BITMAP_BACKEND.free(
+            header.segmented_bitmap_region,
+            mapping_base as usize,
+            header.order,
+        );
         return;
     }
 

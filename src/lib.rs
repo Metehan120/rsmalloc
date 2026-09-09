@@ -128,7 +128,7 @@ struct BigAllocMeta {
     pub next: *mut BigAllocMeta,
     pub size: usize,
     pub order: usize,
-    pub buddy_region: usize,
+    pub segmented_bitmap_region: usize,
     pub aligned: bool,
 }
 

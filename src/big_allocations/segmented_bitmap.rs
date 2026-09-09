@@ -23,8 +23,8 @@
 // - Metehan
 
 use crate::{
-    BUDDY_AVERAGE_BLOCK_TIMES, BUDDY_INIT, CURRENT_STAMP, Flags, GLOBAL_TRIM_LOCK,
-    add_buddy_cached_va,
+    CURRENT_STAMP, Flags, GLOBAL_TRIM_LOCK, SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES,
+    SEGMENTED_BITMAP_INIT, add_segmented_bitmap_cached_va,
     backend::page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR},
     core_prim::predictor::EMA_ALPHA,
     global_vals::{BIG_TRIM_THRESHOLD, SMALL_TRIM_THRESHOLD, TOTAL_CACHED_VA},
@@ -71,17 +71,18 @@ static CAS_RETRIES: AtomicUsize = AtomicUsize::new(0);
 mod segment;
 use segment::{SEGMENT_BYTES, SLOT_BYTES, Segment};
 
-pub static BUDDY_TOTAL_CACHED_VA: AtomicUsize = AtomicUsize::new(0);
-pub const BIG_BUDDY_MIN_ORDER: usize = 22;
-pub const BIG_BUDDY_MAX_ORDER: usize = 26;
-pub const BUDDY_NUM_ORDERS: usize = BIG_BUDDY_MAX_ORDER - BIG_BUDDY_MIN_ORDER + 1;
+pub static SEGMENTED_BITMAP_TOTAL_CACHED_VA: AtomicUsize = AtomicUsize::new(0);
+pub const BIG_SEGMENTED_BITMAP_MIN_ORDER: usize = 22;
+pub const BIG_SEGMENTED_BITMAP_MAX_ORDER: usize = 26;
+pub const SEGMENTED_BITMAP_NUM_ORDERS: usize =
+    BIG_SEGMENTED_BITMAP_MAX_ORDER - BIG_SEGMENTED_BITMAP_MIN_ORDER + 1;
 const PAGE_SIZE: usize = 4096;
 const MAX_LANES: usize = 96;
 type Allocation = (usize, usize, Flags, usize);
 
 #[repr(C, align(64))]
 struct HintLane {
-    orders: [AtomicPtr<Segment>; BUDDY_NUM_ORDERS],
+    orders: [AtomicPtr<Segment>; SEGMENTED_BITMAP_NUM_ORDERS],
 }
 
 impl HintLane {
@@ -114,7 +115,12 @@ impl Node {
         if !preferred.is_null()
             && let Some((addr, flags)) = (*preferred).alloc(order)
         {
-            return Some((addr, order + BIG_BUDDY_MIN_ORDER, flags, preferred as usize));
+            return Some((
+                addr,
+                order + BIG_SEGMENTED_BITMAP_MIN_ORDER,
+                flags,
+                preferred as usize,
+            ));
         }
         let mut region = self.head.load(Ordering::Acquire);
         while let Some(region_ref) = region.as_ref() {
@@ -126,7 +132,12 @@ impl Node {
                     && let Some((addr, flags)) = (*segment).alloc(order)
                 {
                     hint.store(segment, Ordering::Release);
-                    return Some((addr, order + BIG_BUDDY_MIN_ORDER, flags, segment as usize));
+                    return Some((
+                        addr,
+                        order + BIG_SEGMENTED_BITMAP_MIN_ORDER,
+                        flags,
+                        segment as usize,
+                    ));
                 }
                 index += 1;
                 if index == count {
@@ -277,9 +288,9 @@ impl SegmentedBitmapAllocator {
                 return;
             };
             (*state).node(id).publish(region);
-            add_buddy_cached_va(bytes);
+            add_segmented_bitmap_cached_va(bytes);
             self.state.store(state, Ordering::Release);
-            BUDDY_INIT = true;
+            SEGMENTED_BITMAP_INIT = true;
         });
     }
 
@@ -289,7 +300,7 @@ impl SegmentedBitmapAllocator {
             return None;
         }
         let order = size.max(SLOT_BYTES).next_power_of_two().trailing_zeros() as usize
-            - BIG_BUDDY_MIN_ORDER;
+            - BIG_SEGMENTED_BITMAP_MIN_ORDER;
         let state = self.state.load(Ordering::Acquire).as_ref()?;
         let id = if (node_id as usize) < state.node_count {
             node_id as usize
@@ -322,7 +333,12 @@ impl SegmentedBitmapAllocator {
                 let (addr, flags) = (*segment).alloc(order).unwrap();
                 node.publish(region);
                 (*node.lanes.add(lane)).orders[order].store(segment, Ordering::Release);
-                return Some((addr, order + BIG_BUDDY_MIN_ORDER, flags, segment as usize));
+                return Some((
+                    addr,
+                    order + BIG_SEGMENTED_BITMAP_MIN_ORDER,
+                    flags,
+                    segment as usize,
+                ));
             }
         }
 
@@ -340,13 +356,13 @@ impl SegmentedBitmapAllocator {
 
     #[inline]
     pub unsafe fn free(&self, region: usize, addr: usize, order: usize) {
-        if !(BIG_BUDDY_MIN_ORDER..=BIG_BUDDY_MAX_ORDER).contains(&order) {
+        if !(BIG_SEGMENTED_BITMAP_MIN_ORDER..=BIG_SEGMENTED_BITMAP_MAX_ORDER).contains(&order) {
             return;
         }
         if let Some(segment) = (region as *const Segment).as_ref() {
             segment.free(
                 addr,
-                order - BIG_BUDDY_MIN_ORDER,
+                order - BIG_SEGMENTED_BITMAP_MIN_ORDER,
                 CURRENT_STAMP.load(Ordering::Relaxed),
             );
         }
@@ -359,12 +375,12 @@ impl SegmentedBitmapAllocator {
         addr: usize,
         order: usize,
     ) -> Option<(usize, usize)> {
-        if !(BIG_BUDDY_MIN_ORDER..BIG_BUDDY_MAX_ORDER).contains(&order) {
+        if !(BIG_SEGMENTED_BITMAP_MIN_ORDER..BIG_SEGMENTED_BITMAP_MAX_ORDER).contains(&order) {
             return None;
         }
         let segment = (region as *const Segment).as_ref()?;
         segment
-            .grow(addr, order - BIG_BUDDY_MIN_ORDER)
+            .grow(addr, order - BIG_SEGMENTED_BITMAP_MIN_ORDER)
             .then_some((addr, order + 1))
     }
 
@@ -379,7 +395,7 @@ impl SegmentedBitmapAllocator {
     unsafe fn trim_inner(&self, requested: usize, force: bool) -> usize {
         if !force
             && TOTAL_CACHED_VA.load(Ordering::Relaxed) < SMALL_TRIM_THRESHOLD
-            && BUDDY_TOTAL_CACHED_VA.load(Ordering::Relaxed) < BIG_TRIM_THRESHOLD
+            && SEGMENTED_BITMAP_TOTAL_CACHED_VA.load(Ordering::Relaxed) < BIG_TRIM_THRESHOLD
         {
             return 0;
         }
@@ -392,7 +408,7 @@ impl SegmentedBitmapAllocator {
         #[cfg(feature = "debug")]
         crate::backend::trim::TOTAL_TRIM_CALLS.fetch_add(1, Ordering::Relaxed);
         let now = CURRENT_STAMP.load(Ordering::Relaxed);
-        let average = BUDDY_AVERAGE_BLOCK_TIMES.load(Ordering::Relaxed);
+        let average = SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES.load(Ordering::Relaxed);
         let mut stats = TrimStats::default();
         'regions: for region in state.regions() {
             for index in 0..region.segment_count {
@@ -491,8 +507,8 @@ unsafe fn create_region(bytes: usize, node: u16, state: &State) -> Option<*mut R
         let _ = madvise(data, bytes, Advice::LinuxHugepage);
     }
     RADIX.set_range(data as usize, bytes, true);
-    add_buddy_cached_va(bytes);
-    add_buddy_cached_va(metadata_bytes);
+    add_segmented_bitmap_cached_va(bytes);
+    add_segmented_bitmap_cached_va(metadata_bytes);
     Some(region)
 }
 
@@ -509,7 +525,7 @@ impl TrimStats {
             let blended = (EMA_ALPHA * average as f32 + (1.0 - EMA_ALPHA) * previous as f32)
                 .round()
                 .clamp(10.0, 600.0) as u32;
-            BUDDY_AVERAGE_BLOCK_TIMES.store(blended, Ordering::Relaxed);
+            SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES.store(blended, Ordering::Relaxed);
         }
         #[cfg(feature = "debug")]
         crate::backend::trim::TOTAL_TRIMMED_VA.fetch_add(self.bytes, Ordering::Relaxed);
@@ -583,13 +599,13 @@ pub struct SegmentedBitmapReport {
     pub regions: usize,
     pub total_region_bytes: usize,
     pub free_bytes: usize,
-    pub free_blocks: [usize; BUDDY_NUM_ORDERS],
+    pub free_blocks: [usize; SEGMENTED_BITMAP_NUM_ORDERS],
     pub never_allocated_blocks: usize,
     pub reused_blocks: usize,
     pub trimmed_blocks: usize,
-    pub never_allocated_by_order: [usize; BUDDY_NUM_ORDERS],
-    pub reused_by_order: [usize; BUDDY_NUM_ORDERS],
-    pub trimmed_by_order: [usize; BUDDY_NUM_ORDERS],
+    pub never_allocated_by_order: [usize; SEGMENTED_BITMAP_NUM_ORDERS],
+    pub reused_by_order: [usize; SEGMENTED_BITMAP_NUM_ORDERS],
+    pub trimmed_by_order: [usize; SEGMENTED_BITMAP_NUM_ORDERS],
     pub grow_order: usize,
     pub thp: bool,
 }
@@ -602,14 +618,14 @@ impl SegmentedBitmapAllocator {
             regions: 0,
             total_region_bytes: 0,
             free_bytes: 0,
-            free_blocks: [0; BUDDY_NUM_ORDERS],
+            free_blocks: [0; SEGMENTED_BITMAP_NUM_ORDERS],
             never_allocated_blocks: 0,
             reused_blocks: 0,
             trimmed_blocks: 0,
-            never_allocated_by_order: [0; BUDDY_NUM_ORDERS],
-            reused_by_order: [0; BUDDY_NUM_ORDERS],
-            trimmed_by_order: [0; BUDDY_NUM_ORDERS],
-            grow_order: BIG_BUDDY_MAX_ORDER,
+            never_allocated_by_order: [0; SEGMENTED_BITMAP_NUM_ORDERS],
+            reused_by_order: [0; SEGMENTED_BITMAP_NUM_ORDERS],
+            trimmed_by_order: [0; SEGMENTED_BITMAP_NUM_ORDERS],
+            grow_order: BIG_SEGMENTED_BITMAP_MAX_ORDER,
             thp: state.is_some_and(|state| state.thp),
         };
         let Some(state) = state else {
@@ -623,7 +639,7 @@ impl SegmentedBitmapAllocator {
                 let mut free = !(word as u16);
                 while free != 0 {
                     let slot = free.trailing_zeros() as usize;
-                    let order = (0..BUDDY_NUM_ORDERS)
+                    let order = (0..SEGMENTED_BITMAP_NUM_ORDERS)
                         .rev()
                         .find(|&order| {
                             let mask = segment::slot_mask(slot, order);

@@ -457,7 +457,7 @@ mod tests {
             next: null_mut(),
             size,
             order: 0,
-            buddy_region: 0,
+            segmented_bitmap_region: 0,
             aligned: false,
         }
     }

@@ -1,7 +1,9 @@
 use crate::{
     backend::{
         page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR},
-        trim::{BUDDY_DISABLE_PERCENTAGE, BUDDY_ENABLE_PERCENTAGE, DISABLE_RELIEF},
+        trim::{
+            DISABLE_RELIEF, SEGMENTED_BITMAP_DISABLE_PERCENTAGE, SEGMENTED_BITMAP_ENABLE_PERCENTAGE,
+        },
     },
     big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND,
     core_prim::{
@@ -9,8 +11,8 @@ use crate::{
         random::{init_align, init_magic},
     },
     global_vals::{
-        ALIGN_TAG, BIG_TRIM_THRESHOLD, BUDDY_ATTEMPT_HUGE, BUDDY_MAX_CACHE, DISABLE_TRIM_THREAD,
-        RS_DISABLE_THP, SMALL_TRIM_THRESHOLD, get_clock,
+        ALIGN_TAG, BIG_TRIM_THRESHOLD, DISABLE_TRIM_THREAD, RS_DISABLE_THP,
+        SEGMENTED_BITMAP_ATTEMPT_HUGE, SEGMENTED_BITMAP_MAX_CACHE, SMALL_TRIM_THRESHOLD, get_clock,
     },
     inner::alloc::MAX_REFILL_RETRIES,
     internals::radix_tree::{RADIX, RadixTree},
@@ -25,14 +27,14 @@ pub struct BootstrapConfig {
     arena_size: usize,
     max_refill: usize,
     init_batch: usize,
-    buddy_max_cache: usize,
-    buddy_attempt_huge: bool,
+    segmented_bitmap_max_cache: usize,
+    segmented_bitmap_attempt_huge: bool,
     disable_trimmer: bool,
     small_trim_threshold: usize,
     big_trim_threshold: usize,
     disable_relief: bool,
-    buddy_disable_percentage: usize,
-    buddy_enable_percentage: usize,
+    segmented_bitmap_disable_percentage: usize,
+    segmented_bitmap_enable_percentage: usize,
     disable_thp: bool,
     random_magic: bool,
     foreign_pointer_abort: bool,
@@ -44,14 +46,14 @@ impl BootstrapConfig {
         arena_size: usize,
         max_refill: usize,
         init_batch: usize,
-        buddy_max_cache: usize,
-        buddy_attempt_huge: bool,
+        segmented_bitmap_max_cache: usize,
+        segmented_bitmap_attempt_huge: bool,
         disable_trimmer: bool,
         small_trim_threshold: usize,
         big_trim_threshold: usize,
         disable_relief: bool,
-        buddy_disable_percentage: usize,
-        buddy_enable_percentage: usize,
+        segmented_bitmap_disable_percentage: usize,
+        segmented_bitmap_enable_percentage: usize,
         disable_thp: bool,
         random_magic: bool,
         foreign_pointer_abort: bool,
@@ -60,14 +62,14 @@ impl BootstrapConfig {
             arena_size,
             max_refill,
             init_batch,
-            buddy_max_cache,
-            buddy_attempt_huge,
+            segmented_bitmap_max_cache,
+            segmented_bitmap_attempt_huge,
             disable_trimmer,
             small_trim_threshold,
             big_trim_threshold,
             disable_relief,
-            buddy_disable_percentage,
-            buddy_enable_percentage,
+            segmented_bitmap_disable_percentage,
+            segmented_bitmap_enable_percentage,
             disable_thp,
             random_magic,
             foreign_pointer_abort,
@@ -98,16 +100,16 @@ pub unsafe fn main_bootstrap(config: BootstrapConfig) {
     let node_count = SLAB_CACHE.get_numa_and_inner().0.nranges;
     PAGE_ALLOCATOR.init(node_count);
 
-    BUDDY_MAX_CACHE = config.buddy_max_cache;
+    SEGMENTED_BITMAP_MAX_CACHE = config.segmented_bitmap_max_cache;
 
-    BUDDY_ATTEMPT_HUGE = config.buddy_attempt_huge;
+    SEGMENTED_BITMAP_ATTEMPT_HUGE = config.segmented_bitmap_attempt_huge;
     DISABLE_TRIM_THREAD = config.disable_trimmer;
     SMALL_TRIM_THRESHOLD = config.small_trim_threshold;
     BIG_TRIM_THRESHOLD = config.big_trim_threshold;
     DISABLE_RELIEF = config.disable_relief;
 
-    BUDDY_DISABLE_PERCENTAGE = config.buddy_disable_percentage;
-    BUDDY_ENABLE_PERCENTAGE = config.buddy_enable_percentage;
+    SEGMENTED_BITMAP_DISABLE_PERCENTAGE = config.segmented_bitmap_disable_percentage;
+    SEGMENTED_BITMAP_ENABLE_PERCENTAGE = config.segmented_bitmap_enable_percentage;
     RS_DISABLE_THP = config.disable_thp;
 
     #[cfg(not(feature = "preload"))]
@@ -118,7 +120,10 @@ pub unsafe fn main_bootstrap(config: BootstrapConfig) {
     #[cfg(feature = "preload")]
     let _ = config.foreign_pointer_abort;
 
-    SEGMENTED_BITMAP_BACKEND.init(BUDDY_MAX_CACHE, BUDDY_ATTEMPT_HUGE && !RS_DISABLE_THP);
+    SEGMENTED_BITMAP_BACKEND.init(
+        SEGMENTED_BITMAP_MAX_CACHE,
+        SEGMENTED_BITMAP_ATTEMPT_HUGE && !RS_DISABLE_THP,
+    );
 
     #[cfg(feature = "preload")]
     crate::core_prim::fork::register_fork_handlers();

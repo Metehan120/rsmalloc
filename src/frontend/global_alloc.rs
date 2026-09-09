@@ -849,6 +849,8 @@ impl RSMalloc {
             rseq_core::slab_cache::SLAB_CACHE,
             utility::{NUM_SIZE_CLASSES, SIZE_CLASSES},
         };
+        #[cfg(feature = "debug-exact")]
+        use crate::{TRANSFER_POPPED_BYTES_BY_CLASS, TRANSFER_PUSHED_BYTES_BY_CLASS};
         use std::sync::atomic::Ordering::{self, Relaxed};
 
         unsafe { self.init() };
@@ -906,9 +908,24 @@ impl RSMalloc {
         let mut class_min_cached_bytes = [0usize; NUM_SIZE_CLASSES];
         let mut class_max_cached_bytes = [0usize; NUM_SIZE_CLASSES];
         let mut class_avg_cached_bytes = [0usize; NUM_SIZE_CLASSES];
+        #[cfg(feature = "debug-exact")]
+        let mut transfer_pushed_bytes_by_class = [0usize; NUM_SIZE_CLASSES];
+        #[cfg(feature = "debug-exact")]
+        let mut transfer_popped_bytes_by_class = [0usize; NUM_SIZE_CLASSES];
+        #[cfg(feature = "debug-exact")]
+        let mut transfer_cached_bytes_by_class = [0usize; NUM_SIZE_CLASSES];
 
         for class in 0..NUM_SIZE_CLASSES {
             refills_by_class[class] = REFILLS_BY_CLASS[class].load(Relaxed);
+            #[cfg(feature = "debug-exact")]
+            {
+                transfer_pushed_bytes_by_class[class] =
+                    TRANSFER_PUSHED_BYTES_BY_CLASS[class].load(Relaxed);
+                transfer_popped_bytes_by_class[class] =
+                    TRANSFER_POPPED_BYTES_BY_CLASS[class].load(Relaxed);
+                transfer_cached_bytes_by_class[class] = transfer_pushed_bytes_by_class[class]
+                    .saturating_sub(transfer_popped_bytes_by_class[class]);
+            }
             let mut min = usize::MAX;
             let mut max = 0usize;
             let mut active = 0usize;
@@ -1015,6 +1032,12 @@ impl RSMalloc {
             class_min_cached_bytes,
             class_max_cached_bytes,
             class_avg_cached_bytes,
+            #[cfg(feature = "debug-exact")]
+            transfer_pushed_bytes_by_class,
+            #[cfg(feature = "debug-exact")]
+            transfer_popped_bytes_by_class,
+            #[cfg(feature = "debug-exact")]
+            transfer_cached_bytes_by_class,
             trim_calls: TOTAL_TRIM_CALLS.load(Relaxed),
             trimmed_va: TOTAL_TRIMMED_VA.load(Relaxed),
             avg_small_life_ms: crate::AVERAGE_BLOCK_TIMES.load(Relaxed).saturating_mul(100),
@@ -1174,6 +1197,12 @@ pub struct RSMallocStats {
     pub class_min_cached_bytes: [usize; crate::utility::NUM_SIZE_CLASSES],
     pub class_max_cached_bytes: [usize; crate::utility::NUM_SIZE_CLASSES],
     pub class_avg_cached_bytes: [usize; crate::utility::NUM_SIZE_CLASSES],
+    #[cfg(feature = "debug-exact")]
+    pub transfer_pushed_bytes_by_class: [usize; crate::utility::NUM_SIZE_CLASSES],
+    #[cfg(feature = "debug-exact")]
+    pub transfer_popped_bytes_by_class: [usize; crate::utility::NUM_SIZE_CLASSES],
+    #[cfg(feature = "debug-exact")]
+    pub transfer_cached_bytes_by_class: [usize; crate::utility::NUM_SIZE_CLASSES],
 
     pub trim_calls: usize,
     pub trimmed_va: usize,

@@ -203,6 +203,8 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
 
             let mut avg: u32 = 0;
             let mut total = 0;
+            #[cfg(feature = "debug-exact")]
+            let mut total_popped = 0;
 
             let mut trim_list = null_mut();
             let mut total_push = 0;
@@ -213,6 +215,10 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
             let avg_life = TRIM_SMOOTHING[class].time(100) as u32;
             let mut next = output;
             while !next.is_null() {
+                #[cfg(feature = "debug-exact")]
+                {
+                    total_popped += 1;
+                }
                 let old_next = (*next).next;
                 let life_time = (*next).life_time;
                 let mut is_push = false;
@@ -246,6 +252,8 @@ pub unsafe fn trim_small(requested_size: usize) -> usize {
 
                 next = old_next;
             }
+
+            crate::global_vals::record_transfer_pop!(class, total_popped);
 
             if total > 0 {
                 let new_avg = (avg / total).clamp(1, 100);

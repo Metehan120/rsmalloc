@@ -97,6 +97,44 @@ pub static TOTAL_REFILL_CALLS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "debug")]
 pub static REFILLS_BY_CLASS: [AtomicUsize; crate::utility::NUM_SIZE_CLASSES] =
     [const { AtomicUsize::new(0) }; crate::utility::NUM_SIZE_CLASSES];
+#[cfg(feature = "debug-exact")]
+pub static TRANSFER_PUSHED_BYTES_BY_CLASS: [AtomicUsize; crate::utility::NUM_SIZE_CLASSES] =
+    [const { AtomicUsize::new(0) }; crate::utility::NUM_SIZE_CLASSES];
+#[cfg(feature = "debug-exact")]
+pub static TRANSFER_POPPED_BYTES_BY_CLASS: [AtomicUsize; crate::utility::NUM_SIZE_CLASSES] =
+    [const { AtomicUsize::new(0) }; crate::utility::NUM_SIZE_CLASSES];
+
+macro_rules! record_transfer_push {
+    ($class:expr, $blocks:expr) => {
+        #[cfg(feature = "debug-exact")]
+        {
+            use $crate::utility::{Alignment as _, SIZE_CLASSES};
+            let class = $class;
+            let block_size = (SIZE_CLASSES[class] + $crate::Header::SIZE).align_to(16);
+            $crate::TRANSFER_PUSHED_BYTES_BY_CLASS[class].fetch_add(
+                block_size.saturating_mul($blocks),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
+    };
+}
+pub(crate) use record_transfer_push;
+
+macro_rules! record_transfer_pop {
+    ($class:expr, $blocks:expr) => {
+        #[cfg(feature = "debug-exact")]
+        {
+            use $crate::utility::{Alignment as _, SIZE_CLASSES};
+            let class = $class;
+            let block_size = (SIZE_CLASSES[class] + $crate::Header::SIZE).align_to(16);
+            $crate::TRANSFER_POPPED_BYTES_BY_CLASS[class].fetch_add(
+                block_size.saturating_mul($blocks),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
+    };
+}
+pub(crate) use record_transfer_pop;
 
 #[cfg(feature = "debug")]
 pub static ABORTS: AtomicUsize = AtomicUsize::new(0);

@@ -568,6 +568,17 @@ impl SlabCache {
         #[cfg(feature = "transfer-debug-exact")]
         crate::TOTAL_TRANSFER_PUSH_CALLS.fetch_add(1, Ordering::Relaxed);
 
+        #[cfg(feature = "debug-exact")]
+        let batch_size = {
+            let mut count = 1usize;
+            let mut current = start;
+            while current != tail {
+                current = (*current).next;
+                count += 1;
+            }
+            count
+        };
+
         let list = &inner.cache.get_offset(cpu_id).mail[class];
         let list_ptr = &list.list;
 
@@ -589,6 +600,7 @@ impl SlabCache {
                 if pack.current_header.is_null() {
                     self.mark_class_nonempty(inner, class, cpu_id);
                 }
+                crate::global_vals::record_transfer_push!(class, batch_size);
                 return;
             }
 
@@ -654,6 +666,7 @@ impl SlabCache {
                 if pack.current_header.is_null() {
                     self.mark_class_nonempty(inner, class, cpu_id);
                 }
+                crate::global_vals::record_transfer_push!(class, 1);
                 return;
             }
 
@@ -741,6 +754,7 @@ impl SlabCache {
                 } else {
                     self.clear_hint(normal_ptr, trimmed_ptr, inner, class, cpu_id);
                 }
+                crate::global_vals::record_transfer_pop!(class, count);
                 return Some(TransferReturn {
                     start: pack.current_header,
                     end: tail,

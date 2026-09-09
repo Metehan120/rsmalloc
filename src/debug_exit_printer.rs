@@ -286,10 +286,31 @@ pub(crate) unsafe fn print_report() {
         );
     }
 
-    #[cfg(feature = "transfer-debug")]
+    #[cfg(feature = "debug-exact")]
     {
         section(&mut report, "transfer cache");
 
+        use crate::{TRANSFER_POPPED_BYTES_BY_CLASS, TRANSFER_PUSHED_BYTES_BY_CLASS};
+        line(&mut report, "  cls  payload   pushed     popped     cached");
+        for class in 0..SIZE_CLASSES.len() {
+            let pushed = TRANSFER_PUSHED_BYTES_BY_CLASS[class].load(Relaxed);
+            let popped = TRANSFER_POPPED_BYTES_BY_CLASS[class].load(Relaxed);
+            line(
+                &mut report,
+                &format!(
+                    "  {:>3}  {:<9} {:<10} {:<10} {}",
+                    class,
+                    fmt_bytes_short(SIZE_CLASSES[class]),
+                    fmt_bytes_short(pushed),
+                    fmt_bytes_short(popped),
+                    fmt_bytes_short(pushed.saturating_sub(popped)),
+                ),
+            );
+        }
+    }
+
+    #[cfg(feature = "transfer-debug")]
+    {
         #[cfg(feature = "transfer-debug-exact")]
         {
             use crate::{TOTAL_TRANSFER_POP_CALLS, TOTAL_TRANSFER_PUSH_CALLS};

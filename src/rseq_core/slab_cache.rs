@@ -309,7 +309,15 @@ impl GenericCache for SlabCache {
         let usage_ptr = &list.usage;
 
         if usage_ptr.load(Ordering::Relaxed) >= CACHE_HIGH_BLOCKS[class] {
-            self.transfer_push_batch(class, header, tail, current_cpu, inner);
+            self.transfer_push_batch(
+                class,
+                header,
+                tail,
+                #[cfg(feature = "debug-exact")]
+                batch_size,
+                current_cpu,
+                inner,
+            );
             return;
         }
 
@@ -330,7 +338,15 @@ impl GenericCache for SlabCache {
             return;
         }
 
-        self.transfer_push_batch(class, header, tail, current_cpu, inner);
+        self.transfer_push_batch(
+            class,
+            header,
+            tail,
+            #[cfg(feature = "debug-exact")]
+            batch_size,
+            current_cpu,
+            inner,
+        );
 
         #[cfg(feature = "debug")]
         ABORTS.fetch_add(1, Relaxed);
@@ -562,22 +578,12 @@ impl SlabCache {
         class: usize,
         start: *mut Header,
         tail: *mut Header,
+        #[cfg(feature = "debug-exact")] batch_size: usize,
         cpu_id: usize,
         inner: &SlabCacheInner,
     ) {
         #[cfg(feature = "transfer-debug-exact")]
         crate::TOTAL_TRANSFER_PUSH_CALLS.fetch_add(1, Ordering::Relaxed);
-
-        #[cfg(feature = "debug-exact")]
-        let batch_size = {
-            let mut count = 1usize;
-            let mut current = start;
-            while current != tail {
-                current = (*current).next;
-                count += 1;
-            }
-            count
-        };
 
         let list = &inner.cache.get_offset(cpu_id).mail[class];
         let list_ptr = &list.list;

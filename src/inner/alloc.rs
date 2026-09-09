@@ -79,7 +79,15 @@ unsafe fn record_refill_prediction(
         let extra_total = found.as_ref().map_or(0, |c| c.total);
 
         if let Some(cache) = found {
-            SLAB_CACHE.transfer_push_batch(class, cache.start, cache.end, cpu_id, inner);
+            SLAB_CACHE.transfer_push_batch(
+                class,
+                cache.start,
+                cache.end,
+                #[cfg(feature = "debug-exact")]
+                cache.total,
+                cpu_id,
+                inner,
+            );
         }
 
         if count + extra_total < wanted {
@@ -92,7 +100,15 @@ unsafe fn record_refill_prediction(
     if wanted >= 8 && wanted < ITERATIONS[class] {
         if let Some(cache) = SLAB_CACHE.try_pop(class, 1, cpu_id) {
             crate::REFILL_UNDER_PREDICTS.fetch_add(1, Ordering::Relaxed);
-            SLAB_CACHE.transfer_push_batch(class, cache.start, cache.end, cpu_id, inner);
+            SLAB_CACHE.transfer_push_batch(
+                class,
+                cache.start,
+                cache.end,
+                #[cfg(feature = "debug-exact")]
+                cache.total,
+                cpu_id,
+                inner,
+            );
         }
     }
 }

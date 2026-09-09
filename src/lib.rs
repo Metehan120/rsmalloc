@@ -85,8 +85,10 @@ mod utility;
 use global_vals::*;
 use result_handling::*;
 
+#[allow(deprecated)]
 #[cfg(any(all(feature = "debug-exact", not(feature = "preload")), doc))]
 pub use frontend::global_alloc::RSMallocExactStats;
+#[allow(deprecated)]
 #[cfg(any(all(feature = "debug", not(feature = "preload")), doc))]
 pub use frontend::global_alloc::RSMallocStats;
 

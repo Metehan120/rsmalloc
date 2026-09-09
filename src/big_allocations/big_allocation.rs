@@ -126,7 +126,7 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
     } else if !registered && !aligned {
         RADIX.set_single_big(actual_ptr as usize, true)
     } else {
-        RADIX.set_range(actual_ptr as usize, mapped_total, true)
+        RADIX.set(actual_ptr as usize, mapped_total, true)
     };
 
     BIG_MAP.insert(
@@ -171,7 +171,7 @@ pub unsafe fn big_free(ptr: usize) {
     }
 
     if header.aligned {
-        RADIX.set_range(mapping_base as usize, payload_size, false);
+        RADIX.set(mapping_base as usize, payload_size, false);
     } else {
         RADIX.set_single_big(mapping_base as usize, false);
     }

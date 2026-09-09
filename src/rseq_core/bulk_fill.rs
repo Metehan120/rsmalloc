@@ -167,7 +167,7 @@ unsafe fn alloc_metadata(
 
     add_slab_cached_va(total);
 
-    RADIX.set_range(mem as usize, total, true);
+    RADIX.set(mem as usize, total, true);
 
     let metadata = mem as *mut MetaData;
     write(

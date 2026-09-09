@@ -13,7 +13,7 @@ use std::{
     ptr::null_mut,
     sync::atomic::{
         AtomicU64, AtomicUsize,
-        Ordering::{Acquire, Release},
+        Ordering::{self, Acquire, Release},
     },
 };
 
@@ -150,7 +150,9 @@ impl Radix {
         let word = l3.add(word_idx);
 
         if val {
-            (*word).fetch_or(mask, Release);
+            if (*word).load(Ordering::Relaxed) & mask == 0 {
+                (*word).fetch_or(mask, Release);
+            }
         } else {
             (*word).fetch_and(!mask, Release);
         }
@@ -275,7 +277,7 @@ impl RadixTree {
     }
 
     #[inline(always)]
-    pub unsafe fn set_range(&self, addr: usize, size: usize, val: bool) {
+    pub unsafe fn set(&self, addr: usize, size: usize, val: bool) {
         if unlikely(size == 0 || !Self::valid_user_addr(addr)) {
             return;
         }
@@ -291,7 +293,12 @@ impl RadixTree {
 
         let start_idx = addr / CHUNK_SIZE;
         let end_idx = end_addr / CHUNK_SIZE;
-        self.nodes.set_range(start_idx, end_idx, val);
+
+        if end_idx == start_idx {
+            self.nodes.set(start_idx, val);
+        } else {
+            self.nodes.set_range(start_idx, end_idx, val);
+        }
     }
 
     #[inline(always)]
@@ -392,7 +399,7 @@ mod tests {
             let start_chunk = 62;
             let chunks = 5;
 
-            tree.set_range(start_chunk * CHUNK_SIZE, chunks * CHUNK_SIZE, true);
+            tree.set(start_chunk * CHUNK_SIZE, chunks * CHUNK_SIZE, true);
 
             assert!(!tree.is_owned((start_chunk - 1) * CHUNK_SIZE));
             for chunk in start_chunk..start_chunk + chunks {
@@ -409,7 +416,7 @@ mod tests {
             let start_chunk = L3_SIZE - 2;
             let chunks = 5;
 
-            tree.set_range(start_chunk * CHUNK_SIZE, chunks * CHUNK_SIZE, true);
+            tree.set(start_chunk * CHUNK_SIZE, chunks * CHUNK_SIZE, true);
 
             assert!(!tree.is_owned((start_chunk - 1) * CHUNK_SIZE));
             for chunk in start_chunk..start_chunk + chunks {
@@ -426,8 +433,8 @@ mod tests {
             let start_chunk = 60;
             let chunks = 10;
 
-            tree.set_range(start_chunk * CHUNK_SIZE, chunks * CHUNK_SIZE, true);
-            tree.set_range((start_chunk + 2) * CHUNK_SIZE, 6 * CHUNK_SIZE, false);
+            tree.set(start_chunk * CHUNK_SIZE, chunks * CHUNK_SIZE, true);
+            tree.set((start_chunk + 2) * CHUNK_SIZE, 6 * CHUNK_SIZE, false);
 
             assert!(tree.is_owned(start_chunk * CHUNK_SIZE));
             assert!(tree.is_owned((start_chunk + 1) * CHUNK_SIZE));
@@ -440,11 +447,26 @@ mod tests {
     }
 
     #[test]
+    fn set_range_fills_partially_owned_word() {
+        unsafe {
+            let tree = new_tree();
+            let start_chunk = 8;
+
+            tree.set(start_chunk * CHUNK_SIZE, CHUNK_SIZE, true);
+            tree.set(start_chunk * CHUNK_SIZE, 4 * CHUNK_SIZE, true);
+
+            for chunk in start_chunk..start_chunk + 4 {
+                assert!(tree.is_owned(chunk * CHUNK_SIZE));
+            }
+        }
+    }
+
+    #[test]
     fn unaligned_range_marks_both_intersected_chunks() {
         unsafe {
             let tree = new_tree();
 
-            tree.set_range(CHUNK_SIZE - 1, 2, true);
+            tree.set(CHUNK_SIZE - 1, 2, true);
 
             assert!(tree.is_owned(0));
             assert!(tree.is_owned(CHUNK_SIZE));

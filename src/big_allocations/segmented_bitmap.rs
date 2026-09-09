@@ -506,7 +506,7 @@ unsafe fn create_region(bytes: usize, node: u16, state: &State) -> Option<*mut R
     if state.thp {
         let _ = madvise(data, bytes, Advice::LinuxHugepage);
     }
-    RADIX.set_range(data as usize, bytes, true);
+    RADIX.set(data as usize, bytes, true);
     add_segmented_bitmap_cached_va(bytes);
     add_segmented_bitmap_cached_va(metadata_bytes);
     Some(region)

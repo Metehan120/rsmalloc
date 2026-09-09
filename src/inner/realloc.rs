@@ -88,7 +88,7 @@ unsafe fn small_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePoin
             ) {
                 (*metadata).end = mapping_base + new_logical_total;
                 (*metadata).next = (*metadata).end;
-                RADIX.set_range(mapping_base, new_page_total, true);
+                RADIX.set(mapping_base, new_page_total, true);
                 add_slab_cached_va(new_page_total.saturating_sub(old_page_total));
 
                 let mut new_header_ptr = header_ptr;

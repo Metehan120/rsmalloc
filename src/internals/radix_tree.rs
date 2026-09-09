@@ -199,7 +199,9 @@ impl Radix {
                 let word = l3.add(word_idx);
 
                 if val {
-                    (*word).fetch_or(mask, Release);
+                    if (*word).load(Ordering::Relaxed) & mask != mask {
+                        (*word).fetch_or(mask, Release);
+                    }
                 } else {
                     (*word).fetch_and(!mask, Release);
                 }

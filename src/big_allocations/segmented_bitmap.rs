@@ -406,7 +406,7 @@ impl SegmentedBitmapAllocator {
             return 0;
         };
         #[cfg(feature = "debug")]
-        crate::backend::trim::TOTAL_TRIM_CALLS.fetch_add(1, Ordering::Relaxed);
+        crate::backend::reclaimer::TOTAL_TRIM_CALLS.fetch_add(1, Ordering::Relaxed);
         let now = CURRENT_STAMP.load(Ordering::Relaxed);
         let average = SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES.load(Ordering::Relaxed);
         let mut stats = TrimStats::default();
@@ -528,7 +528,7 @@ impl TrimStats {
             SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES.store(blended, Ordering::Relaxed);
         }
         #[cfg(feature = "debug")]
-        crate::backend::trim::TOTAL_TRIMMED_VA.fetch_add(self.bytes, Ordering::Relaxed);
+        crate::backend::reclaimer::TOTAL_TRIMMED_VA.fetch_add(self.bytes, Ordering::Relaxed);
     }
 }
 
@@ -655,7 +655,7 @@ impl SegmentedBitmapAllocator {
                             report.never_allocated_blocks += 1;
                             report.never_allocated_by_order[order] += 1;
                         }
-                        Flags::Trimmed => {
+                        Flags::Reclaimed => {
                             report.trimmed_blocks += 1;
                             report.trimmed_by_order[order] += 1;
                         }

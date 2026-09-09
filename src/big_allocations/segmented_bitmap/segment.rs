@@ -49,7 +49,7 @@ pub(super) fn classify(word: u64, mask: u16) -> Flags {
     if (word >> DIRTY_SHIFT) as u16 & mask != 0 {
         Flags::Allocated
     } else if (word >> USED_SHIFT) as u16 & mask != 0 {
-        Flags::Trimmed
+        Flags::Reclaimed
     } else {
         Flags::NotAllocated
     }

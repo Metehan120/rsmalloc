@@ -1,13 +1,13 @@
 use std::num::NonZero;
 
 use crate::{
-    backend::trim::trim_small,
     big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND,
     core_prim::wrappers::UnsafePointer,
     inner::{
         align::memalign_inner, alloc::rs_alloc, calloc::rs_calloc, free::rs_free,
         realloc::rs_realloc,
     },
+    rseq_core::slab_cache::SLAB_CACHE,
     v2::alloc::{RSMalloc, RSMallocCoreAPI},
 };
 
@@ -87,7 +87,7 @@ impl RawInterface for RSMallocRaw {
         match trim_size {
             AdvancedTrimSize::All => {
                 let segmented_bitmap = SEGMENTED_BITMAP_BACKEND.trim(0);
-                let slab = trim_small(0);
+                let slab = SLAB_CACHE.trim_small(0);
                 TrimReport {
                     segmented_bitmap_bytes: segmented_bitmap,
                     slab_bytes: slab,
@@ -101,7 +101,7 @@ impl RawInterface for RSMallocRaw {
                 }
             }
             AdvancedTrimSize::AllSlab => {
-                let slab = trim_small(0);
+                let slab = SLAB_CACHE.trim_small(0);
                 TrimReport {
                     segmented_bitmap_bytes: 0,
                     slab_bytes: slab,
@@ -113,7 +113,7 @@ impl RawInterface for RSMallocRaw {
                 let segmented_bitmap = SEGMENTED_BITMAP_BACKEND.trim(requested);
                 let mut slab = 0;
                 if segmented_bitmap < requested && requested != 0 {
-                    slab = trim_small(requested.saturating_sub(segmented_bitmap));
+                    slab = SLAB_CACHE.trim_small(requested.saturating_sub(segmented_bitmap));
                 }
                 TrimReport {
                     segmented_bitmap_bytes: segmented_bitmap,
@@ -132,7 +132,7 @@ impl RawInterface for RSMallocRaw {
             AdvancedTrimSize::SlabBytes(requested) => {
                 let requested = requested.get();
 
-                let slab = trim_small(requested);
+                let slab = SLAB_CACHE.trim_small(requested);
                 TrimReport {
                     segmented_bitmap_bytes: 0,
                     slab_bytes: slab,

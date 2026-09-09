@@ -18,7 +18,7 @@ use crate::{
     traits::GenericCache,
     utility::{ITERATIONS, SIZE_CLASSES, match_size_class},
 };
-use crate::{Flags, backend::trim::maybe_start_trimmer};
+use crate::{Flags, backend::reclaimer::maybe_start_background_reclaimer};
 #[cfg(feature = "debug")]
 use crate::{REFILLS_BY_CLASS, TOTAL_REFILL_CALLS};
 #[cfg(feature = "debug")]
@@ -179,7 +179,7 @@ pub unsafe fn refill(class: usize, cpu_id: usize) -> UnsafePointer<Header> {
             false,
         );
 
-        maybe_start_trimmer();
+        maybe_start_background_reclaimer();
 
         return result;
     }

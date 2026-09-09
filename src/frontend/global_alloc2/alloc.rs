@@ -1,5 +1,6 @@
 use std::{
     alloc::{GlobalAlloc, Layout},
+    hint::likely,
     num::NonZero,
     ptr::NonNull,
 };
@@ -7,7 +8,7 @@ use std::{
 pub use crate::frontend::global_alloc2::{debug::*, raw::*};
 use crate::{
     GLOBAL_ALLOC_ONCE, Header,
-    backend::{bootstrap::main_bootstrap, trim::trim_small},
+    backend::bootstrap::main_bootstrap,
     big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND,
     core_prim::wrappers::UnsafePointer,
     inner::{
@@ -17,12 +18,12 @@ use crate::{
         free::rs_free,
         realloc::rs_realloc,
     },
+    rseq_core::slab_cache::SLAB_CACHE,
     v2::{
         allocation_api::{AllocationAPI, AllocationError, AllocationSize},
         config::Config,
     },
 };
-use portable_atomic::hint::likely;
 
 pub trait RSMallocCoreAPI {
     type TrimIn;
@@ -243,7 +244,7 @@ impl RSMallocCoreAPI for RSMalloc {
         let requested = size.get_size();
         let size = unsafe { SEGMENTED_BITMAP_BACKEND.trim(requested) };
         if size < requested && requested != 0 {
-            let small = unsafe { trim_small(requested.saturating_sub(size)) };
+            let small = unsafe { SLAB_CACHE.trim_small(requested.saturating_sub(size)) };
             if small > 0 {
                 return Some(size + small);
             }

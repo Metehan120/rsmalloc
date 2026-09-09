@@ -271,7 +271,7 @@ impl RadixTree {
     }
 
     #[inline(always)]
-    pub unsafe fn set_single_big(&mut self, addr: usize, val: bool) {
+    pub unsafe fn set_single_big(&self, addr: usize, val: bool) {
         if unlikely(!Self::valid_user_addr(addr)) {
             return;
         }

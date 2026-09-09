@@ -40,7 +40,7 @@ pub mod bitmap {
         }
     }
 
-    pub unsafe fn cpu_is_empty(
+    pub unsafe fn cpu_is_not_set(
         map: *mut AtomicU64,
         class: usize,
         cpu_id: usize,

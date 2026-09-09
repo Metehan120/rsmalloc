@@ -17,7 +17,7 @@ impl RSMalloc {
             START_TIME, TOTAL_CACHED_VA, TOTAL_MMAP_BYTES, TOTAL_MMAP_CALLS, TOTAL_REFILL_CALLS,
             backend::{
                 page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR, TOTAL_LIVED, TOTAL_REMOVED},
-                trim::{DISABLE_SEGMENTED_BITMAP, TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA},
+                reclaimer::{DISABLE_SEGMENTED_BITMAP, TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA},
             },
             big_allocations::segmented_bitmap::{
                 BIG_SEGMENTED_BITMAP_MIN_ORDER, SEGMENTED_BITMAP_BACKEND,
@@ -264,7 +264,7 @@ impl RSMalloc {
         use crate::{
             GLOBAL_LOCK_RETRIES, GLOBAL_LOCKS, GLOBAL_SPIN_WAITS, GLOBAL_TRY_LOCK_MISSES,
             GLOBAL_TRY_LOCKS,
-            backend::trim::{TOTAL_TRIMMED_BLOCKS, TOTAL_TRIMMED_TIME},
+            backend::reclaimer::{TOTAL_TRIMMED_BLOCKS, TOTAL_TRIMMED_TIME},
         };
         use std::sync::atomic::Ordering::Relaxed;
 

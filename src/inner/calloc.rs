@@ -26,7 +26,7 @@ macro_rules! calloc_zero {
     ($header:expr, $ptr:expr, $actual_size:expr, $effective_size:expr) => {
         let flags = unsafe { (*$header.as_ptr()).flags };
 
-        if flags == Flags::Allocated || flags == Flags::Trimmed || flags == Flags::BigAlloc {
+        if flags == Flags::Allocated || flags == Flags::Reclaimed || flags == Flags::BigAlloc {
             zero(
                 $ptr.cast_as_ptr() as *mut u8,
                 $actual_size.min($effective_size),

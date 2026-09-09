@@ -109,10 +109,10 @@ use crate::internals::once::Once;
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Flags {
-    NotAllocated = 2,
-    Allocated = 4,
-    Trimmed = 8,
-    BigAlloc = 16,
+    NotAllocated = 1,
+    Allocated = 2,
+    Reclaimed = 3,
+    BigAlloc = 4,
 }
 
 #[repr(C, align(16))]

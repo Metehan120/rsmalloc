@@ -2,7 +2,6 @@ use std::alloc::{GlobalAlloc, Layout};
 use std::hint::likely;
 
 use crate::backend::bootstrap::{BootstrapConfig, main_bootstrap};
-use crate::backend::trim::trim_small;
 use crate::big_allocations::segmented_bitmap::{
     BIG_SEGMENTED_BITMAP_MAX_ORDER, BIG_SEGMENTED_BITMAP_MIN_ORDER, SEGMENTED_BITMAP_BACKEND,
 };
@@ -13,6 +12,7 @@ use crate::inner::alloc::{rs_alloc, usable_size};
 use crate::inner::calloc::{rs_calloc, zero};
 use crate::inner::free::rs_free;
 use crate::inner::realloc::rs_realloc;
+use crate::rseq_core::slab_cache::SLAB_CACHE;
 use crate::{GLOBAL_ALLOC_ONCE, Header};
 
 // ------------------
@@ -793,7 +793,7 @@ impl RSMalloc {
         let requested = trim.get_request_size();
         let size = SEGMENTED_BITMAP_BACKEND.trim(requested);
         if size < requested && requested != 0 {
-            let small = trim_small(requested.saturating_sub(size));
+            let small = SLAB_CACHE.trim_small(requested.saturating_sub(size));
             if small > 0 {
                 return RSTrimStatus::Trimmed(size + small);
             }
@@ -840,7 +840,7 @@ impl RSMalloc {
             REFILL_UNDER_PREDICTS, REFILLS_BY_CLASS, SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES,
             START_TIME, TOTAL_CACHED_VA, TOTAL_MMAP_BYTES, TOTAL_MMAP_CALLS, TOTAL_REFILL_CALLS,
             backend::page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR, TOTAL_LIVED, TOTAL_REMOVED},
-            backend::trim::{DISABLE_SEGMENTED_BITMAP, TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA},
+            backend::reclaimer::{DISABLE_SEGMENTED_BITMAP, TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA},
             big_allocations::segmented_bitmap::{
                 BIG_SEGMENTED_BITMAP_MIN_ORDER, SEGMENTED_BITMAP_BACKEND,
                 SEGMENTED_BITMAP_TOTAL_CACHED_VA,
@@ -1085,7 +1085,7 @@ impl RSMalloc {
         use crate::{
             GLOBAL_LOCK_RETRIES, GLOBAL_LOCKS, GLOBAL_SPIN_WAITS, GLOBAL_TRY_LOCK_MISSES,
             GLOBAL_TRY_LOCKS,
-            backend::trim::{TOTAL_TRIMMED_BLOCKS, TOTAL_TRIMMED_TIME},
+            backend::reclaimer::{TOTAL_TRIMMED_BLOCKS, TOTAL_TRIMMED_TIME},
         };
         use std::sync::atomic::Ordering::Relaxed;
 

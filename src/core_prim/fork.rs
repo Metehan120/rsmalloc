@@ -63,7 +63,7 @@ unsafe extern "C" fn fork_child() {
     {
         use std::sync::atomic::Ordering;
 
-        crate::backend::trim::TRIM_GUARD.store(false, Ordering::Relaxed);
+        crate::backend::reclaimer::RECLAIM_GUARD.store(false, Ordering::Relaxed);
     }
 
     if __rseq_size == 0 || __rseq_offset == 0 {

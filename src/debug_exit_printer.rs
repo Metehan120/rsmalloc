@@ -3,7 +3,7 @@
 use std::sync::atomic::Ordering::{self, Relaxed};
 
 #[cfg(feature = "debug-exact")]
-use crate::backend::trim::{TOTAL_TRIMMED_BLOCKS, TOTAL_TRIMMED_TIME};
+use crate::backend::reclaimer::{TOTAL_TRIMMED_BLOCKS, TOTAL_TRIMMED_TIME};
 #[cfg(feature = "debug-full-critic")]
 use crate::inner::{alloc::RS_ALLOC_CALLS_DEBUG, free::RS_FREE_CALLS_DEBUG};
 use crate::{
@@ -12,7 +12,7 @@ use crate::{
     REFILL_UNDER_PREDICTS, REFILLS_BY_CLASS, SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES, START_TIME,
     TOTAL_CACHED_VA, TOTAL_MMAP_BYTES, TOTAL_MMAP_CALLS, TOTAL_REFILL_CALLS,
     backend::page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR, TOTAL_LIVED, TOTAL_REMOVED},
-    backend::trim::{DISABLE_SEGMENTED_BITMAP, TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA},
+    backend::reclaimer::{DISABLE_SEGMENTED_BITMAP, TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA},
     big_allocations::segmented_bitmap::{
         BIG_SEGMENTED_BITMAP_MIN_ORDER, SEGMENTED_BITMAP_BACKEND, SEGMENTED_BITMAP_TOTAL_CACHED_VA,
     },

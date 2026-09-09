@@ -8,7 +8,7 @@ use rustix::mm::{Advice, MapFlags, ProtFlags, madvise, mmap_anonymous, munmap};
 
 use crate::{
     BIG_MAGIC, BigAllocMeta, Flags, Header, RS_DISABLE_THP, RSMallocError, SEGMENTED_BITMAP_INIT,
-    backend::trim::DISABLE_SEGMENTED_BITMAP,
+    backend::reclaimer::DISABLE_SEGMENTED_BITMAP,
     big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND,
     core_prim::wrappers::UnsafePointer,
     internals::{

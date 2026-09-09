@@ -11,7 +11,11 @@ use crate::{
     backend::trim::DISABLE_SEGMENTED_BITMAP,
     big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND,
     core_prim::wrappers::UnsafePointer,
-    internals::{binder::NumaBind, radix_tree::RADIX, rbtree::BIG_MAP},
+    internals::{
+        binder::NumaBind,
+        radix_tree::{CHUNK_SIZE, RADIX},
+        rbtree::BIG_MAP,
+    },
     record_mmap_call,
     rseq_core::{rseq_offsets::get_rseq, slab_cache::SLAB_CACHE},
     utility::Alignment,
@@ -33,6 +37,11 @@ pub unsafe fn estimate_and_align_2mb(size: usize) -> Option<usize> {
     }
 
     size.checked_align_to(4096)
+}
+
+#[inline(always)]
+pub unsafe fn direct_mapping_size(size: usize) -> Option<usize> {
+    estimate_and_align_2mb(size)?.checked_align_to(CHUNK_SIZE)
 }
 
 #[inline(never)]
@@ -69,7 +78,12 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
     }
 
     if actual_ptr.is_null() {
+        let Some(size) = mapped_total.checked_align_to(CHUNK_SIZE) else {
+            return UnsafePointer::NULL;
+        };
+        mapped_total = size;
         record_mmap_call(mapped_total);
+
         if let Ok(pointer) = mmap_anonymous(
             null_mut(),
             mapped_total,
@@ -139,7 +153,7 @@ pub unsafe fn big_free(ptr: usize) {
         .log_and_abort()
     });
     let mapping_base = (ptr - Header::SIZE) as *mut u8;
-    let payload_size = estimate_and_align_2mb(header.size + Header::SIZE).unwrap_or_else(|| {
+    let payload_size = direct_mapping_size(header.size + Header::SIZE).unwrap_or_else(|| {
         RSMallocError::Corruption {
             ptr: ptr as *mut u8,
             reason: "impossible overflow recomputing size for already-live big allocation",

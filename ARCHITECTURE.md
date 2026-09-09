@@ -630,7 +630,7 @@ Uses:
 - mark direct and aligned big mappings,
 - mark buddy regions.
 
-The radix implementation is a lazy multi-level bitmap tree covering the low canonical 56-bit user address range used on x86-64 LA57 systems. It uses 4 KiB chunks, an 8-bit top level, two 12-bit pointer levels, and a 12-bit bitmap leaf. Range marking validates overflow and bounds explicitly instead of wrapping indices.
+The radix implementation is a lazy multi-level bitmap tree covering the low canonical 56-bit user address range used on x86-64 LA57 systems. It uses 512 KiB chunks, a 1-bit top level, two 12-bit pointer levels, and a 12-bit bitmap leaf. Each bitmap leaf covers 2 GiB. Range marking validates overflow and bounds explicitly instead of wrapping indices.
 
 The radix implementation uses acquire/release atomics for reader/writer synchronization. Writers mutate under `SerialLock` and publish new radix nodes or bitmap updates with release operations; readers use acquire loads and may observe either the old or new ownership state during a race. The allocator only requires eventual visibility here, not a perfectly up-to-date ownership snapshot.
 

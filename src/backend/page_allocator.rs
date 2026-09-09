@@ -12,7 +12,9 @@ use rustix::mm::{MprotectFlags, mprotect};
 
 use crate::{
     inner::alloc::MAX_REFILL_RETRIES,
-    internals::{binder::NumaBind, lock::SpinLock, once::Once},
+    internals::{
+        binder::NumaBind, lock::SpinLock, once::Once, radix_tree::CHUNK_SIZE as RADIX_ALIGN,
+    },
     record_mmap_call,
     rseq_core::{rseq_offsets::get_rseq, slab_cache::SLAB_CACHE},
     traits::Lock,
@@ -455,7 +457,9 @@ impl PageAllocator {
         #[cfg(feature = "guard-pages-thp")]
         let data_size = data_size.checked_add(PAGE_SIZE)?;
         let metadata_size = size_of::<PageArena>().align_to(PAGE_SIZE);
-        let map_size = metadata_size.checked_add(data_size)?;
+        let map_size = metadata_size
+            .checked_add(data_size)?
+            .checked_align_to(RADIX_ALIGN)?;
 
         record_mmap_call(map_size);
         let mut mem = null_mut();

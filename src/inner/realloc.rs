@@ -14,7 +14,7 @@ use crate::{
     BIG_MAGIC, BigAllocMeta, Header, MAGIC, MetaData, RSMallocError, add_slab_cached_va,
     backend::page_allocator::PAGE_ALLOCATOR,
     big_allocations::{
-        big_allocation::estimate_and_align_2mb,
+        big_allocation::{direct_mapping_size, estimate_and_align_2mb},
         segmented_bitmap::{BIG_SEGMENTED_BITMAP_MAX_ORDER, SEGMENTED_BITMAP_BACKEND},
     },
     core_prim::wrappers::{SafePointer, UnsafePointer},
@@ -130,13 +130,15 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
     let old_mapped_size = if is_in_segmented_bitmap {
         1usize << old_meta.order
     } else {
-        estimate_and_align_2mb(old_meta.size + Header::SIZE).unwrap_or_else(|| {
+        fn abort() -> ! {
             RSMallocError::Corruption {
                 ptr: null_mut(),
                 reason: "impossible overflow recomputing size for already-live big allocation",
             }
             .log_and_abort()
-        })
+        }
+
+        direct_mapping_size(old_meta.size + Header::SIZE).unwrap_or_else(|| abort())
     };
 
     if match_size_class(new_size).is_some() {
@@ -176,11 +178,16 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
     }
 
     if !is_in_segmented_bitmap {
-        if let Ok(new_addr) = mremap(old_mapping, old_total, aligned_new, MremapFlags::empty()) {
+        let Some(direct_new) =
+            aligned_new.checked_align_to(crate::internals::radix_tree::CHUNK_SIZE)
+        else {
+            return UnsafePointer::NULL;
+        };
+        if let Ok(new_addr) = mremap(old_mapping, old_total, direct_new, MremapFlags::empty()) {
             let new_meta = BigAllocMeta {
                 next: std::ptr::null_mut(),
                 size: new_size,
-                order: aligned_new.next_power_of_two().trailing_zeros() as usize,
+                order: direct_new.next_power_of_two().trailing_zeros() as usize,
                 segmented_bitmap_region: 0,
                 aligned: false,
             };

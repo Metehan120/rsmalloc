@@ -4,12 +4,14 @@
 //! settings that weaken allocator safety. The latter are unavailable unless
 //! the `expose-security-critical-settings` Cargo feature is enabled.
 
-use crate::{backend::bootstrap::BootstrapConfig, core_prim::predictor::DEFAULT_BATCH};
+use crate::{
+    backend::bootstrap::BootstrapConfig, core_prim::predictor::DEFAULT_BATCH,
+    internals::radix_tree::CHUNK_SIZE,
+};
 
 const DEFAULT_SEGMENTED_BITMAP_CACHE: usize = 64 * 1024 * 1024;
 const DEFAULT_SMALL_TRIM_THRESHOLD: usize = 10 * 1024 * 1024;
 const DEFAULT_BIG_TRIM_THRESHOLD: usize = 512 * 1024 * 1024;
-const DEFAULT_ARENA_SIZE: usize = 256 * 1024 * 1024;
 
 /// Transparent huge-page behavior for allocator-managed mappings.
 #[derive(Clone, Copy, Debug)]
@@ -86,6 +88,32 @@ impl PerCacheLimit {
     }
 }
 
+/// Minimum size requested for a slab page-backend arena.
+///
+/// Arena sizes must be multiples of 512 KiB, matching the allocator's radix
+/// ownership granularity. An arena may be larger when an individual backend
+/// request exceeds this configured minimum.
+#[derive(Clone, Copy, Debug)]
+pub struct ArenaBytes(usize);
+
+impl ArenaBytes {
+    /// The default minimum arena size: 256 MiB.
+    pub const DEFAULT: Self = Self(1024 * 1024 * 256);
+
+    /// Creates an arena-size setting when `size` is a multiple of 512 KiB.
+    ///
+    /// Returns [`None`] when the requested size does not satisfy the radix
+    /// ownership alignment requirement.
+    #[must_use]
+    pub fn new(size: usize) -> Option<ArenaBytes> {
+        if !size.is_multiple_of(CHUNK_SIZE) {
+            return None;
+        }
+
+        Some(ArenaBytes(size))
+    }
+}
+
 /// A byte count used by configuration fields.
 #[derive(Clone, Copy, Debug)]
 pub struct Bytes(pub usize);
@@ -95,8 +123,6 @@ impl Bytes {
     pub const SMALL_TRIM_DEFAULT: Self = Self(DEFAULT_SMALL_TRIM_THRESHOLD);
     /// Default big-allocation threshold for waking the background trimmer: 512 MiB.
     pub const BIG_TRIM_DEFAULT: Self = Self(DEFAULT_BIG_TRIM_THRESHOLD);
-    /// Default minimum slab arena size: 256 MiB.
-    pub const ARENA_DEFAULT: Self = Self(DEFAULT_ARENA_SIZE);
 }
 
 /// Background trimming-worker state.
@@ -237,7 +263,7 @@ pub struct Tuning {
     ///
     /// Initialization enforces an absolute minimum of 512 KiB. The default is
     /// 256 MiB.
-    pub arena_min_size: Bytes,
+    pub arena_min_size: ArenaBytes,
 }
 
 impl Tuning {
@@ -249,7 +275,7 @@ impl Tuning {
         max_per_segmented_bitmap_cache: PerCacheLimit::Default,
         trim: TrimSettings::DEFAULT,
         relief: ReliefSettings::DEFAULT,
-        arena_min_size: Bytes::ARENA_DEFAULT,
+        arena_min_size: ArenaBytes::DEFAULT,
     };
 
     /// Replaces the transparent huge-page settings.
@@ -302,7 +328,7 @@ impl Tuning {
 
     /// Replaces the minimum slab arena size.
     #[must_use]
-    pub const fn with_arena_min_size(self, arena_min_size: Bytes) -> Self {
+    pub const fn with_arena_min_size(self, arena_min_size: ArenaBytes) -> Self {
         Self {
             arena_min_size,
             ..self

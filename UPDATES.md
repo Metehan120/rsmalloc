@@ -26,6 +26,11 @@ v0.3.0-alpha is an architectural cleanup and scalability pass over `0.2.0-alpha`
 - Reworked each NUMA node's current page arena around an atomic arena pointer and an atomic bump offset. Ordinary page-backed allocations now reserve space with a CAS loop without taking the node lock; the lock is restricted to exhausted-arena removal, searches through older arenas, and mapping/publishing a new arena.
 - Moved NUMA selection and the bounded refill retry policy into `PageAllocator::alloc`, giving those consumers one shared reservation policy. Requests now use checked page alignment and fall back to direct mappings when they are too large for the configured arena or the arena path cannot satisfy them.
 
+### Radix ownership granularity
+
+- Increased radix ownership chunks from 4 KiB to 512 KiB, reducing ownership-bitmap metadata by 128x. Reduced the top level from 8 bits to 1 bit so the radix still covers the low 56-bit user-address range without unused address-index capacity; each 512-byte bitmap leaf now covers 2 GiB.
+- Rounded page-backend arenas and direct large-allocation mappings to the 512 KiB ownership granule. Direct allocation, free, and realloc paths now derive the same checked mapping length, and the Rust `ArenaBytes` configuration accepts only 512 KiB multiples.
+
 ### Guard pages
 
 - Added `guard-pages-thp` and `guard-pages-ignore-thp` Cargo features to `src/backend/page_allocator.rs`, the bump allocator backing every small-class refill. A `PROT_NONE` guard page is placed at the last 4KB of each fixed-size aligned block — 2MB intervals for `guard-pages-thp` (matched to the THP unit, so only the specific 2MB block hosting a guard loses THP eligibility), 64KB for `guard-pages-ignore-thp` (denser coverage, always fragments page tables).

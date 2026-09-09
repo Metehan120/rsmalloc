@@ -18,6 +18,7 @@ use crate::{
 };
 use std::{
     mem::size_of,
+    os::raw::c_void,
     ptr::null_mut,
     sync::atomic::{AtomicPtr, Ordering},
 };
@@ -380,29 +381,34 @@ impl RBTree {
         }
     }
 
+    unsafe fn map_mem(&self, size: usize) -> Result<*mut c_void, RSMallocError> {
+        record_mmap_call(size);
+        mmap_anonymous(
+            null_mut(),
+            size,
+            ProtFlags::READ | ProtFlags::WRITE,
+            MapFlags::PRIVATE | MapFlags::NORESERVE,
+        )
+        .map_err(|e| RSMallocError::OutOfMemory {
+            subsystem: "rbtree.rs alloc_chunk",
+            size,
+            errno: Some(e.raw_os_error()),
+        })
+    }
+
     unsafe fn alloc_chunk(&self) {
         let size = NODE_CHUNK * size_of::<Node>();
         let ptr = if size < ARENA_SIZE {
             PAGE_ALLOCATOR
                 .alloc(None, size)
+                .or_else(|| self.map_mem(size).ok())
                 .ok_or(RSMallocError::OutOfMemory {
                     subsystem: "rbtree.rs alloc_chunk",
                     size,
                     errno: None,
                 })
         } else {
-            record_mmap_call(size);
-            mmap_anonymous(
-                null_mut(),
-                size,
-                ProtFlags::READ | ProtFlags::WRITE,
-                MapFlags::PRIVATE | MapFlags::NORESERVE,
-            )
-            .map_err(|e| RSMallocError::OutOfMemory {
-                subsystem: "rbtree.rs alloc_chunk",
-                size,
-                errno: Some(e.raw_os_error()),
-            })
+            self.map_mem(size)
         }
         .unwrap_or_else(|e| e.log_and_abort()) as *mut Node;
 

@@ -17,9 +17,9 @@ use std::{
     },
 };
 
-pub const CHUNK_SIZE: usize = 4096;
+pub const CHUNK_SIZE: usize = 512 * 1024;
 
-const L0_BITS: usize = 8;
+const L0_BITS: usize = 1;
 const L1_BITS: usize = 12;
 const L2_BITS: usize = 12;
 const L3_BITS: usize = 12;

@@ -2,12 +2,29 @@
 
 ## v0.3.0-alpha
 
-v0.3.0-alpha is an architectural cleanup pass over `0.2.0-alpha`, targeting weaknesses that was in alpha-2: fork-safety gaps in the newer page-backend/pending-queue locks, incomplete debug-stats coverage relative to the exit-time text report, and a module layout that mixed public-surface code in with internals. It also adds opt-in guard-page hardening and closes out a couple of real correctness bugs found while chasing benchmark numbers.
+v0.3.0-alpha is an architectural cleanup and scalability pass over `0.2.0-alpha`, targeting weaknesses in alpha-2: fork-safety gaps in the newer page-backend/pending-queue locks, incomplete debug-stats coverage relative to the exit-time text report, and a module layout that mixed public-surface code in with internals. It also introduces a new Rust API, replaces the buddy backend with an experimental segmented-bitmap design, makes the page-backend allocation fast path lock-free, adds opt-in guard-page hardening, and closes out correctness bugs found while chasing benchmark numbers.
 
 ### Module layout
 
 - Split public-surface code out of the crate root into `frontend/`: `global_alloc.rs` (Rust `GlobalAlloc` impl) and `abi/` (C ABI) now live under `frontend/global_alloc.rs` and `frontend/abi/`, mirroring the existing `backend/` (page arenas) naming. `global_alloc` compiles only without `preload`; `abi` only with it.
-- Moved `trim.rs` under `backend/`, alongside the page allocator and buddy backend it services.
+- Moved `trim.rs` under `backend/`, alongside the page allocator and large-allocation backend it services.
+
+### New Rust API surface
+
+- Added the `rsmalloc::v2` API and moved the preferred Rust global allocator to `v2::alloc::RSMalloc`. The new configuration model separates ordinary tuning (`Tuning`, THP policy, refill retries, cache sizing, trimming, and pressure relief) from settings that weaken safety; security-critical controls are only exposed with `expose-security-critical-settings` and require an explicit unsafe acknowledgement where applicable. The original root-level global-allocator API remains re-exported but is deprecated.
+- Added a native `AllocationAPI` for metadata-owning malloc-style allocations. `AllocationSize` represents checked byte counts, including overflow-checked array sizing; allocation, aligned allocation, zeroed allocation, usable-size queries, and alignment-preserving reallocation return typed `AllocationError` values. Deallocation likewise needs only the owned pointer, so these operations do not require callers to retain a Rust `Layout`.
+- Added `RSMallocCoreAPI` for manual initialization, usable-size queries, and simple trimming, plus `RSMalloc::raw()`/`RawInterface` for callers that deliberately need unsafe raw-pointer operations. The raw trimming API can target slab memory, segmented-bitmap memory, or both and returns the reclaimed byte counts separately.
+- Split the background trim trigger into independently configurable small- and big-allocation thresholds. Rust configuration defaults to 10 MiB for slab memory and 512 MiB for segmented-bitmap memory; preload builds expose the latter through `RS_BIG_TRIMMER_THRESHOLD` alongside the existing `RS_TRIMMER_THRESHOLD` small-cache setting.
+
+### Segmented-bitmap large-allocation backend
+
+- WIP, not setteled yet.
+
+### Lock-free page-backend fast path
+
+- Promoted `PageAllocator` into the allocator's central memory-reservation backend. Slab refills, segmented-bitmap region growth, radix ownership tables, and red-black-tree metadata now request arena-backed memory through it before falling back to their own direct mappings.
+- Reworked each NUMA node's current page arena around an atomic arena pointer and an atomic bump offset. Ordinary page-backed allocations now reserve space with a CAS loop without taking the node lock; the lock is restricted to exhausted-arena removal, searches through older arenas, and mapping/publishing a new arena.
+- Moved NUMA selection and the bounded refill retry policy into `PageAllocator::alloc`, giving those consumers one shared reservation policy. Requests now use checked page alignment and fall back to direct mappings when they are too large for the configured arena or the arena path cannot satisfy them.
 
 ### Guard pages
 
@@ -25,7 +42,8 @@ v0.3.0-alpha is an architectural cleanup pass over `0.2.0-alpha`, targeting weak
 ### Debug/stats API parity
 
 - Added `alloc_calls`/`free_calls` counters (`debug-full-critic`) to `RSMallocExactStats`, closing a gap where the text-based exit report had allocation/free call counts but the structured Rust stats API didn't.
-- Added `pid` (not sure if this is really important), `uptime_ms`, `clock_ms`, `mmap_calls`, `mmap_bytes_requested`, `total_arenas`, `arenas_lived`, `arenas_removed`, and `arena_size` to `RSMallocStats`, and `trimmed_blocks_small`/`avg_madvise_cycles_small` (`debug-exact`) to `RSMallocExactStats` — bringing the structured stats API closer to parity with what the exit-time text report already exposed.
+- Added `pid`, `uptime_ms`, `clock_ms`, `mmap_calls`, `mmap_bytes_requested`, `total_arenas`, `arenas_lived`, `arenas_removed`, and `arena_size` to `RSMallocStats`, and `trimmed_blocks_small`/`avg_madvise_cycles_small` (`debug-exact`) to `RSMallocExactStats` — bringing the structured stats API closer to parity with what the exit-time text report already exposed.
+- Expanded large-backend reporting with segmented-bitmap region usage and per-order never-allocated/reused/trimmed block counts, and expanded radix reporting with ownership and metadata-density measurements.
 
 ### Lock redesign 
 
@@ -33,7 +51,12 @@ v0.3.0-alpha is an architectural cleanup pass over `0.2.0-alpha`, targeting weak
 
 ### Fork safety
 
-- Added `PAGE_ALLOCATOR` and `PENDING_QUEUE` to the fork-prepare/parent/child lock handling (`lock_all_for_fork`/`reset_locks_on_fork`), alongside the existing buddy backend and `BIG_MAP` handling. Previously these two lock sets weren't included in fork handling at all, so a fork happening while either was held could leave a forked child with a permanently stuck lock.
+- Added `PAGE_ALLOCATOR` and `PENDING_QUEUE` to the fork-prepare/parent/child lock handling (`lock_all_for_fork`/`reset_locks_on_fork`), alongside the existing large-allocation backend and `BIG_MAP` handling. Previously these two lock sets weren't included in fork handling at all, so a fork happening while either was held could leave a forked child with a permanently stuck lock.
+
+### Error handling
+
+- Added a centralized `RSMallocError` error model, derived with `thiserror`, for out-of-memory failures, double frees, metadata corruption, invalid or foreign pointers, unavailable RSEQ state, and security violations. Fatal allocator paths now print consistent subsystem, pointer, reason, errno, and OS-error context before aborting instead of assembling unrelated messages at each call site.
+- Updated allocation, reallocation, random initialization, radix/tree metadata allocation, bootstrap, and RSEQ setup paths to propagate checked failures into the centralized handler or return allocation failure where the public contract permits it.
 
 ### Realloc hardening
 
@@ -58,7 +81,7 @@ v0.3.0-alpha is an architectural cleanup pass over `0.2.0-alpha`, targeting weak
 
 - Added a `trim_lock: SpinLock<()>` per `(cpu, class)` `TransferCache` slot. `trim_small` holds it across its list-swap/repush/per-node push sequence for that slot; `transfer_pop_batch`'s CAS loop calls `spin_until_unlock()` before attempting the swap. Fixes a real race where a steal could land between the trimmer's CAS-detach and its repush and observe an empty list, losing blocks that were about to come back — and measurably reduced hot-path contention under `mimalloc-bench`'s `larson` case, since stealers now wait via a cheap read-only spin instead of CAS-storming against the trimmer's in-flight writes.
 - Fixed `trim_small`'s average-life update being incorrectly gated behind `total_push > 0` — it now correctly runs whenever `total > 0`, independent of whether any nodes were push-eligible that pass.
-- Added a `TOTAL_CACHED_VA < TRIM_THRESHOLD` early-out to `trim_small` and `BuddyBackend::trim_inner`, skipping the trim-lock acquisition and full region/class walk entirely when there's nothing meaningfully cached to reclaim. `trim_inner`'s guard is bypassed when `force_trim` is set, so `relief_paths()`'s memory-pressure-driven emergency trim (which reacts to system-wide pressure, not this allocator's own cached-VA size) still runs regardless of the threshold.
+- Added cached-VA threshold early-outs to `trim_small` and the large-allocation backend, skipping the trim-lock acquisition and full region/class walk entirely when neither cache has enough memory to reclaim. Forced trims bypass the backend guard, so memory-pressure relief still runs regardless of the configured background thresholds.
 - Replaced `trim_small`'s fixed `TRIM_REPUSH_BATCH` (16) periodic-flush threshold with `ITERATIONS[class] + 1`, tying how long `trim_lock` is held before releasing it mid-pass to the same per-class refill-batch granularity already used on the allocation side, instead of one constant applied uniformly across every size class.
 
 ### Calloc zero-skip correctness
@@ -78,11 +101,12 @@ v0.3.0-alpha is an architectural cleanup pass over `0.2.0-alpha`, targeting weak
 ### Small branch/overhead cleanups
 
 - Removed a now-redundant bounds check in `Radix::get` (`radix_tree.rs`) — `chunk_idx` is already guaranteed in range by its callers.
-- Raised `BUDDY_AVERAGE_BLOCK_TIMES`'s initial seed (10 -> 100, in 100ms ticks) so buddy trim eligibility doesn't start from an unrealistically short assumed block lifetime at cold start.
+- Raised the large-allocation average block-lifetime seed (10 -> 100, in 100ms ticks) so trim eligibility doesn't start from an unrealistically short assumed lifetime at cold start.
 
 ### Fuzzing
 
 - Added a `fuzz/` crate (`cargo-fuzz`/`libfuzzer-sys`, `arbitrary`-derived op sequences) with two targets: `alloc_ops` (single-threaded alloc/dealloc/realloc/alloc_zeroed sequences against tracked live allocations, checking pattern-filled content survives untouched and calloc'd memory reads back zero) and `concurrent_alloc_ops` (the same op space driven across up to 12 threads via a shared `rayon` pool, exercising the transfer cache's cross-CPU stealing and NUMA paths under concurrent load).
+- Added `RS_FUZZ_TYPE` modes to the concurrent target so fuzz runs can concentrate on small allocations, the 4-64 MiB segmented-bitmap band, mixed boundary cases, or the wider full range without maintaining separate targets.
 - Removed `tests/loom_transfer.rs` in favor of the above — direct fuzzing over the real transfer-cache/RSEQ paths in place of a `loom`-modeled subset of the same logic.
 
 ### Benchmarks

@@ -250,7 +250,7 @@ macro_rules! is_owned {
 pub static RS_ALLOC_CALLS_DEBUG: AtomicUsize = AtomicUsize::new(0);
 
 #[inline(always)]
-unsafe fn rs_alloc_inner(size: usize, aligned: bool, is_calloc: bool) -> UnsafePointer<Header> {
+unsafe fn rs_alloc_inner<const FLAG: bool>(size: usize, aligned: bool) -> UnsafePointer<Header> {
     #[cfg(feature = "preload")]
     ONCE.call_once(|| crate::inner::preload::bootstrap::bootstrap());
 
@@ -280,7 +280,7 @@ unsafe fn rs_alloc_inner(size: usize, aligned: bool, is_calloc: bool) -> UnsafeP
 
         let mut safe = cache.apply_safe();
         safe.magic = MAGIC;
-        if !is_calloc {
+        if FLAG {
             safe.flags = Flags::Allocated
         };
 
@@ -298,12 +298,12 @@ unsafe fn rs_alloc_inner(size: usize, aligned: bool, is_calloc: bool) -> UnsafeP
 
 #[inline(always)]
 pub unsafe fn rs_alloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
-    rs_alloc_inner(size, aligned, false)
+    rs_alloc_inner::<true>(size, aligned)
 }
 
 #[inline(always)]
 pub unsafe fn rs_alloc_no_flag(size: usize, aligned: bool) -> UnsafePointer<Header> {
-    rs_alloc_inner(size, aligned, true)
+    rs_alloc_inner::<false>(size, aligned)
 }
 
 #[inline(always)]

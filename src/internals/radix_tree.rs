@@ -19,12 +19,10 @@ use std::{
 
 pub const CHUNK_SIZE: usize = 512 * 1024;
 
-const L0_BITS: usize = 1;
-const L1_BITS: usize = 12;
+const L1_BITS: usize = 13;
 const L2_BITS: usize = 12;
 const L3_BITS: usize = 12;
 
-const L0_SIZE: usize = 1 << L0_BITS;
 const L1_SIZE: usize = 1 << L1_BITS;
 const L2_SIZE: usize = 1 << L2_BITS;
 const L3_SIZE: usize = 1 << L3_BITS;
@@ -32,10 +30,10 @@ const L3_WORD_BITS: usize = u64::BITS as usize;
 const L3_BITMAP_WORDS: usize = (L3_SIZE + L3_WORD_BITS - 1) / L3_WORD_BITS;
 
 const MAX_ADDR: usize = 1usize << 56;
-const RADIX_MAX_CHUNKS: usize = 1 << (L0_BITS + L1_BITS + L2_BITS + L3_BITS);
+const RADIX_MAX_CHUNKS: usize = 1 << (L1_BITS + L2_BITS + L3_BITS);
 
 pub struct Radix {
-    pub l0: UnsafePointer<AtomicUsize>,
+    pub l1: UnsafePointer<AtomicUsize>,
     alloc_lock: SpinLock<()>,
 }
 
@@ -66,20 +64,19 @@ impl Radix {
     }
 
     pub unsafe fn new() -> Self {
-        let ptr = Self::map_memory(L0_SIZE * size_of::<AtomicUsize>()) as *mut AtomicUsize;
+        let ptr = Self::map_memory(L1_SIZE * size_of::<AtomicUsize>()) as *mut AtomicUsize;
         Self {
             alloc_lock: SpinLock::new(()),
-            l0: UnsafePointer::new(ptr),
+            l1: UnsafePointer::new(ptr),
         }
     }
 
     #[inline(always)]
-    fn split(idx: usize) -> (usize, usize, usize, usize) {
-        let l0 = (idx >> (L1_BITS + L2_BITS + L3_BITS)) & (L0_SIZE - 1);
+    fn split(idx: usize) -> (usize, usize, usize) {
         let l1 = (idx >> (L2_BITS + L3_BITS)) & (L1_SIZE - 1);
         let l2 = (idx >> L3_BITS) & (L2_SIZE - 1);
         let l3 = idx & (L3_SIZE - 1);
-        (l0, l1, l2, l3)
+        (l1, l2, l3)
     }
 
     #[inline(always)]
@@ -138,10 +135,9 @@ impl Radix {
         if unlikely(chunk_idx >= RADIX_MAX_CHUNKS) {
             return;
         }
-        let (i0, i1, i2, i3) = Self::split(chunk_idx);
+        let (i1, i2, i3) = Self::split(chunk_idx);
         let lock = &self.alloc_lock;
-        let l1 = Self::get_or_alloc(self.l0.as_ptr(), i0, L1_SIZE, lock);
-        let l2 = Self::get_or_alloc(l1, i1, L2_SIZE, lock);
+        let l2 = Self::get_or_alloc(self.l1.as_ptr(), i1, L2_SIZE, lock);
         let l3 = Self::get_or_alloc_l3(l2, i2, lock);
 
         let word_idx = i3 / L3_WORD_BITS;
@@ -162,10 +158,9 @@ impl Radix {
     unsafe fn set_range(&self, start_idx: usize, end_idx: usize, val: bool) {
         let mut chunk_idx = start_idx;
         loop {
-            let (i0, i1, i2, i3) = Self::split(chunk_idx);
+            let (i1, i2, i3) = Self::split(chunk_idx);
             let lock = &self.alloc_lock;
-            let l1 = Self::get_or_alloc(self.l0.as_ptr(), i0, L1_SIZE, lock);
-            let l2 = Self::get_or_alloc(l1, i1, L2_SIZE, lock);
+            let l2 = Self::get_or_alloc(self.l1.as_ptr(), i1, L2_SIZE, lock);
             let l3 = Self::get_or_alloc_l3(l2, i2, lock);
 
             let chunks_left_in_leaf = L3_SIZE - i3;
@@ -216,13 +211,9 @@ impl Radix {
 
     #[inline(always)]
     pub unsafe fn get(&self, chunk_idx: usize) -> bool {
-        let (i0, i1, i2, i3) = Self::split(chunk_idx);
+        let (i1, i2, i3) = Self::split(chunk_idx);
 
-        let l1 = (*self.l0.as_ptr().add(i0)).load(Acquire) as *mut AtomicUsize;
-        if l1.is_null() {
-            return false;
-        }
-        let l2 = (*l1.add(i1)).load(Acquire) as *mut AtomicUsize;
+        let l2 = (*self.l1.as_ptr().add(i1)).load(Acquire) as *mut AtomicUsize;
         if l2.is_null() {
             return false;
         }
@@ -258,7 +249,7 @@ impl RadixTree {
     pub const unsafe fn new_const() -> Self {
         Self {
             nodes: Radix {
-                l0: UnsafePointer::new(null_mut()),
+                l1: UnsafePointer::new(null_mut()),
                 alloc_lock: SpinLock::new(()),
             },
         }
@@ -305,7 +296,7 @@ impl RadixTree {
 
     #[inline(always)]
     pub unsafe fn is_owned(&self, addr: usize) -> bool {
-        if unlikely(self.nodes.l0.is_null()) {
+        if unlikely(self.nodes.l1.is_null()) {
             return false;
         }
 
@@ -321,7 +312,7 @@ impl RadixTree {
 
     #[cfg(feature = "debug")]
     pub unsafe fn report(&self) -> RadixReport {
-        if self.nodes.l0.is_null() {
+        if self.nodes.l1.is_null() {
             return RadixReport {
                 l1_nodes: 0,
                 l2_nodes: 0,
@@ -331,41 +322,32 @@ impl RadixTree {
             };
         }
 
-        let mut l1_nodes = 0usize;
+        let l1_nodes = 1usize;
         let mut l2_nodes = 0usize;
         let mut leaves = 0usize;
         let mut owned_chunks = 0usize;
 
-        for i0 in 0..L0_SIZE {
-            let l1 = (*self.nodes.l0.as_ptr().add(i0)).load(Acquire) as *mut AtomicUsize;
-            if l1.is_null() {
+        for i1 in 0..L1_SIZE {
+            let l2 = (*self.nodes.l1.as_ptr().add(i1)).load(Acquire) as *mut AtomicUsize;
+            if l2.is_null() {
                 continue;
             }
-            l1_nodes += 1;
+            l2_nodes += 1;
 
-            for i1 in 0..L1_SIZE {
-                let l2 = (*l1.add(i1)).load(Acquire) as *mut AtomicUsize;
-                if l2.is_null() {
+            for i2 in 0..L2_SIZE {
+                let l3 = (*l2.add(i2)).load(Acquire) as *mut AtomicU64;
+                if l3.is_null() {
                     continue;
                 }
-                l2_nodes += 1;
+                leaves += 1;
 
-                for i2 in 0..L2_SIZE {
-                    let l3 = (*l2.add(i2)).load(Acquire) as *mut AtomicU64;
-                    if l3.is_null() {
-                        continue;
-                    }
-                    leaves += 1;
-
-                    for word in 0..L3_BITMAP_WORDS {
-                        owned_chunks += (*l3.add(word)).load(Acquire).count_ones() as usize;
-                    }
+                for word in 0..L3_BITMAP_WORDS {
+                    owned_chunks += (*l3.add(word)).load(Acquire).count_ones() as usize;
                 }
             }
         }
 
-        let metadata_bytes = (L0_SIZE * size_of::<AtomicUsize>())
-            + (l1_nodes * L1_SIZE * size_of::<AtomicUsize>())
+        let metadata_bytes = (L1_SIZE * size_of::<AtomicUsize>())
             + (l2_nodes * L2_SIZE * size_of::<AtomicUsize>())
             + (leaves * L3_BITMAP_WORDS * size_of::<AtomicU64>());
 

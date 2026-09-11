@@ -247,11 +247,23 @@ impl SlabCache {
         let trimmed_ptr = &list.trimmed;
         let mut list_ptr = normal_ptr;
 
-        loop {
-            list.trim_lock.spin_until_unlock();
+        'retry: loop {
+            let mut old = list_ptr.load(Ordering::Acquire);
+            let mut pack = Tagging.untag_ptr(old);
 
-            let old = list_ptr.load(Ordering::Acquire);
-            let pack = Tagging.untag_ptr(old);
+            if list.trim_lock.get_lock() {
+                loop {
+                    old = list_ptr.load(Ordering::Acquire);
+                    pack = Tagging.untag_ptr(old);
+                    if !pack.current_header.is_null() {
+                        break;
+                    }
+                    if !list.trim_lock.get_lock() {
+                        continue 'retry;
+                    }
+                    spin_loop();
+                }
+            }
 
             if pack.current_header.is_null() {
                 if eq(list_ptr, normal_ptr) {

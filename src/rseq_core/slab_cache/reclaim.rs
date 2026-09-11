@@ -131,21 +131,12 @@ impl SlabCache {
                             cpu,
                             inner,
                         );
-                        main_list.trim_lock.unlock();
-
                         total_push = 0;
                         push_list = null_mut();
                         push_list_start = null_mut();
                     }
 
                     next = old_next;
-                }
-
-                crate::global_vals::record_transfer_pop!(class, total_popped);
-
-                if total > 0 {
-                    let new_avg = (avg / total).clamp(1, 100);
-                    TRIM_SMOOTHING[class].update_refill(new_avg as usize, 1, 100);
                 }
 
                 if total_push > 0 {
@@ -159,7 +150,14 @@ impl SlabCache {
                         inner,
                     );
                 }
+
                 main_list.trim_lock.unlock();
+
+                crate::global_vals::record_transfer_pop!(class, total_popped);
+                if total > 0 {
+                    let new_avg = (avg / total).clamp(1, 100);
+                    TRIM_SMOOTHING[class].update_refill(new_avg as usize, 1, 100);
+                }
 
                 while !trim_list.is_null() {
                     #[cfg(feature = "debug-exact")]

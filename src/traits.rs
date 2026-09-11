@@ -42,6 +42,7 @@ pub trait RseqCoreTrait {
     ) -> RseqResult;
 }
 
+#[allow(dead_code)]
 pub trait Lock {
     type Out;
 
@@ -56,7 +57,6 @@ pub trait Lock {
     fn lock(&self) -> Self::Guard<'_, Self::Out>;
     fn try_lock(&self) -> Self::LockError<Self::Guard<'_, Self::Out>>;
     fn spin_until_unlock(&self);
-    #[allow(dead_code)]
     fn get_lock(&self) -> Self::LockState;
     fn unlock(&self);
 }

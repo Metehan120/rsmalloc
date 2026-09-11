@@ -12,10 +12,12 @@ use crate::traits::Lock;
 #[cfg(feature = "debug-exact")]
 use crate::{GLOBAL_LOCK_RETRIES, GLOBAL_LOCKS, GLOBAL_SPIN_WAITS, GLOBAL_TRY_LOCK_MISSES};
 
+#[allow(unused)]
+#[repr(u8)]
 #[derive(Debug, PartialEq)]
 pub enum LockState {
-    Locked,
-    Free,
+    Locked = 0,
+    Free = 1,
 }
 
 #[derive(Debug, PartialEq)]
@@ -78,7 +80,7 @@ impl<T> SpinLock<T> {
 
 impl<T> Lock for SpinLock<T> {
     type LockError<Guard> = LockGuard<Guard>;
-    type LockState = LockState;
+    type LockState = bool;
     type Out = T;
 
     type Guard<'a, U>
@@ -136,10 +138,7 @@ impl<T> Lock for SpinLock<T> {
 
     #[inline(always)]
     fn get_lock(&self) -> Self::LockState {
-        if self.state.load(Acquire) == true {
-            return LockState::Locked;
-        }
-        LockState::Free
+        self.state.load(Acquire)
     }
 
     #[inline(always)]

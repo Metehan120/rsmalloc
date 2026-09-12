@@ -3,26 +3,33 @@
 # Unreleased version of rsmalloc, benchmarks are have not yet settled.
 # On different kernel, other benchmarks and documentation will also be updated.
 rsmalloc alpha-3:
+# 3.16-3.17
 cfrac       sys   03.17 7212 3.16 0.00 0 248
 espresso    sys   02.98 7172 2.96 0.01 0 250
 barnes      sys   01.69 72200 1.68 0.00 0 667
-redis       sys   2.739 13468 0.10 0.02 0 1405
+# Consistent at 2.720 across runs
+redis       sys   2.720 13552 0.10 0.02 0 1485
 larsonN-sized sys   3.323 91940 59.39 0.12 0 9534
-# on high RSS my best bet is new segmented bitmap, well it is still WIP
 mstressN    sys   01.00 336008 7.43 0.57 0 1912
-rptestN     sys   .606 64832 0.98 0.55 0 644
+# ~0.610-0.650, can varry
+rptestN     sys   .616 64540 1.04 0.47 0 632
 gs          sys   00.19 46644 0.17 0.01 0 1756
+# Lua is consistently around 0.99
 lua         sys   00.99 114264 5.63 0.40 0 56886
 alloc-test1 sys   02.39 19768 2.38 0.00 0 467
 alloc-testN sys   03.19 23568 37.81 0.05 0 448
+
+# Architectural worst-cases
 sh6benchN   sys   00.31 370780 3.13 0.40 0 1669
 sh8benchN   sys   01.54 175292 17.27 0.29 0 1355
+
 # Expected slowdown for overall speed up
 xmalloc-testN sys   0.747 25628 56.82 1.54 0 415
 cache-scratch1 sys   00.86 6712 0.86 0.00 0 309
 cache-scratchN sys   00.15 6684 1.79 0.00 0 359
 glibc-simple sys   01.63 5248 1.63 0.00 0 246
 glibc-thread sys   1.299 13072 23.75 0.13 0 370
+# Possibly swing around 3.31-3.28
 rocksdb     sys   03.28 106944 2.90 0.66 0 982
 
 rsmalloc alpha-2 (THP handled by kernel like most of the allocators, expected higher RSS):

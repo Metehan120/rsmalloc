@@ -103,7 +103,7 @@ impl Segment {
             match self.hot.word.compare_exchange_weak(
                 word,
                 next,
-                Ordering::AcqRel,
+                Ordering::Acquire,
                 Ordering::Relaxed,
             ) {
                 Ok(_) => {
@@ -165,7 +165,7 @@ impl Segment {
             match self.hot.word.compare_exchange_weak(
                 word,
                 next,
-                Ordering::AcqRel,
+                Ordering::Acquire,
                 Ordering::Relaxed,
             ) {
                 Ok(_) => return true,
@@ -187,7 +187,7 @@ impl Segment {
             match self.hot.word.compare_exchange_weak(
                 word,
                 word | mask as u64,
-                Ordering::AcqRel,
+                Ordering::Acquire,
                 Ordering::Relaxed,
             ) {
                 Ok(_) => return true,

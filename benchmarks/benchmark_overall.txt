@@ -32,6 +32,10 @@ glibc-thread sys   1.299 13072 23.75 0.13 0 370
 # Possibly swing around 3.31-3.28
 rocksdb     sys   03.28 106944 2.90 0.66 0 982
 
+# New benhcmarks will also be added for other allocators
+rbstressN   sys   03.10 161268 3.01 0.08 0 38928
+z3          sys   00.05 54444 0.04 0.00 0 663
+
 rsmalloc alpha-2 (THP handled by kernel like most of the allocators, expected higher RSS):
 cfrac       sys   03.22 10488 3.21 0.00 0 265
 espresso    sys   03.02 10488 3.00 0.01 0 261

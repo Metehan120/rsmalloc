@@ -75,10 +75,6 @@ harness = false
 name = "rstress"
 harness = false
 
-[[bench]]
-name = "rstress_app"
-harness = false
-
 [dev-dependencies]
 criterion = "0.8.2"
 loom = "0.7.2"

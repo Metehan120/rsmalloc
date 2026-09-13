@@ -1,6 +1,5 @@
 use std::{
     arch::x86_64::{__m256i, _mm256_add_epi8, _mm256_load_si256, _mm256_store_si256},
-    fs,
     hint::black_box,
     os::raw::c_void,
     ptr::{null_mut, write_bytes},
@@ -10,28 +9,11 @@ use std::{
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
-fn rss_kb() -> Option<usize> {
-    let status = fs::read_to_string("/proc/self/status").ok()?;
-
-    status
-        .lines()
-        .find(|line| line.starts_with("VmRSS:"))
-        .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|v| v.parse().ok())
-}
-
-fn print_rss(label: &str) {
-    if let Some(rss) = rss_kb() {
-        eprintln!("[RSMalloc] {label} final RSS: {rss} KiB");
-    }
-}
-
 unsafe extern "C" {
     fn malloc(size: usize) -> *mut c_void;
     fn free(ptr: *mut c_void);
     fn realloc(ptr: *mut c_void, size: usize) -> *mut c_void;
     fn aligned_alloc(align: usize, size: usize) -> *mut c_void;
-    fn malloc_trim(pad: usize) -> i32;
 }
 
 #[derive(Clone, Copy)]
@@ -221,60 +203,6 @@ fn run_remote_free_pressure(threads: usize, allocs_per_thread: usize) -> usize {
     ops
 }
 
-fn run_realloc_ping_pong(threads: usize, chains_per_thread: usize) -> usize {
-    const SIZES: [usize; 13] = [
-        16,
-        4096,
-        32,
-        131072,
-        48,
-        3 * 1024 * 1024,
-        64,
-        8192,
-        80,
-        5 * 1024 * 1024,
-        96,
-        16384,
-        128,
-    ];
-
-    let mut handles = Vec::with_capacity(threads);
-    for tid in 0..threads {
-        handles.push(thread::spawn(move || {
-            let mut ops = 0usize;
-            for chain in 0..chains_per_thread {
-                let byte = (tid as u8).wrapping_mul(31).wrapping_add(chain as u8);
-                unsafe {
-                    let mut size = SIZES[0];
-                    let mut ptr = malloc(size) as *mut u8;
-                    assert!(!ptr.is_null());
-                    fill_and_probe(ptr, size, byte);
-                    ops += 1;
-
-                    for &next_size in &SIZES[1..] {
-                        let next = realloc(ptr as *mut c_void, next_size) as *mut u8;
-                        assert!(!next.is_null());
-                        check_prefix(next, size.min(next_size), byte);
-                        fill_and_probe(next, next_size, byte);
-                        ptr = next;
-                        size = next_size;
-                        ops += 1;
-                    }
-
-                    free(ptr as *mut c_void);
-                    ops += 1;
-                }
-            }
-            ops
-        }));
-    }
-
-    handles
-        .into_iter()
-        .map(|handle| handle.join().expect("realloc worker panicked"))
-        .sum()
-}
-
 fn run_fragmentation_shuffle(threads: usize, rounds: usize, live_set: usize) -> usize {
     let mut handles = Vec::with_capacity(threads);
 
@@ -405,7 +333,6 @@ fn bench_thread_churn(c: &mut Criterion) {
     }
 
     group.finish();
-    print_rss("rstress_thread_churn");
 }
 
 fn bench_allocator_edge_cases(c: &mut Criterion) {
@@ -427,24 +354,6 @@ fn bench_allocator_edge_cases(c: &mut Criterion) {
                 let mut ops = 0usize;
                 for _ in 0..runs {
                     ops += black_box(run_remote_free_pressure(remote_threads, remote_allocs));
-                }
-                black_box(ops);
-                start.elapsed()
-            });
-        },
-    );
-
-    let realloc_threads = (cpus * 2).clamp(2, 128);
-    let chains = 96usize;
-    group.throughput(Throughput::Elements((realloc_threads * chains * 14) as u64));
-    group.bench_function(
-        BenchmarkId::new("realloc_ping_pong_size_classes_threads", realloc_threads),
-        |b| {
-            b.iter_custom(|runs| {
-                let start = Instant::now();
-                let mut ops = 0usize;
-                for _ in 0..runs {
-                    ops += black_box(run_realloc_ping_pong(realloc_threads, chains));
                 }
                 black_box(ops);
                 start.elapsed()
@@ -494,7 +403,6 @@ fn bench_allocator_edge_cases(c: &mut Criterion) {
     );
 
     group.finish();
-    print_rss("rstress_allocator_edge_cases");
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -578,43 +486,18 @@ fn bench_simd_alloc(c: &mut Criterion) {
     }
 
     group.finish();
-    print_rss("sbench_simd_alloc");
 }
 
 fn teardown_test(phases: usize, allocs_per_phase: usize) -> usize {
-    let list = [
-        16,
-        32,
-        15,
-        64,
-        12,
-        1,
-        1024,
-        256,
-        1,
-        1024,
-        256,
-        16,
-        32,
-        64,
-        12,
-        1024 * 1024,
-        1024 * 1024,
-        256,
-        16,
-        16,
-        16,
-        16,
-        16,
-    ];
+    let state = &mut 0;
 
     let mut mem = Vec::with_capacity(allocs_per_phase);
     let mut ops = 0usize;
 
     for _ in 0..phases {
-        for i in 0..allocs_per_phase {
+        for _ in 0..allocs_per_phase {
+            let size = mixed_size(next_rand(state));
             unsafe {
-                let size = list[i % list.len()];
                 let memory = malloc(size);
                 assert_ne!(memory, null_mut());
                 black_box(memory);
@@ -662,7 +545,6 @@ fn run_teardown(c: &mut Criterion) {
     );
 
     group.finish();
-    print_rss("bulk_phase_teardown_mixed_sizes");
 }
 
 fn teardown_test_multi(threads: usize, phases: usize, allocs_per_phase: usize) -> usize {
@@ -719,72 +601,6 @@ fn run_teardown_multi(c: &mut Criterion) {
     }
 
     group.finish();
-    print_rss("bulk_phase_teardown_mixed_sizes_multi");
-}
-
-fn bench_trim_pressure(c: &mut Criterion) {
-    let mut group = c.benchmark_group("trim_pressure");
-    const SIZES: &[usize] = &[4096, 8192, 16384, 32768, 65536];
-    const BOUNDARY_SIZES: &[usize] = &[3072, 4095, 4096, 4097, 8191, 8192];
-
-    group.bench_function("alloc_free_trim_classes", |b| {
-        b.iter(|| unsafe {
-            let mut ptrs = Vec::with_capacity(4096);
-
-            for i in 0..4096 {
-                let size = SIZES[i % SIZES.len()];
-                let ptr = malloc(size);
-                black_box(ptr);
-                ptrs.push(ptr);
-            }
-
-            for ptr in ptrs {
-                free(ptr);
-            }
-        });
-    });
-
-    group.bench_function("manual_malloc_trim_after_free", |b| {
-        b.iter(|| unsafe {
-            let mut ptrs = Vec::with_capacity(4096);
-
-            for i in 0..4096 {
-                let size = SIZES[i % SIZES.len()];
-                let ptr = malloc(size);
-                black_box(ptr);
-                ptrs.push(ptr);
-            }
-
-            for ptr in ptrs {
-                free(ptr);
-            }
-
-            black_box(malloc_trim(0));
-        });
-    });
-
-    group.bench_function("trim_boundary_size_classes", |b| {
-        b.iter(|| unsafe {
-            let mut ptrs = Vec::with_capacity(4096);
-
-            for i in 0..4096 {
-                let size = BOUNDARY_SIZES[i % BOUNDARY_SIZES.len()];
-                let ptr = malloc(size) as *mut u8;
-                assert!(!ptr.is_null());
-                fill_and_probe(ptr, size, i as u8);
-                ptrs.push((ptr, size, i as u8));
-            }
-
-            for (ptr, size, byte) in ptrs {
-                check_prefix(ptr, size, byte);
-                free(ptr as *mut c_void);
-            }
-
-            black_box(malloc_trim(0));
-        });
-    });
-
-    group.finish();
 }
 
 criterion_group!(
@@ -794,6 +610,5 @@ criterion_group!(
     bench_simd_alloc,
     run_teardown,
     run_teardown_multi,
-    bench_trim_pressure,
 );
 criterion_main!(benches);

@@ -1,6 +1,6 @@
 // ! DO NOT TOUCH, CHANGE OR BREATHE NEAR ASSEMBLY unless you know how rseq or assembly works !
 
-use std::{arch::asm, ptr::addr_of, usize};
+use std::{arch::asm, ptr::addr_of};
 
 use rsmalloc_macro::stable_api_surface;
 

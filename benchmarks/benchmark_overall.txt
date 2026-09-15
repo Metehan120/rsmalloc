@@ -21,7 +21,7 @@ gs          sys   00.19 46644 0.17 0.01 0 1756
 lua         sys   00.99 114264 5.63 0.40 0 56886
 alloc-test1 sys   02.39 19768 2.38 0.00 0 467
 
-# This benchmark performs about 600 million allocations and 600 million frees—roughly
+# This benchmark performs about 600 million allocations and 600 million frees roughly
 # 1.2 billion allocator operations in total. It repeatedly exercises rsmalloc's heavier
 # local fast paths without benefiting from its strengths in widely distributed,
 # multi/cross-thread workloads, so even a few extra instructions per operation are amplified.

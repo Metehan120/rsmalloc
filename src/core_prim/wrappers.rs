@@ -1,5 +1,6 @@
+#![allow(dead_code)]
 use std::{
-    ops::{Deref, DerefMut},
+    ops::{Deref, DerefMut, Index},
     ptr::null_mut,
 };
 
@@ -107,6 +108,14 @@ impl<T> Deref for SafePointer<T> {
 impl<T> DerefMut for SafePointer<T> {
     fn deref_mut(&mut self) -> &mut T {
         unsafe { &mut *self.0 }
+    }
+}
+
+impl<T> Index<usize> for SafePointer<T> {
+    type Output = T;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        unsafe { &*self.0.add(index) }
     }
 }
 

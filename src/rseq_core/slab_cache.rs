@@ -161,9 +161,9 @@ impl SlabCache {
                     let end = cpu_range.end_cpu.min(ncpu.saturating_sub(1));
 
                     if start <= end {
-                        let cache = inner.cache.get_offset(start).cast_as_ptr();
+                        let cache = inner.cache.get_offset(start);
                         let len = size_of::<MainCache>() * (end - start + 1);
-                        NumaBind.bind_node(cache, len, cpu_range.node_id);
+                        NumaBind.bind_node(cache.cast_as_ptr(), len, cpu_range.node_id);
                     }
                 }
             }
@@ -304,7 +304,7 @@ impl GenericCache for SlabCache {
         let rseq = get_rseq();
 
         let current_cpu = read_volatile(&rseq.cpu_id) as usize;
-        let list = &inner.cache.get_offset(current_cpu).cache[class];
+        let list = &inner.cache[current_cpu].cache[class];
         let usage_ptr = &list.usage;
 
         if usage_ptr.load(Ordering::Relaxed) >= CACHE_HIGH_BLOCKS[class] {
@@ -359,7 +359,7 @@ impl GenericCache for SlabCache {
 
         loop {
             let current_cpu = read_volatile(&rseq.cpu_id) as usize;
-            let list = &inner.cache.get_offset(current_cpu).cache[class];
+            let list = &inner.cache[current_cpu].cache[class];
             let usage_ptr = &list.usage;
 
             if usage_ptr.load(Ordering::Relaxed) >= CACHE_HIGH_BLOCKS[class] {
@@ -395,7 +395,7 @@ impl GenericCache for SlabCache {
 
         loop {
             let current_cpu = read_volatile(&rseq.cpu_id) as usize;
-            let list = &inner.cache.get_offset(current_cpu).cache[class];
+            let list = &inner.cache[current_cpu].cache[class];
             let list_ptr = addr_of!(list.list) as *mut *mut Header;
             let usage_ptr = &list.usage;
             let result = RseqCore.pop(list_ptr, rseq, current_cpu, usage_ptr.as_ptr());
@@ -475,8 +475,7 @@ impl SlabCache {
 
     pub unsafe fn get_list(&self, cpu_id: usize, class: usize) -> &TransferCache {
         let inner = self.get_inner();
-        let cache = inner.cache.get_offset(cpu_id).as_ptr();
-        let list = &(*cache).mail[class];
+        let list = &inner.cache[cpu_id].mail[class];
         list
     }
 

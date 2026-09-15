@@ -4,8 +4,8 @@
 # On different kernel, other benchmarks and documentation will also be updated.
 rsmalloc alpha-3:
 # 3.16-3.17
-cfrac       sys   03.17 7212 3.16 0.00 0 248
-espresso    sys   02.98 7172 2.96 0.01 0 250
+cfrac       sys   03.14 7436 3.13 0.00 0 256
+espresso    sys   02.98 7128 2.96 0.01 3 251
 barnes      sys   01.69 72200 1.68 0.00 0 667
 # Consistent at 2.720 across runs
 redis       sys   2.720 13552 0.10 0.02 0 1485
@@ -17,7 +17,7 @@ gs          sys   00.19 46644 0.17 0.01 0 1756
 # Lua is consistently around 0.99
 lua         sys   00.99 114264 5.63 0.40 0 56886
 alloc-test1 sys   02.39 19768 2.38 0.00 0 467
-alloc-testN sys   03.19 23568 37.81 0.05 0 448
+alloc-testN sys   03.15 23456 36.99 0.04 0 444
 
 # Architectural worst-cases
 sh6benchN   sys   00.31 370780 3.13 0.40 0 1669

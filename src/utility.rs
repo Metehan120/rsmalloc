@@ -160,12 +160,12 @@ pub fn get_size_4096_class() -> usize {
 }
 
 #[inline(always)]
-pub unsafe fn match_size_class(size: usize) -> Option<usize> {
+pub const fn match_size_class(size: usize) -> Option<usize> {
     if size == 0 {
         return Some(0);
     } else if size <= 4096 {
         let index = (size - 1) >> 4;
-        return Some(*SIZE_LUT.get_unchecked(index) as usize);
+        return Some(SIZE_LUT[index] as usize);
     }
 
     if size > 2097152 {
@@ -174,7 +174,7 @@ pub unsafe fn match_size_class(size: usize) -> Option<usize> {
 
     if size <= 32768 {
         let index = (size - 1) >> 12;
-        return Some(*LARGE_SIZE_LUT.get_unchecked(index) as usize);
+        return Some(LARGE_SIZE_LUT[index] as usize);
     }
 
     let exponent = usize::BITS as usize - (size - 1).leading_zeros() as usize;
@@ -197,7 +197,7 @@ mod tests {
     #[test]
     fn fast_size_matching_matches_reference_for_every_slab_size() {
         for size in 0..=SIZE_CLASSES[NUM_SIZE_CLASSES - 1] + 1 {
-            assert_eq!(unsafe { match_size_class(size) }, reference_match(size));
+            assert_eq!(match_size_class(size), reference_match(size));
         }
     }
 }

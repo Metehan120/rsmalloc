@@ -131,6 +131,8 @@ glibc-simple sys   01.73 15208 1.73 0.00 0 424
 glibc-thread sys   1.038 64436 23.81 0.00 0 501
 # 3.22-3.28
 rocksdb     sys   03.25 140744 2.92 0.60 0 2986
+rbstressN   sys   03.12 156628 3.04 0.07 0 36446
+z3          sys   00.05 56952 0.04 0.00 0 1892
 
 mimalloc 3.5 (CachyOS build):
 cfrac       sys   02.83 4900 2.82 0.00 0 220
@@ -157,8 +159,8 @@ glibc-thread sys   .970 35124 23.72 0.07 0 386
 rocksdb     sys   03.18 149460 2.88 0.58 0 915
 # Around 3.13
 rbstressN   sys   03.13 159424 3.06 0.06 0 38082
-z3          sys   00.05 68112 0.04 0.00 0 524
 rbstressN   sys   03.12 156628 3.04 0.07 0 36446
+z3          sys   00.05 68112 0.04 0.00 0 524
 
 # Old benchmark results, will be updated before Alpha-3 release
 rpmalloc (default build with march native):
@@ -206,5 +208,5 @@ glibc-simple sys   01.32 13012 1.32 0.00 0 1658
 glibc-thread sys   1.065 12800 23.82 0.01 0 2725
 # 3.32-3.40
 rocksdb     sys   03.36 103852 2.96 0.67 0 21242
-z3          sys   00.05 52248 0.04 0.00 0 5697
 rbstressN   sys   03.06 121240 2.99 0.05 0 28527
+z3          sys   00.05 52248 0.04 0.00 0 5697

@@ -3,7 +3,7 @@
 # Unreleased version of rsmalloc, benchmarks are have not yet settled.
 # On different kernel, other benchmarks and documentation will also be updated.
 rsmalloc alpha-3:
-# 3.16-3.17
+# 3.14-3.16
 cfrac       sys   03.14 7436 3.13 0.00 0 256
 espresso    sys   02.98 7128 2.96 0.01 3 251
 barnes      sys   01.69 72200 1.68 0.00 0 667

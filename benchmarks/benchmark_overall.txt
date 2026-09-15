@@ -6,35 +6,35 @@
 # On different kernel, other benchmarks and documentation will also be updated.
 rsmalloc alpha-3:
 # 3.14-3.16
-cfrac       sys   03.14 7436 3.13 0.00 0 256
-espresso    sys   02.98 7128 2.96 0.01 3 251
+cfrac       sys   03.12 7160 3.11 0.00 0 249
+espresso    sys   02.97 9084 2.95 0.01 0 252
 barnes      sys   01.69 72200 1.68 0.00 0 667
-# Consistent at 2.720 across runs
-redis       sys   2.720 13552 0.10 0.02 0 1485
-leanN       sys   0:07.21 271536 16.59 0.21 0 1430
+# ~2.680-2.700
+redis       sys   2.680 13208 0.10 0.02 0 1403
+leanN       sys   07.34 267428 16.95 0.19 0 1423
 larsonN-sized sys   3.323 91940 59.39 0.12 0 9534
 mstressN    sys   01.00 336008 7.43 0.57 0 1912
-# ~0.610-0.650, can varry
-rptestN     sys   .616 64540 1.04 0.47 0 632
+# ~0.587-0.610, can varry
+rptestN     sys   .597 68656 0.95 0.44 0 637
 gs          sys   00.19 46644 0.17 0.01 0 1756
 # Lua is consistently around 0.99
 lua         sys   00.99 114264 5.63 0.40 0 56886
 alloc-test1 sys   02.39 19768 2.38 0.00 0 467
 # RSMalloc's fast path is heavy on purpose and directly effecting this benchmark
-alloc-testN sys   03.15 23456 36.99 0.04 0 444
+alloc-testN sys   03.14 23132 36.88 0.04 0 441
 
 # Architectural worst-cases
-sh6benchN   sys   00.31 370780 3.13 0.40 0 1669
-sh8benchN   sys   01.54 175292 17.27 0.29 0 1355
+sh6benchN   sys   00.30 370696 3.00 0.39 0 1698
+sh8benchN   sys   01.51 175112 17.01 0.32 0 1382
 
 # Expected slowdown for overall speed up
-xmalloc-testN sys   0.747 25628 56.82 1.54 0 415
+xmalloc-testN sys   0.750 25476 56.78 1.55 0 406
 cache-scratch1 sys   00.86 6712 0.86 0.00 0 309
 cache-scratchN sys   00.15 6684 1.79 0.00 0 359
 glibc-simple sys   01.63 5248 1.63 0.00 0 246
-glibc-thread sys   1.299 13072 23.75 0.13 0 370
+glibc-thread sys   1.266 12984 23.83 0.02 0 368
 # Possibly swing around 3.31-3.28
-rocksdb     sys   03.28 106944 2.90 0.66 0 982
+rocksdb     sys   03.27 106746 2.82 0.64 0 983
 rbstressN   sys   03.06 151956 2.98 0.06 0 36584
 z3          sys   00.05 54444 0.04 0.00 0 663
 

@@ -159,8 +159,6 @@ impl RseqCoreTrait for RseqCore {
         usage_ptr: *mut usize,
     ) -> RseqResult {
         let res: *mut Header;
-        let cs = get_cs_ptr(rseq);
-        let cpu_id_start = addr_of!(rseq.cpu_id_start);
 
         asm!(
             ".pushsection .data.rel.ro,\"aw\",@progbits",
@@ -172,55 +170,42 @@ impl RseqCoreTrait for RseqCore {
             ".quad 3f",
             ".popsection",
 
-            "lea {tmp}, [rip + 4b]",
-            "mov [{cs_ptr}], {tmp}",
-
+            "lea {res}, [rip + 4b]",
+            "mov [{rseq} + {cs_offset}], {res}",
             "1:",
-            // Test cpu_id_start against cpu_id before entering critical section.
-            "cmp [{cpu_id_start}], {cpu_id:e}",
+            "cmp dword ptr [{rseq} + {cpu_offset}], {cpu_id:e}",
             "jne 3f",
-
-            "mov {tmp}, [{list}]",
-            "test {tmp}, {tmp}",
+            "mov {res}, [{list}]",
+            "test {res}, {res}",
             "jz 6f",
-
-            "mov {next}, [{tmp}]",
-            // register to register test, test and jz should be fused into single uop.
-            "test {next}, {next}",
-            "jz 7f",
-            // prefetcht0 next caller likely touches the next header/cacheline soon.
-            "prefetcht0 [{next}]",
-            "7:",
+            "mov {next}, [{res}]",
+            // The head store is the commit: label 2 must immediately follow it.
             "mov [{list}], {next}",
 
             "2:",
-            "mov qword ptr [{cs_ptr}], 0",
+            "mov qword ptr [{rseq} + {cs_offset}], 0",
             "lock dec qword ptr [{usage}]",
-            "mov {res}, {tmp}",
             "jmp 5f",
 
             "6:",
-            "mov qword ptr [{cs_ptr}], 0",
-            // xor reg, reg: zero-idiom; smaller and breaks dependency chain.
-            "xor {res}, {res}",
+            // res already holds null; an empty pop must not decrement usage.
+            "mov qword ptr [{rseq} + {cs_offset}], 0",
             "jmp 5f",
 
             ".balign 4",
             ".byte 0x0f, 0x1f, 0x05",
-            // RSEQ abort signature, matches glibc/linux rseq convention.
             ".long 0x53053053",
             "3:",
-            "mov qword ptr [{cs_ptr}], 0",
+            "mov qword ptr [{rseq} + {cs_offset}], 0",
             "mov {res}, -1",
-
             "5:",
 
-            cs_ptr = in(reg) cs,
-            tmp = out(reg) _,
+            rseq = in(reg) rseq,
+            cs_offset = const std::mem::offset_of!(rseq, rseq_cs),
+            cpu_offset = const std::mem::offset_of!(rseq, cpu_id),
             list = in(reg) list_ptr,
-            res = lateout(reg) res,
+            res = out(reg) res,
             next = out(reg) _,
-            cpu_id_start = in(reg) cpu_id_start,
             cpu_id = in(reg) cpu_id,
             usage = in(reg) usage_ptr,
             options(nostack),

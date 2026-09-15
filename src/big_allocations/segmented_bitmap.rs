@@ -109,6 +109,7 @@ impl Node {
         }
     }
 
+    #[inline(always)]
     unsafe fn alloc(&self, order: usize, lane: usize) -> Option<Allocation> {
         let hint = &(*self.lanes.add(lane)).orders[order];
         let preferred = hint.load(Ordering::Acquire);
@@ -122,6 +123,17 @@ impl Node {
                 preferred as usize,
             ));
         }
+        self.alloc_slow(order, lane, hint, preferred)
+    }
+
+    #[inline(never)]
+    unsafe fn alloc_slow(
+        &self,
+        order: usize,
+        lane: usize,
+        hint: &AtomicPtr<Segment>,
+        preferred: *mut Segment,
+    ) -> Option<Allocation> {
         let mut region = self.head.load(Ordering::Acquire);
         while let Some(region_ref) = region.as_ref() {
             let count = region_ref.segment_count;

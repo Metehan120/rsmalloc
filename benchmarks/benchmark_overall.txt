@@ -37,7 +37,7 @@ cache-scratch1 sys   00.86 6712 0.86 0.00 0 309
 cache-scratchN sys   00.15 6684 1.79 0.00 0 359
 glibc-simple sys   01.63 5248 1.63 0.00 0 246
 glibc-thread sys   1.266 12984 23.83 0.02 0 368
-# Possibly swing around 3.31-3.28
+# Possibly swing around 3.28-3.31
 rocksdb     sys   03.27 106746 2.82 0.64 0 983
 rbstressN   sys   03.06 151956 2.98 0.06 0 36584
 z3          sys   00.05 54444 0.04 0.00 0 663

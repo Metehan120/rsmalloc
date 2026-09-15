@@ -17,7 +17,7 @@ mstressN    sys   01.00 336008 7.43 0.57 0 1912
 
 # There is two different results in rptest
 
-# Under allt (runningall the tests):
+# Under allt (running all the tests):
 # ~0.587-0.610, can varry
 rptestN     sys   .597 68656 0.95 0.44 0 637
 # Under independent rptest run:

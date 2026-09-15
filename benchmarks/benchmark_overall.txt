@@ -3,7 +3,7 @@
 # test    alloc   time  rss    user  sys  page-faults page-reclaims
 
 # Unreleased version of rsmalloc, benchmarks are have not yet settled.
-# On different kernel, other benchmarks and documentation will also be updated.
+# On different kernel, benchmark.md will also be updated for current built in close future.
 rsmalloc alpha-3:
 # 3.14-3.16
 cfrac       sys   03.12 7160 3.11 0.00 0 249

@@ -14,8 +14,16 @@ redis       sys   2.680 13208 0.10 0.02 0 1403
 leanN       sys   07.34 267428 16.95 0.19 0 1423
 larsonN-sized sys   3.323 91940 59.39 0.12 0 9534
 mstressN    sys   01.00 336008 7.43 0.57 0 1912
+
+# There is two different results in rptest
+
+# Under allt (runningall the tests):
 # ~0.587-0.610, can varry
 rptestN     sys   .597 68656 0.95 0.44 0 637
+# Under independent rptest run:
+# ~0.620-0.650, can varry
+rptestN     sys   .631 60664 1.18 0.51 0 641
+
 gs          sys   00.19 46644 0.17 0.01 0 1756
 # Lua is consistently around 0.99
 lua         sys   00.99 114264 5.63 0.40 0 56886

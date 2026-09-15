@@ -162,7 +162,6 @@ glibc-thread sys   .970 35124 23.72 0.07 0 386
 # What in the hell
 rocksdb     sys   03.18 149460 2.88 0.58 0 915
 # Around 3.13
-rbstressN   sys   03.13 159424 3.06 0.06 0 38082
 rbstressN   sys   03.12 156628 3.04 0.07 0 36446
 z3          sys   00.05 68112 0.04 0.00 0 524
 

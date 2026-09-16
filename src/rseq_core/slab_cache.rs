@@ -29,14 +29,15 @@ use crate::{
     rseq_core::{
         bitmap::{cpu_bit_clear, cpu_bit_set, cpu_is_not_set, cpu_try_marking},
         pending_queue::PENDING_QUEUE,
-        rseq_asm::RseqCore,
         rseq_offsets::get_rseq,
+        slab_cache::rseq_asm::RseqCore,
     },
     traits::{GenericCache, RseqCoreTrait},
     utility::{CACHE_HIGH_BLOCKS, NUM_SIZE_CLASSES},
 };
 
 pub mod reclaim;
+mod rseq_asm;
 pub mod transfer;
 
 pub struct RseqCache {

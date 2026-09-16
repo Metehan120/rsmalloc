@@ -7,7 +7,7 @@ v0.3.0-alpha is an architectural cleanup and scalability pass over `0.2.0-alpha`
 ### Module layout
 
 - Split public-surface code out of the crate root into `frontend/`: `global_alloc.rs` (Rust `GlobalAlloc` impl) and `abi/` (C ABI) now live under `frontend/global_alloc.rs` and `frontend/abi/`, mirroring the existing `backend/` (page arenas) naming. `global_alloc` compiles only without `preload`; `abi` only with it.
-- Moved `trim.rs` under `backend/`, alongside the page allocator and large-allocation backend it services.
+- Split the old top-level `trim.rs`: slab-list reclamation now lives beside the cache in `rseq_core/slab_cache/reclaim.rs`, while pressure monitoring, relief policy, and the background trimmer live in `backend/background_thread.rs`. RSEQ assembly likewise moved under `rseq_core/slab_cache/`, next to the data structure whose invariants it implements.
 
 ### New Rust API surface
 
@@ -18,7 +18,11 @@ v0.3.0-alpha is an architectural cleanup and scalability pass over `0.2.0-alpha`
 
 ### Segmented-bitmap large-allocation backend
 
-- WIP, not setteled yet.
+- Replaced the old large-allocation buddy cache with an experimental segmented-bitmap allocator for the 4–64 MiB range. Each 64 MiB segment is divided into sixteen 4 MiB slots; one atomic word records occupancy, dirty/reused state, and historical use, preserving buddy-style power-of-two orders without tree traversal or per-order free lists.
+- Added NUMA-local region lists and per-CPU-sharded hint lanes. Allocation first probes the hinted segment for its node/order, then scans local regions before growing under a node-local lock; ordinary allocation/free operates through atomic bitmap updates without taking that growth lock.
+- Added in-place growth, age-aware trimming, never-allocated/reused/trimmed state reporting, and page-backend-backed region reservation. Memory-pressure relief can disable and drain this cache, then re-enable it after pressure remains below the configured threshold.
+- Audited bitmap synchronization and weakened successful CAS operations from `AcqRel` to `Acquire` where the atomic update publishes no preceding writes. Split the preferred-segment allocation path from the cold region scan so the common result stays in registers instead of crossing the slow-path call ABI.
+- This backend remains experimental and its internal layout and policy are not a stable API.
 
 ### Lock-free page-backend fast path
 
@@ -28,7 +32,7 @@ v0.3.0-alpha is an architectural cleanup and scalability pass over `0.2.0-alpha`
 
 ### Radix ownership granularity
 
-- Increased radix ownership chunks from 4 KiB to 512 KiB, reducing ownership-bitmap metadata by 128x. Reduced the top level from 8 bits to 1 bit so the radix still covers the low 56-bit user-address range without unused address-index capacity; each 512-byte bitmap leaf now covers 2 GiB.
+- Increased radix ownership chunks from 4 KiB to 512 KiB, reducing ownership-bitmap metadata by 128x; each 512-byte bitmap leaf now covers 2 GiB. A later simplification removed the separate one-bit L0 allocation entirely and widened L1 to 13 bits, retaining coverage of the low 56-bit user-address range with one fewer dependent lookup on ownership checks.
 - Rounded page-backend arenas and direct large-allocation mappings to the 512 KiB ownership granule. Direct allocation, free, and realloc paths now derive the same checked mapping length, and the Rust `ArenaBytes` configuration accepts only 512 KiB multiples.
 
 ### Guard pages
@@ -73,14 +77,14 @@ v0.3.0-alpha is an architectural cleanup and scalability pass over `0.2.0-alpha`
 
 - Added `src/core_prim/hw.rs`, centralizing per-architecture hardware hints behind a single `HardwareFeature` type instead of raw `std::arch` calls scattered across call sites.
 - `HardwareFeature::prefetch` takes a `SafeToPrefetch<T>` pointer wrapper and a `PrefetchHint` (`PreferL1`/`PreferL2`/`PreferL3`).
-- Added `HardwareFeature::new_cycle_clock()` / `CycleClock` (`debug-exact` only), wrapping `__rdtscp`-based timing that was previously called directly in `backend/trim.rs`'s per-block trim timing.
+- Added `HardwareFeature::new_cycle_clock()` / `CycleClock` (`debug-exact` only), wrapping `__rdtscp`-based timing that was previously called directly in the slab reclaimer's per-block trim timing.
 
 ### Type-safety modernization
 
-- Replaced raw `u8` header flags with a `#[repr(u8)]` `Flags` enum (`NotAllocated`/`Allocated`/`Trimmed`/`BigAlloc`) with explicit discriminants.
+- Replaced raw `u8` header flags with a `#[repr(u8)]` `Flags` enum (`NotAllocated`/`Allocated`/`Reclaimed`/`BigAlloc`) with explicit discriminants.
 - Replaced the RSEQ push/pop asm result convention (raw `usize`/`*mut Header` with `-1`/`1` sentinels) with `RseqResult`, a `#[repr(transparent)]` struct wrapping `usize` with `is_success()`/`is_failed()`/`get()` accessors — sound for arbitrary pointer bit patterns (verified under Miri) and compiles to identical codegen to the raw sentinel version.
 - Introduced `TransferReturn` (`start`/`end`/`total`) as a named return type for transfer-cache pop paths (`try_pop`, `transfer_pop_batch`, `first_nonempty_cpu_in_range`, `slowest_numa_steal_path`, `pop_slow`), replacing an unnamed tuple return.
-- Replaced raw pointer arithmetic in `slab_cache.rs` with `SafePointer<T>`/`UnsafePointer<T>`, `#[repr(transparent)]` newtype wrappers (`core_prim::wrappers`) providing `get_offset`/`walk_header`/`get_actual_header`/`cast_as_ptr` — confirmed byte-identical `malloc` disassembly before and after.
+- Replaced raw pointer arithmetic in `slab_cache.rs` with `SafePointer<T>`/`UnsafePointer<T>`, `#[repr(transparent)]` newtype wrappers (`core_prim::wrappers`) providing `get_offset`/`walk_header`/`get_actual_header`/`cast_as_ptr`; `SafePointer<T>` also implements indexed access so cache-array call sites retain ordinary reference semantics. The wrapper refactor was checked against generated `malloc` code to avoid adding fast-path overhead.
 
 ### Trim/transfer-cache correctness
 
@@ -92,7 +96,7 @@ v0.3.0-alpha is an architectural cleanup and scalability pass over `0.2.0-alpha`
 ### Calloc zero-skip correctness
 
 - `rs_alloc` unconditionally stamped `Flags::Allocated` onto a popped slab header before `rs_calloc` ever got to inspect it, so the existing `calloc_zero!` skip-zero fast path (gated on `Flags::NotAllocated`, i.e. memory never handed to a caller before and therefore still kernel-zeroed) was permanently dead — every calloc on a slab-class size always saw `Allocated` and always paid the explicit zero, even on virgin memory. Split `rs_alloc` into `rs_alloc_inner(size, aligned, is_calloc)`; `rs_calloc` now goes through a new `rs_alloc_no_flag` entry point that skips the stamp so the original flag value survives long enough for `calloc_zero!` to read it, then restamps `Flags::Allocated` itself right after the zero check. `malloc`/`realloc`/`memalign` are unaffected (still go through the original `rs_alloc` wrapper, which stamps unconditionally as before).
-- Buddy-cached big allocations aren't covered by this fix (`big_malloc` still discards the buddy block's `trim_state` and always stamps `Flags::BigAlloc`) — left as-is since almost nothing calls `calloc` in the buddy-cache's 4-64MB band in practice, so it wasn't worth the added complexity for this release (see `TODO.md`).
+- Extended the same state-preserving zero decision to segmented-bitmap allocations: virgin blocks retain `Flags::NotAllocated` and can use kernel-zeroed memory directly, while reused, reclaimed, or direct-mapped big blocks are explicitly zeroed before return.
 
 ### Alignment helpers
 
@@ -102,6 +106,11 @@ v0.3.0-alpha is an architectural cleanup and scalability pass over `0.2.0-alpha`
 ### Proc-macro crate
 
 - Added `rsmalloc-macro`, a small proc-macro crate (`syn`/`quote`) providing `#[assert_sizes(N)]` (compile-time `size_of::<T>() == N` assertion on a struct/enum, replacing manual `const _: () = assert!(...)` blocks) and `#[stable_api_surface(since = "...")]` (documentation-only marker for internal functions whose signature/contract shouldn't casually change, e.g. the RSEQ asm trait methods). Both are pure compile-time constructs with no runtime cost.
+
+### RSEQ/slab fast path
+
+- Rewrote the successful RSEQ pop sequence to reuse its result register for descriptor setup and the list head, validate the sampled CPU through constant offsets from the RSEQ base, remove the guarded next-node prefetch and final result copy, and keep the list-head store immediately adjacent to `post_commit_ip`.
+- Stopped clearing `rseq_cs` on ordinary success, empty-list, mismatch, and abort exits. Linux only requires explicit clearing before reclaiming the descriptor or referenced code; rsmalloc's descriptors and assembly have process lifetime, and every new operation still installs its own descriptor.
 
 ### Small branch/overhead cleanups
 

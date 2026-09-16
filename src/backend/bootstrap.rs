@@ -1,9 +1,9 @@
 use crate::{
     backend::{
-        page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR},
-        reclaimer::{
+        background_thread::{
             DISABLE_RELIEF, SEGMENTED_BITMAP_DISABLE_PERCENTAGE, SEGMENTED_BITMAP_ENABLE_PERCENTAGE,
         },
+        page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR},
     },
     big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND,
     core_prim::{

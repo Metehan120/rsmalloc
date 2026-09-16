@@ -8,7 +8,7 @@ use std::{
 use rustix::mm::{Advice, madvise};
 
 #[cfg(feature = "debug")]
-use crate::backend::reclaimer::{TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA};
+use crate::backend::background_thread::{TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA};
 use crate::{
     Flags, Header,
     big_allocations::segmented_bitmap::SEGMENTED_BITMAP_TOTAL_CACHED_VA,
@@ -24,7 +24,7 @@ use crate::{
 };
 #[cfg(feature = "debug-exact")]
 use crate::{
-    backend::reclaimer::{TOTAL_TRIMMED_BLOCKS, TOTAL_TRIMMED_TIME},
+    backend::background_thread::{TOTAL_TRIMMED_BLOCKS, TOTAL_TRIMMED_TIME},
     core_prim::hw::HardwareFeature,
 };
 

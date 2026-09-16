@@ -1,4 +1,8 @@
 // ! DO NOT TOUCH, CHANGE OR BREATHE NEAR ASSEMBLY unless you know how rseq or assembly works !
+//
+// rseq_cs intentionally remains installed after every exit. Linux only requires
+// clearing it before reclaiming the descriptor or referenced code; both have
+// process lifetime here. Every new operation still installs its descriptor.
 
 use std::{arch::asm, ptr::addr_of};
 
@@ -52,7 +56,6 @@ impl RseqCoreTrait for RseqCore {
             "mov [{list}], {header}",
 
             "2:",
-            "mov qword ptr [{cs_ptr}], 0",
             "lock add qword ptr [{usage}], {batch_total}",
             "mov {res}, 1",
             "jmp 5f",
@@ -62,7 +65,6 @@ impl RseqCoreTrait for RseqCore {
             // RSEQ abort signature, matches glibc/linux rseq convention.
             ".long 0x53053053",
             "3:",
-            "mov qword ptr [{cs_ptr}], 0",
             "mov {res}, -1",
 
             "5:",
@@ -120,7 +122,6 @@ impl RseqCoreTrait for RseqCore {
             "mov [{list}], {header}",
 
             "2:",
-            "mov qword ptr [{cs_ptr}], 0",
             "lock inc qword ptr [{usage}]",
             "mov {res}, 1",
             "jmp 5f",
@@ -130,7 +131,6 @@ impl RseqCoreTrait for RseqCore {
             // RSEQ abort signature, matches glibc/linux rseq convention.
             ".long 0x53053053",
             "3:",
-            "mov qword ptr [{cs_ptr}], 0",
             "mov {res}, -1",
 
             "5:",
@@ -183,20 +183,17 @@ impl RseqCoreTrait for RseqCore {
             "mov [{list}], {next}",
 
             "2:",
-            "mov qword ptr [{rseq} + {cs_offset}], 0",
             "lock dec qword ptr [{usage}]",
             "jmp 5f",
 
             "6:",
             // res already holds null; an empty pop must not decrement usage.
-            "mov qword ptr [{rseq} + {cs_offset}], 0",
             "jmp 5f",
 
             ".balign 4",
             ".byte 0x0f, 0x1f, 0x05",
             ".long 0x53053053",
             "3:",
-            "mov qword ptr [{rseq} + {cs_offset}], 0",
             "mov {res}, -1",
             "5:",
 

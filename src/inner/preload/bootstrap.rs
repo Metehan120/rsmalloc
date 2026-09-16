@@ -1,8 +1,8 @@
 use crate::backend::bootstrap::{BootstrapConfig, main_bootstrap};
 use crate::backend::page_allocator::ARENA_SIZE;
 use crate::{
-    backend::reclaimer::SEGMENTED_BITMAP_DISABLE_PERCENTAGE, core_prim::predictor::DEFAULT_BATCH,
-    internals::env::get_env_usize,
+    backend::background_thread::SEGMENTED_BITMAP_DISABLE_PERCENTAGE,
+    core_prim::predictor::DEFAULT_BATCH, internals::env::get_env_usize,
 };
 
 #[inline(never)]

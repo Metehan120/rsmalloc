@@ -192,6 +192,7 @@ impl RseqCoreTrait for RseqCore {
 
             ".balign 4",
             ".byte 0x0f, 0x1f, 0x05",
+            // RSEQ abort signature, matches glibc/linux rseq convention.
             ".long 0x53053053",
             "3:",
             "mov {res}, -1",

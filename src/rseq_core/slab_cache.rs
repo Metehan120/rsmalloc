@@ -48,6 +48,7 @@ pub struct RseqCache {
     usage: AtomicUsize,
 }
 
+#[repr(align(64))]
 pub struct TransferCache {
     pub list: AtomicU128,
     pub trimmed: AtomicU128,

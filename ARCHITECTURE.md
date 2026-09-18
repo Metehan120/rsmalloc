@@ -1,280 +1,163 @@
 # RSMalloc Architecture
 
-This document is a working architecture draft for `rsmalloc` `0.3.0-alpha`. It describes the allocator as it exists today, not as a final stable design. Some pieces are intentionally experimental and may change before a production-ready release.
+This document describes the current `0.3.0-alpha` architecture. RSMalloc is experimental: internal layouts and policies may change before a stable release, but the invariants documented here are the ones the current implementation relies on.
 
-The `0.3.x-alpha` line is a full allocator-architecture overhaul relative to the earlier `0.1.0-alpha` design. The current `0.3.0-alpha` pass also hardens transfer-cache ABA protection, simplifies the slab page backend to bump-only arenas, makes its newer locks fork-safe, and reorganizes public-facing modules under `frontend/`.
+RSMalloc currently targets nightly Rust on Linux `x86_64`. It requires libc-provided Restartable Sequences (RSEQ) TLS state.
 
-## Design Goal
+## Design Model
 
-`rsmalloc` is built around a simple idea:
+RSMalloc separates allocation into three scales:
 
-> Allocation ownership is temporary and follows the hot CPU cache, not the thread or the original allocation source.
+1. **Slab allocations**, through `2 MiB`, use size classes and RSEQ-managed per-CPU freelists.
+2. **Segmented-bitmap allocations**, normally `4–64 MiB`, reuse power-of-two blocks from NUMA-local 64 MiB segments.
+3. **Direct allocations** use dedicated mappings when an allocation is outside the reusable large-object backend or that backend cannot satisfy it.
 
-For small allocations, the allocator uses Linux Restartable Sequences (RSEQ) to manipulate CPU-local slab caches with very little synchronization overhead. Transfer caches, per-node pending metadata queues, and adaptive bulk refill handle overflow, cross-CPU reuse, and lazy header initialization. Larger allocations use a separate mapping/buddy-backend path because they have different locality, metadata, and trimming requirements.
+The central ownership rule for small objects is:
 
-## High-Level Layout
+> A free block belongs to the CPU cache that currently holds it, not permanently to the thread or CPU that originally allocated it.
+
+Threads therefore do not own small-allocation heaps. RSEQ makes the local CPU cache cheap to access, transfer caches redistribute excess blocks, and the page allocator supplies backing memory when reuse cannot satisfy demand.
+
+## System Overview
 
 ```mermaid
 flowchart TD
-    API[Public entry points]
-    ABI[C ABI / preload mode]
-    GLOBAL[Rust GlobalAlloc mode]
-    INNER[inner allocation operations]
-    SMALL[small allocation path]
-    RSEQ[SLAB_CACHE per-CPU caches]
-    TRANSFER[transfer caches]
-    REFILL[Adaptive bulk refill]
-    PAGE[slab page backend]
-    PENDING[per-node pending metadata queue]
-    TLS[thread-local pending metadata]
-    NUMA[NUMA topology and preferred node policy]
-    BIG[big allocation path]
-    BUDDY[BUDDY_BACKEND cache]
-    RADIX[RADIX ownership map]
-    MAP[BIG_META_MAP]
+    API["Rust GlobalAlloc / native API / C ABI"] --> INNER["Shared alloc, free, calloc, realloc"]
 
-    API --> ABI
-    API --> GLOBAL
-    ABI --> INNER
-    GLOBAL --> INNER
-    INNER --> SMALL
-    INNER --> BIG
-    SMALL --> RSEQ
-    SMALL --> TRANSFER
-    SMALL --> REFILL
-    REFILL --> TLS
-    REFILL --> PAGE
-    TLS --> REFILL
-    TLS --> PENDING
-    PENDING --> REFILL
-    REFILL --> RSEQ
-    PAGE --> RADIX
-    NUMA --> RSEQ
-    NUMA --> TRANSFER
-    NUMA --> REFILL
-    NUMA --> PAGE
-    NUMA --> PENDING
-    NUMA --> BUDDY
-    NUMA --> BIG
-    BIG --> BUDDY
-    BIG --> MAP
-    SMALL --> RADIX
-    BIG --> RADIX
+    INNER --> SIZE{"Slab size class?"}
+
+    SIZE -- Yes --> LOCAL["Per-CPU RSEQ freelist"]
+    LOCAL -- Empty --> TRANSFER["Per-CPU transfer cache"]
+    TRANSFER -- No reusable batch --> BULK["Lazy bulk initialization"]
+    BULK --> PAGE["NUMA-aware page arenas"]
+
+    SIZE -- No --> LARGE{"At most 64 MiB and backend enabled?"}
+    LARGE -- Yes --> SEGMENTED["Segmented-bitmap backend"]
+    LARGE -- No or unavailable --> MMAP["Direct mapping"]
+
+    PAGE --> RADIX["512 KiB ownership radix"]
+    SEGMENTED --> RADIX
+    MMAP --> RADIX
+
+    INNER --> BIGMAP["Exact large-allocation metadata map"]
+    LOCAL --> TRIM["Age-aware slab trimming"]
+    SEGMENTED --> TRIM
 ```
 
-Main source areas:
+The page allocator is the shared reservation layer. It backs slab refill spans, segmented-bitmap regions and metadata, radix nodes, and other allocator metadata when requests fit its arena policy. Direct `mmap` remains the fallback for unsuitable or very large reservations.
 
-| Area | Role |
+## Source Layout
+
+| Area | Responsibility |
 | --- | --- |
-| `src/frontend/abi` | C ABI entry points for `LD_PRELOAD` builds. |
-| `src/frontend/global_alloc.rs` | Rust `GlobalAlloc` integration, Rust-facing configuration, capabilities, stats, and direct helper methods. |
-| `src/inner` | Shared allocation operations: alloc, free, realloc, calloc, alignment, fallback/free handling. |
-| `src/rseq_core` | `SLAB_CACHE` layout, transfer caches, nonempty transfer hints, inline assembly critical sections, bulk refill metadata, pending queue, RSEQ TLS access. |
-| `src/backend` | Slab page-backend arenas and trim implementation. |
-| `src/big_allocations` | Big allocation path and NUMA-aware `BUDDY_BACKEND`, including cached-region reuse, trimming, and relief integration. |
-| `src/internals` | `RADIX` ownership map, `BIG_META_MAP`, NUMA parsing/binding helpers, locks, once primitives, env parsing. |
-| `src/core_prim` | Bootstrap, fork handling, adaptive-batching & EMA-smoothing state, pointer wrappers. |
-| `src/utility.rs` | Size classes, refill targets, lookup tables, shared helpers. |
+| `src/frontend/` | Rust global allocator APIs, the v2 native API/configuration surface, stats, and the preload C ABI. |
+| `src/inner/` | Shared allocation, free, calloc, aligned allocation, realloc, and preload fallback behavior. |
+| `src/rseq_core/` | RSEQ TLS access, per-CPU slab caches, assembly critical sections, transfer caches, pending refill metadata, and bulk initialization. |
+| `src/backend/page_allocator.rs` | NUMA-aware arena reservation and atomic bump allocation. |
+| `src/backend/background_thread.rs` | Background timestamps, trimming policy, and memory-pressure relief. |
+| `src/big_allocations/` | Segmented-bitmap reuse and direct large allocations. |
+| `src/internals/` | Ownership radix, large metadata map, locks, NUMA parsing/binding, and initialization primitives. |
+| `src/core_prim/` | Adaptive predictors, hardware helpers, random magic initialization, fork support, and pointer wrappers. |
+| `src/utility.rs` | Size classes, refill limits, alignment helpers, and size matching. |
 
-## Allocation Classes
+## Bootstrap and Global State
 
-Small allocations are size-classed up to `2 MiB`.
+Both Rust and preload frontends eventually call `backend::bootstrap::main_bootstrap`.
 
-Current size classes live in `src/utility.rs` and are grouped approximately as:
+Bootstrap:
 
-- tiny: `16`, `32`, `48`, `64`, `80`, `96`, `128`
-- small: `160`, `192`, `256`, `320`, `384`, `512`
-- medium: `768`, `1024`, `1280`, `1536`, `1792`, `2048`, `2560`, `3072`
-- larger small/slab classes: `3840`, `4096`, `8192`, `12288`, `16384`, `24576`, `32768`, ... up to `2097152`
+1. verifies libc's RSEQ offset and size;
+2. installs runtime tuning values;
+3. initializes the ownership radix;
+4. maps the per-CPU slab-cache table and NUMA topology;
+5. initializes the pending refill queue;
+6. initializes per-node page arenas;
+7. initializes the segmented-bitmap backend;
+8. registers preload fork handlers when applicable;
+9. initializes randomized header magic and aligned-allocation tags when enabled.
 
-`match_size_class(size)` uses a fast LUT for sizes `<= 4096` and a simple slow scan above that. A request of size `0` maps to the smallest class. Requests above the largest small class fall through to the big allocation path.
+Initialization is intentionally allocator-internal. Metadata is obtained from anonymous mappings or the page allocator rather than recursively allocating through the public allocator.
 
-Each allocated block has a `Header` placed before the returned payload. Header layout is deliberately constrained because the RSEQ assembly and list operations depend on `Header::next` being where the list code expects it.
+## Allocation Classification
 
-## Bootstrap
+`utility::match_size_class` maps requests through `2 MiB` to one of 34 slab classes. Requests through 4 KiB use a lookup-oriented fast path; larger slab requests use the remaining class table.
 
-Initialization differs slightly between preload and Rust global allocator modes, but both set up the same core allocator state.
+Every allocation has an internal `Header` immediately before its ordinary payload. The default header is 16-byte aligned and 16 bytes wide; `extended-header` uses a 32-byte variant. The first field and positioning are assembly-sensitive because free blocks reuse `Header::next` as their intrusive list link.
 
-Bootstrap initializes:
+Requests not represented by a slab class enter `big_malloc`.
 
-1. RSEQ availability through libc-provided RSEQ TLS state.
-2. Runtime knobs:
-   - `RS_ARENA_SIZE`,
-   - `RS_MAX_REFILL_RETRIES`,
-   - `RS_PREDICTOR_INIT_BATCH`,
-   - buddy cache size / THP / trim options in preload mode.
-3. `RADIX`, the ownership map.
-4. `SLAB_CACHE`, the per-CPU cache array, transfer caches, and NUMA topology snapshot.
-5. `PENDING_QUEUE`, the per-node/per-class global pending metadata queue.
-6. `BUDDY_BACKEND`, when configured.
-7. Fork handlers for preload/fallback state.
-8. Randomized magic values and aligned-allocation tag, unless randomization is explicitly disabled.
-
-In non-preload Rust mode, this is driven through `RSMalloc::init()` from `frontend/global_alloc.rs`. In preload mode, C ABI entry points bootstrap on first use.
-
-## Allocation Path
-
-Allocation follows this shape:
+## Small Allocation Path
 
 ```mermaid
 flowchart TD
-    A["rs_alloc(size, aligned)"] --> PRE{"preload build?"}
-    PRE -- "yes" --> BOOT["bootstrap once"]
-    PRE -- "no" --> MATCH["match_size_class(size)"]
-    BOOT --> MATCH
-
-    MATCH --> CLASS{"size class found?"}
-
-    CLASS -- "yes" --> POP["SLAB_CACHE.pop(class)"]
-    POP --> POP_RESULT{"RSEQ pop result"}
-    POP_RESULT -- "class-cache hit" --> SMALL_OWN["optional check-owned-on-alloc"]
-    POP_RESULT -- "RSEQ abort retries" --> POP_SINGLE["transfer_pop_single(current CPU)"]
-    POP_SINGLE -- "hit" --> SMALL_OWN
-    POP_SINGLE -- "empty" --> POP
-    POP_RESULT -- "empty class cache" --> FILL["fill(class)"]
-
-    FILL --> PRED["transfer batching chooses batch"]
-    PRED --> TRYPOP["SLAB_CACHE.try_pop(class, batch, cpu)"]
-    TRYPOP --> LOCAL["pop local transfer cache"]
-    LOCAL --> LOCAL_HIT{"local transfer hit?"}
-    LOCAL_HIT -- "yes" --> UPDATE_CACHE["update transfer batching"]
-    LOCAL_HIT -- "no" --> SAME_NODE["scan same-node class hint bitmap"]
-    SAME_NODE --> SAME_HIT{"same-node victim hit?"}
-    SAME_HIT -- "yes" --> STEAL["record transfer steal if debug"]
-    STEAL --> UPDATE_CACHE
-    SAME_HIT -- "no" --> NUMA{"NUMA enabled?"}
-    NUMA -- "yes" --> REMOTE["scan remote node class hint bitmaps"]
-    REMOTE --> REMOTE_HIT{"remote victim hit?"}
-    REMOTE_HIT -- "yes" --> STEAL
-    REMOTE_HIT -- "no" --> DRY["record dry steal if debug"]
-    NUMA -- "no" --> DRY
-    DRY --> REFILL["refill(class, cpu)"]
-
-    REFILL --> RETRY{"under MAX_REFILL_RETRIES?"}
-    RETRY -- "yes" --> BULK_BATCH["bulk-fill batching chooses batch"]
-    BULK_BATCH --> BULK["bulk_fill(class, cpu, bulk_batch)"]
-    BULK --> TLS["check thread-local pending span"]
-    TLS --> TLS_OK{"remaining blocks?"}
-    TLS_OK -- "yes" --> INIT["lazy initialize requested headers"]
-    TLS_OK -- "no or no span" --> META["alloc_metadata(class, block_size, cpu)"]
-
-    META --> NODE["select node for current CPU"]
-    NODE --> PENDING["PENDING_QUEUE.pop(node, class)"]
-    PENDING --> PENDING_HIT{"pending span found?"}
-    PENDING_HIT -- "yes" --> INIT
-    PENDING_HIT -- "no" --> SIZE["compute page-rounded metadata span"]
-    SIZE --> PAGE_INIT["PAGE_ALLOCATOR.init(numa ranges)"]
-    PAGE_INIT --> PAGE_ALLOC["PAGE_ALLOCATOR.alloc: current bump arena, another live arena, or new arena"]
-    PAGE_ALLOC --> PAGE_OK{"span allocated?"}
-    PAGE_OK -- "no" --> BULK_ERR["bulk_fill returns OutOfMemory"]
-    PAGE_OK -- "yes" --> ARENA_ADV{"new arena advice feature?"}
-    ARENA_ADV -- "only no-huge" --> NOHUGE["madvise arena no huge page"]
-    ARENA_ADV -- "only huge" --> HUGE["madvise arena huge page"]
-    ARENA_ADV -- "none or both" --> ACCOUNT["add_slab_cached_va(total)"]
-    NOHUGE --> ACCOUNT
-    HUGE --> ACCOUNT
-    ACCOUNT --> MARK_SPAN["RADIX.set_range(span, total, true)"]
-    MARK_SPAN --> WRITE_META["write MetaData"]
-    WRITE_META --> INIT
-
-    INIT --> COUNT{"initialized count > 0?"}
-    COUNT -- "no" --> BULK_ERR
-    COUNT -- "yes" --> LEFT{"span has remaining blocks?"}
-    LEFT -- "yes" --> SAVE_TLS["save span in THREAD_BULK.free[class]"]
-    LEFT -- "no" --> BULK_OK["bulk_fill returns batch"]
-    SAVE_TLS --> BULK_OK
-    BULK_OK --> UPDATE_BULK["update bulk-fill batching"]
-    UPDATE_BULK --> TAKE["take one block from batch"]
-    BULK_ERR --> RETRY_NEXT{"retry again?"}
-    RETRY_NEXT -- "yes" --> RETRY
-    RETRY_NEXT -- "no" --> FINAL_POP["final one-block SLAB_CACHE.try_pop"]
-    RETRY -- "no" --> FINAL_POP
-    FINAL_POP --> FINAL_HIT{"got block?"}
-    FINAL_HIT -- "yes" --> SMALL_OWN
-    FINAL_HIT -- "no" --> SMALL_NULL["return null; preload sets nomem"]
-
-    UPDATE_CACHE --> TAKE
-    TAKE --> REST{"batch count > 1?"}
-    REST -- "yes" --> PUSH_REST["push remainder via SLAB_CACHE.push_tailed"]
-    REST -- "no" --> SMALL_OWN
-    PUSH_REST --> SPILL_REST{"cache high or RSEQ push_tailed abort?"}
-    SPILL_REST -- "yes" --> TRANSFER_BATCH["transfer_push_batch and mark hint if needed"]
-    SPILL_REST -- "no" --> SMALL_OWN
-    TRANSFER_BATCH --> SMALL_OWN
-    SMALL_OWN --> STAMP["stamp MAGIC and ALLOCATED_FLAG"]
-    STAMP --> SMALL_RET["return small payload"]
-
-    CLASS -- "no" --> BIG["big_malloc(size, aligned)"]
-    BIG --> CHECK_ADD{"size + Header::SIZE ok?"}
-    CHECK_ADD -- "no" --> BIG_NULL["return null"]
-    CHECK_ADD -- "yes" --> ALIGN["estimate and align mapping size"]
-    ALIGN --> BIG_NODE["select current CPU NUMA node"]
-    BIG_NODE --> BUDDY_ELIG{"buddy enabled and size <= 64 MiB?"}
-    BUDDY_ELIG -- "yes" --> BUDDY_ALLOC["BUDDY_BACKEND.alloc(local node first)"]
-    BUDDY_ALLOC --> BUDDY_HIT{"buddy hit?"}
-    BUDDY_HIT -- "yes" --> BUDDY_FLAG["set BIG_ALLOC reuse flag"]
-    BUDDY_HIT -- "no" --> DIRECT
-    BUDDY_ELIG -- "no" --> DIRECT["direct mmap"]
-    DIRECT --> MMAP_OK{"mmap ok?"}
-    MMAP_OK -- "no" --> BIG_NULL
-    MMAP_OK -- "yes" --> PREFER["prefer current NUMA node if NUMA"]
-    PREFER --> ZERO_FLAG["flag = ZERO_FLAG"]
-    ZERO_FLAG --> BIG_THP{"eligible for direct THP request?"}
-    BIG_THP -- "yes" --> BIG_HUGE["madvise huge page"]
-    BIG_THP -- "no" --> BIG_HEADER
-    BIG_HUGE --> BIG_HEADER
-    BUDDY_FLAG --> BIG_HEADER["write BIG_MAGIC header"]
-    BIG_HEADER --> BIG_RADIX{"buddy backed?"}
-    BIG_RADIX -- "yes" --> BIG_MAP["BIG_MAP.insert(payload metadata)"]
-    BIG_RADIX -- "no, normal direct" --> BIG_SINGLE["RADIX.set_single_big"]
-    BIG_RADIX -- "no, aligned direct" --> BIG_RANGE["RADIX.set_range(full mapping)"]
-    BIG_SINGLE --> BIG_MAP
-    BIG_RANGE --> BIG_MAP
-    BIG_MAP --> BIG_OWN["optional check-owned-on-alloc"]
-    BIG_OWN --> BIG_RET["return big payload"]
+    START["Allocate slab-class size"] --> POP["RSEQ pop current CPU/class"]
+    POP --> HIT{"Block returned?"}
+    HIT -- Yes --> STAMP["Validate if hardened; stamp allocated"]
+    HIT -- No --> CHOOSE["Read per-CPU transfer predictor"]
+    CHOOSE --> TRY["Try local transfer slot"]
+    TRY --> LOCALHIT{"Batch found?"}
+    LOCALHIT -- No --> SAME["Scan hinted CPUs in local NUMA range"]
+    SAME --> REMOTE{"Found?"}
+    REMOTE -- No and NUMA --> OTHER["Scan other NUMA ranges"]
+    OTHER --> RESULT{"Found?"}
+    REMOTE -- Yes --> FEEDBACK["Update transfer predictor"]
+    RESULT -- Yes --> FEEDBACK
+    LOCALHIT -- Yes --> FEEDBACK
+    FEEDBACK --> ONE["Return one; RSEQ-push remainder locally"]
+    ONE --> STAMP
+    RESULT -- No --> NULLFEEDBACK["Bounded null-result feedback"]
+    NULLFEEDBACK --> BF["Read per-CPU bulk-fill predictor"]
+    BF --> INIT["Initialize a batch from pending/fresh span"]
+    INIT --> BFEDBACK["Update bulk-fill predictor"]
+    BFEDBACK --> ONE
 ```
 
-Important details:
+### Local RSEQ cache
 
-- The small-allocation path tries `SLAB_CACHE.pop(class)` first for every matched size class.
-- If the per-CPU class cache is empty, `fill(class)` tries transfer-cache reuse before allocating new refill memory.
-- Batch transfer reuse tries the local transfer cache first, then hinted CPUs in the same NUMA range, then remote ranges when NUMA is enabled.
-- RSEQ pop/push uses inline assembly critical sections. If the kernel aborts the sequence repeatedly, the pop path probes the current CPU's transfer cache before retrying.
-- Bulk refill uses thread-local pending metadata, then the per-node pending queue, then `PAGE_ALLOCATOR` arenas. Headers are initialized lazily only for the requested batch.
-- The per-CPU `usage` counter is an approximate pressure signal, not exact accounting. Stale-low drift is preferred over stale-high drift because stale-high pushes too much traffic into transfer caches.
-
-## Slab Cache Layout
-
-`SLAB_CACHE` owns an mmap-backed array of per-CPU cache state, one per configured CPU plus one extra spare slot. Current `0.3.0-alpha` treats working per-thread RSEQ state as required; invalid or unregistered RSEQ CPU IDs are not silently redirected through an allocation fallback path.
+Each CPU owns a page-aligned `MainCache`:
 
 ```rust
 #[repr(C, align(4096))]
 pub struct MainCache {
     cache: [RseqCache; NUM_SIZE_CLASSES],
     mail: [TransferCache; NUM_SIZE_CLASSES],
+    transfer_batching: [AdaptiveBatching; NUM_SIZE_CLASSES],
+    bulk_fill_batching: [AdaptiveBatching; NUM_SIZE_CLASSES],
 }
 ```
 
-The 4096-byte alignment is intentional. It keeps each CPU's cache structure page-separated, which reduces false-sharing risk and leaves room for future NUMA-aware policy.
+`RseqCache` contains:
 
-### `RseqCache`
+- an intrusive freelist head manipulated by RSEQ;
+- an atomic usage counter used to enforce per-class high-water limits.
 
-`RseqCache` is the primary per-CPU freelist for one size class:
+The 4096-byte alignment separates CPU state, supports NUMA binding of CPU ranges, and prevents unrelated CPUs from sharing the same cache page.
 
-- `list`: RSEQ-managed linked list of free `Header`s.
-- `usage`: approximate pressure counter.
+### RSEQ commit protocol
 
-### `TransferCache`
+The RSEQ assembly in `rseq_core/slab_cache/rseq_asm.rs` follows this shape:
 
-`TransferCache` is the overflow, fallback, cold-list, and medium-class reuse queue for one CPU/class pair:
+1. install the operation's static RSEQ descriptor in libc's `rseq_cs` field;
+2. compare the registered CPU ID with the CPU sampled by the caller;
+3. prepare the list operation;
+4. commit by storing the new shared freelist head;
+5. execute usage accounting after `post_commit_ip`.
 
-- used when a per-CPU cache is over pressure limits,
-- used when RSEQ retry count is exceeded,
-- used by victim stealing when the local CPU has no cached block,
-- used by medium-size classes before refill to avoid per-CPU cache bloat,
-- used as a cold fallback for successfully trimmed small blocks.
+The shared freelist-head store is the commit point. Linux restarts execution at the abort handler if migration or preemption invalidates the critical section before that point. RSEQ does **not** roll back arbitrary stores, so only publication of the new shared head is treated as transactional; preparatory writes are limited to unpublished/free nodes where repeating them is safe.
 
-Current layout:
+The usage update is a locked atomic operation after commit. Moving it before the commit would be incorrect because an RSEQ abort would not undo it. The counter is used for pressure policy, while the list head is the source of freelist correctness.
+
+`rseq_cs` intentionally remains installed after an operation. The descriptors and referenced assembly have process lifetime, and every operation installs its own descriptor. Linux requires clearing before descriptor or code reclamation, which does not occur here.
+
+### Cache overflow and abort fallback
+
+A free or returned batch is pushed to the local RSEQ cache while its usage is below `CACHE_HIGH_BLOCKS[class]`. If the high watermark is reached, a single block or batch is sent to that CPU's transfer cache instead.
+
+Single-block push retries a bounded number of RSEQ aborts before using the transfer cache. A batch push falls back to the transfer cache after an unsuccessful RSEQ attempt because the batch is already available as a linked range.
+
+## Transfer Cache
+
+A transfer slot exists for every `(CPU, size class)` pair:
 
 ```rust
 pub struct TransferCache {
@@ -284,613 +167,331 @@ pub struct TransferCache {
 }
 ```
 
-The normal transfer list is preferred. The `trimmed` list is checked only after the normal list is empty, so the common normal-transfer hit does not touch trimmed state. Trimmed blocks are cold/opportunistic reuse: local pops can recover them, while remote victim stealing is allowed to miss trimmed-only CPUs until a later push refreshes the approximate class hint.
+It serves four roles:
 
-Each transfer-list head is one 128-bit atomic word: the complete 64-bit pointer occupies the low word and a 64-bit generation counter occupies the high word. Every successful head update increments the generation, so a stale CAS cannot succeed unless that counter wraps after `2^64` updates to the same CPU/class/list slot. This replaces the old 8-bit high-pointer tag, removes its 56-bit-address assumption, and makes the formerly reachable 256-update ABA wrap impractical.
+- overflow from full local RSEQ caches;
+- batch reuse when another CPU's local cache is empty;
+- fallback after repeated RSEQ push failures;
+- separate publication of blocks whose payload pages were reclaimed.
 
-The transfer lists are still fallback/pressure paths for tiny/small hot allocations, but medium classes intentionally use transfer-cache scanning before refill. Victim scans are NUMA-aware: local CPU transfer cache is tried first, then CPUs in the same node range, then remote node ranges when NUMA is active. The per-slot `trim_lock` serializes a trim detach-and-repush pass with batch pops; transfer pops wait for an active trim pass before attempting their CAS.
+### ABA-safe heads
 
-Batch victim stealing is guided by a per-class nonempty bitmap. Each bitmap word tracks up to 64 CPUs for one size class. Transfer pushes set the hint only when the push observes an empty-to-nonempty transition. Transfer pops clear the hint when they observe empty transfer lists, then cheaply recheck the normal list to avoid the most important stale false-negative race on hot blocks. These bits are relaxed hints only; the ABA-tagged transfer list remains the source of correctness.
+Each transfer head is a 128-bit value:
 
-`TransferCache` is expected to remain fast enough for overflow, fallback, medium-class reuse, occasional cross-CPU recovery, and cold trimmed reuse. Normal tiny/small traffic should mostly hit the RSEQ-managed class cache, while medium traffic prefers transfer-cache reuse to avoid RSS growth from stranded per-CPU blocks.
+```text
+high 64 bits: generation
+low  64 bits: complete pointer
+```
 
-## Refill Path
+Every successful update advances the generation. The full pointer remains intact, so the design does not depend on spare pointer bits or on a 48/56-bit virtual-address assumption. Push uses release publication; pop acquires the published list.
 
-When `SLAB_CACHE` and transfer-cache/victim stealing cannot satisfy an allocation, `fill()` calls `refill()`, which calls `bulk_fill()`.
+### Batch pop
 
-`bulk_fill()` obtains a slab-like chunk from the slab page backend:
+A pop walks at most the requested number of intrusive nodes, then atomically replaces the head with the first unclaimed node. The normal list is checked before the trimmed list. If the selected list empties, its availability hint is cleared and both heads are rechecked to repair the important concurrent-push false-negative race.
+
+### Spatial adaptation: transfer hints
+
+Per-class bitmaps record CPUs whose transfer slot is probably nonempty. They are **advisory**:
+
+- an empty-to-nonempty push sets a bit;
+- an observed empty slot clears it;
+- a clearing operation rechecks both transfer heads and restores the bit if necessary.
+
+The transfer head remains the source of correctness. A stale hint may add or skip probing work, but cannot allocate an invalid block.
+
+A second bitmap marks slots currently being stolen. Scans first prefer unclaimed victims, then make a forced pass so stale or contended markings cannot permanently hide available memory.
+
+Victim order is:
+
+1. the current CPU's transfer slot;
+2. hinted CPUs in the current NUMA range;
+3. hinted CPUs in other NUMA ranges.
+
+This makes the transfer system adaptive in two dimensions: hints predict **where** reusable blocks are, while batch predictors estimate **how many** to request.
+
+### Trimming synchronization
+
+`trim_lock` protects the detach/classify/republish interval used by slab trimming. Allocation-side pops that encounter an active trim pass wait for republished state rather than interpreting a temporarily detached list as permanent exhaustion.
+
+## Per-CPU Refill Prediction
+
+Each `MainCache` has separate predictors for transfer reuse and bulk initialization. Predictors are indexed by CPU and size class because they model the cache being accessed, not the identity of the calling thread.
+
+`AdaptiveBatching` packs two values into one `AtomicUsize`:
+
+```text
+high bits: predicted batch
+low byte:  consecutive low-observation count
+```
+
+Zeroed mapped storage means “use the configured initial batch.” Selection is a relaxed load. Feedback uses a single relaxed `compare_exchange_weak`; a failed update is dropped because prediction is advisory and retrying would add contention without affecting correctness.
+
+The update policy is asymmetric:
+
+```text
+if observed > batch:
+    batch = max(batch + batch / 2, observed), bounded by class maximum
+else if observed * 4 < batch for four observations:
+    batch = max(batch / 2, 1)
+else:
+    clear the low-observation streak
+```
+
+A completely satisfied request is fed back as the requested amount plus 25%, while class headroom remains. This lets sustained demand grow beyond an initially conservative batch.
+
+A null transfer result is different from a measured demand of zero: it proves temporary supply was absent but says little about what the application would consume. The null path therefore reports half of the attempted batch through an out-of-line update, avoiding aggressive collapse or code growth in `fill`.
+
+Transfer and bulk-fill predictors remain independent because moving already initialized blocks and touching fresh refill memory have different costs and supply behavior.
+
+## Bulk Initialization and Pending Metadata
+
+When transfer reuse fails, `bulk_fill` obtains blocks from a refill span:
 
 ```text
 [ MetaData ][ Header + payload ][ Header + payload ] ...
 ```
 
-`MetaData` tracks:
+`MetaData` records the span bounds, next uninitialized address, and NUMA node. Headers are initialized lazily: only the predicted batch is written and linked. Untouched remainder pages can stay physically uncommitted.
 
-- pending queue link,
-- mapping start,
-- mapping end,
-- next uninitialized block position,
-- NUMA node id for the mapping.
+The lookup order is:
 
-Blocks are initialized lazily in batches. `bulk_fill()` writes headers only for the current adaptive `max_init` batch; any remaining address range in the metadata span is left uninitialized and tracked by `MetaData::next` for later refills. The initialized batch is returned to allocation code, one block is used immediately, and the remainder is pushed into `SLAB_CACHE`.
+1. the current thread's pending span for the class;
+2. the node/class pending queue;
+3. a new span from `PAGE_ALLOCATOR`.
 
-### Slab Page Backend
+One initialized block is returned to the allocation, and the rest are pushed to the current CPU's local cache. If a span still contains uninitialized blocks, it remains in thread-local pending state. A thread-exit destructor drains pending spans into the NUMA-local global pending queue so work is not stranded when threads disappear.
 
-The slab page backend serves fresh bulk-fill metadata spans from larger NUMA-preferred arenas instead of issuing a direct mapping for every refill span. It is a bump allocator: it first tries the current arena for the selected NUMA node, then searches that node's other live arenas for remaining tail space, and finally maps a new arena. This reduces `mmap` call count, VMA churn, and scattered refill mappings while giving the allocator a central place to manage slab backing memory.
+The pending queue is sharded by `(NUMA node, size class)` and protected by per-slot spin locks. It is a refill structure, not part of the ordinary allocation/free fast path.
 
-The arena data-size minimum defaults to 256 MiB. Rust `GlobalAlloc` configurations provide it through `RSMallocConfig::arena_min_size`; preload initialization reads `RS_ARENA_SIZE` as a byte count. Arena creation uses the larger of this minimum and the current refill request, then aligns the result to the page size. The mapping reserves virtual address space; physical RSS remains driven primarily by pages touched during lazy refill initialization and by the selected THP policy.
+## Page Allocator
 
-Each page-backend arena stores its `PageArena` metadata at the front of the mapping, then exposes a page-aligned data region for refill spans:
+`PAGE_ALLOCATOR` is a NUMA-aware reservation backend built from large bump arenas. Each NUMA node has:
 
-```text
-[ PageArena ][ padding ][ page-aligned refill span memory ... ]
-```
+- an atomic pointer to its preferred current arena;
+- a lock-protected list of live arenas;
+- an atomic bump cursor in each arena.
 
-`PageArena` tracks `base`, `end`, and `current`, plus links in a per-node doubly linked arena list. There is no free-run bitmap and no `PAGE_ALLOCATOR.release(...)` path. When an arena's unused tail falls below `MIN_REFILL_BYTES`, it is unlinked in O(1); for sufficiently large configured arenas, its metadata page is also advised away. Existing refill-span ownership remains tracked independently through `RADIX` and cached-VA accounting.
+The fast path loads the current arena and reserves a page-aligned range with a CAS loop. The node lock is entered only when the current arena cannot satisfy the request. Under the lock, the allocator:
 
-`try_grow_inplace(...)` can extend a page-backed refill span only when that span is still the arena's most recent bump (`ptr + old_size == arena.current`) and the enlarged span fits in the remaining tail. `small_realloc` uses this only for single-block slab refill spans; normal shrink keeps the existing block, and failed growth falls back to allocate/copy/free.
+1. retries if another thread published a new current arena;
+2. removes arenas with unusably small tails from the live search list;
+3. searches older arenas for remaining tail space;
+4. maps and publishes a new arena if needed.
 
-`RADIX` ownership and cached-VA accounting are still applied to the allocated metadata span rather than treating every byte of arena slack as live allocation ownership. This means the backend may reserve larger virtual arenas while physical RSS remains driven by lazily initialized/touched refill pages.
+Arena removal means removal from future bump searches; ownership of previously issued ranges remains represented by the radix and subsystem metadata.
 
-The optional Cargo feature `page-backend-no-huge-page` applies Linux no-huge-page advice to these page-backend arenas. It is intended for systems that aggressively promote transparent huge pages, where slab arena slack can make RSS look much larger than expected. Enabling it can reduce RSS substantially, but may increase TLB pressure because the arenas are backed by normal pages. The opposite `page-backend-huge-page` feature requests huge-page advice for TLB-sensitive experiments when `page-backend-no-huge-page` is not also enabled; enabling both advice features intentionally results in no explicit page-backend THP advice.
+Requests are page-aligned and NUMA-preferred. Very large or unsuitable reservations may bypass arenas and use a direct mapping. The default minimum arena size is 256 MiB, but virtual reservation size should not be confused with resident memory: slab headers and payload pages are touched lazily.
 
-#### Guard Pages
+`try_grow_inplace` can extend a page-backed range only when it is still the most recent bump allocation in its arena and sufficient tail space remains.
 
-The optional `guard-pages-thp`/`guard-pages-ignore-thp` features add `PROT_NONE` guard pages to the bump-allocated region, at the last 4KB of every fixed-size aligned block (2MB for `guard-pages-thp`, matching the THP unit; 64KB for `guard-pages-ignore-thp`, for denser coverage at the cost of always fragmenting page tables in that block).
+Optional guard-page features place lazily materialized `PROT_NONE` pages at fixed arena intervals. They affect page-arena layout and are hardening modes, not the default allocation model.
 
-Placement is lazy and reactive, not pre-mapped up front: a guard boundary only actually gets `mprotect`ed the moment the bump pointer's arithmetic position (`arena.current`, computed purely from addresses, not from the size of any one request) reaches it. `skip_guard_page` is what does this — it checks whether the current address sits exactly on a guard boundary and, if so, protects that one page and advances past it. Every `allocate_current`/`allocate_search` call first calls `skip_guard_page` on the arena's current position, then computes whether a guard boundary falls anywhere within `[current, current + size)` and, if so, calls `skip_guard_page` on that computed address too — materializing and consuming that one guard before the allocation is handed out.
+## Large Allocations
 
-For requests that fit within a single guard segment (`size <= GUARD_ALIGN - PAGE_SIZE`; up to 1MB size classes for `guard-pages-thp`, up to 32KB for `guard-pages-ignore-thp`), this guarantees the returned block never straddles a guard: if the arithmetic says a guard falls inside the candidate range, the allocation is denied outright (`fits_within_guard_segment(size) && guard_page_in_range(...).is_some()` returns `None`) rather than risking a boundary landing mid-block.
+Requests outside slab classes enter `big_malloc`.
 
-For requests larger than one guard segment, straddling is unavoidable by construction (a block spanning more than `GUARD_ALIGN` bytes must contain at least one guard-aligned position no matter where it starts), so the deny check is skipped for them. Instead, the single guard boundary encountered on the way in gets consumed via the same unconditional `skip_guard_page` call the small-allocation path uses — the bump pointer hops past it before the block is carved out — but any further guard-aligned positions later in that block's span are never independently `mprotect`ed, because nothing else ever calls `skip_guard_page` on them; they remain ordinary read/write memory. So large allocations get a guard at their leading edge (protecting against writes that run backward past the block's start) but not dense coverage through their body. This is deliberate: because guards are never pre-mapped ahead of time, there's nothing there to collide with — a large allocation just flows through address space where no guard has been materialized yet, rather than running into one that was already placed.
+### Segmented-bitmap backend
 
-`new_arena_locked` maps one extra page per arena so a snugly-sized single request still leaves room for its own trailing/segment guard rather than failing outright — an earlier version without this padding could return null for a legitimate allocation purely because a guard page ate the arena's last few KB.
+When enabled, requests no larger than 64 MiB first try `SEGMENTED_BITMAP_BACKEND`. Requests are rounded to one of five orders:
 
-### Thread-Local Pending Metadata
+| Order | Block size |
+| --- | ---: |
+| 22 | 4 MiB |
+| 23 | 8 MiB |
+| 24 | 16 MiB |
+| 25 | 32 MiB |
+| 26 | 64 MiB |
 
-Default refill behavior uses thread-local pending metadata:
+A segment is 64 MiB divided into sixteen 4 MiB slots. One hot `AtomicU64` contains three 16-bit planes:
 
-- if a mapped slab has uninitialized blocks left after a refill batch, the leftover `MetaData` is stored in `THREAD_BULK.free[class]`,
-- the next refill for the same thread/class continues initializing headers from that pending metadata instead of mapping immediately,
-- `ThreadBulk::get_or_init(class)` lazily registers the thread cleanup hook on first refill use,
-- a thread-exit destructor drains pending metadata into the global pending queue so another thread on the same NUMA node can continue initializing it later.
+- currently occupied slots;
+- dirty/reused slots;
+- slots that have ever been used.
 
-The cleanup hook is intentionally off the allocation hot path after first touch. It registers a low-level thread-exit callback for the TLS destructor slot because raw `#[thread_local]` storage is used for allocator state.
+Candidate masks enforce power-of-two size and alignment without walking a buddy tree or maintaining per-order linked lists. Allocation claims slots with an atomic CAS; free timestamps the released slots and clears their occupancy bits.
 
-This model avoids a shared refill lock on the hot path while reducing stranded pending refill state when threads exit.
+Each NUMA node owns a published region list and a growth lock. Per-CPU-sharded hint lanes hold a preferred segment for each order. Allocation tries the hinted segment first, scans the local node's regions on failure, grows under the local node lock, and only then searches active remote nodes.
 
-### Global Pending Metadata Queue
+The growth lock protects region creation/publication, not ordinary allocation or free. A region's data is registered once in the ownership radix; individual bitmap allocations are tracked exactly in `BIG_MAP`.
 
-`PENDING_QUEUE` is a global `SpinLock`-guarded linked stack of pending `MetaData` pages, indexed by NUMA node and size class:
+The backend can grow an allocation in place when the adjacent aligned half of the next order is free. It does not move the allocation while doing so.
 
-```text
-[node_id][class] -> SpinLock + MetaData stack
-```
+### Direct mappings
 
-The queue is initialized during `SLAB_CACHE` setup from the parsed NUMA topology. On non-NUMA systems, all traffic uses node slot `0`. On NUMA systems, each `MetaData` carries its original `node_id`, thread-exit drain pushes to that node's stack, and `alloc_metadata()` only pops from the current CPU's local node before mapping fresh memory.
+If segmented-bitmap reuse is disabled, ineligible, or unavailable, `big_malloc` creates a dedicated anonymous mapping. Mapping size is checked, page/THP adjusted, and rounded to the 512 KiB ownership granule. NUMA preference and optional huge-page advice are applied when configured.
 
-Each `[node_id][class]` slot has its own `SpinLock`, so contention is sharded rather than global; push and pop both take the slot's lock for the duration of the linked-list operation. The queue is a cold/slow refill structure, not part of the normal RSEQ block pop/push path, so lock overhead here doesn't touch the hot allocation path.
+Direct allocations are removed with `munmap`. Unaligned direct allocations can mark a single radix ownership chunk; aligned allocations mark their full mapping because an adjusted user pointer may reside farther from the original header.
 
-## Adaptive Refill Prediction
+### Exact metadata
 
-Small refill sizes are adaptive instead of fixed. The goal is to avoid two bad extremes:
+`BIG_MAP` maps a large allocation's payload address to:
 
-- refilling too little, which causes repeated slow-path trips and extra RSEQ/transfer-cache traffic,
-- refilling too much, which increases virtual-memory retention, cache/TLB pressure, and cross-CPU spillover.
+- requested size;
+- mapped order;
+- segmented-bitmap segment identity, or zero for a direct mapping;
+- aligned-allocation state.
 
-There are two independent thread-local, per-size-class adaptive batchers:
-
-- `TRANSFER_BATCHING`: predicts how many blocks allocation code should try to pull from class-cache/transfer/victim sources before returning one block to the caller and pushing the rest locally.
-- `BULK_FILL_BATCHING`: predicts how many blocks a fresh or pending bulk-fill slab should initialize at once.
-
-They are separate because the two costs are different. Pulling already-initialized blocks mostly changes cache pressure and local freelist depth; initializing from bulk metadata touches fresh memory, writes headers, and may expose more mapped pages to the working set.
-
-Current adaptive-batching state is intentionally small:
-
-```rust
-struct AdaptiveBatching {
-    batch: usize,
-    low_count: u8,
-    once: Once,
-    is_fill: bool,
-    _class: usize,
-}
-```
-
-Each `AdaptiveBatching` instance is initialized lazily on first use. Normal class-cache/transfer prediction starts from `PREDICTOR_INIT_BATCH` (`RS_PREDICTOR_INIT_BATCH` in runtime config paths). Bulk-fill prediction starts from `BULK_FILL_PREDICTOR_INIT_BATCH`.
-
-The update rule is integer-only. If observed demand exceeds the current batch, it grows immediately by roughly 1.5x or to the observed demand, whichever is larger. If observed demand stays below one quarter of the current batch for several refill observations, it halves the batch.
-
-```text
-if observed > batch:
-    batch = max(batch + batch / 2, observed).clamp(1, ITERATIONS[class])
-else if observed * 4 < batch for 4 refill observations:
-    batch = (batch / 2).clamp(1, ITERATIONS[class])
-```
-
-`ITERATIONS[class]` is the hard per-class maximum derived from refill target bytes and block size. This keeps adaptive-batching output bounded even if a workload keeps asking for more.
-
-### Observed Demand
-
-Adaptive batching does not observe application allocation demand directly. It observes what the allocator managed to obtain during a refill step:
-
-- if only a few blocks were available, the observation is small and future batches shrink gradually,
-- if the requested batch was fully satisfied, that is treated as a signal that demand may be at least as large as the request.
-
-The second case matters because feeding the exact returned count back forever can keep the batch stuck too low. Example: if `batch == 8` and every refill gets exactly 8 blocks, feeding `8` back forever never lets the batcher discover that the workload could use larger batches.
-
-To avoid that, when a refill returns exactly the requested batch and the class still has headroom, the observed value is lifted by `+25%` before updating the batch:
-
-```text
-if returned == requested && requested < ITERATIONS[class]:
-    observed = min(requested + max(requested / 4, 1), ITERATIONS[class])
-else:
-    observed = returned
-```
-
-This is deliberately conservative. It lets the batcher climb out of too-small batches during sustained pressure, but avoids doubling into large over-refills after one successful refill.
-
-### Why Gradual Shrink Instead Of Instant Batch Changes?
-
-Refill behavior is noisy:
-
-- RSEQ aborts and transfer-cache pressure can make one refill look artificially small,
-- victim/transfer hits can temporarily hide true demand,
-- bursty workloads may allocate heavily for a short phase and then stop,
-- thread migration means CPU-local cache state is not a perfect demand signal.
-
-The batcher grows quickly on clear pressure because under-refilling causes repeated slow-path trips. It shrinks only after repeated low-demand observations so one odd refill does not immediately collapse the batch size.
-
-### Debugging Prediction Quality
-
-Debug features provide approximate and exact prediction miss accounting:
-
-- `debug` gives low-overhead approximate over/under-prediction counters suitable for normal benchmark runs,
-- `debug-predictor-exact` probes more aggressively to classify misses more accurately and is higher overhead,
-- `predictor-debug` can print adaptive-batching decisions for direct inspection.
-
-The counters should be interpreted as tuning signals, not correctness requirements. Under-prediction usually means more refill trips. Over-prediction usually means more retained/free cached memory. The right balance depends on workload locality and whether the benchmark is latency-, throughput-, RSS-, or TLB-sensitive.
-
-### Current Limitations
-
-- Adaptive batchers are thread-local, not global. This avoids atomics on the hot path but means new threads start from initial settings.
-- Adaptive batching sees allocator-side refill results, not future application demand.
-- The `+25%` uplift helps sustained full-batch pressure, while 1.5x growth avoids jumping as aggressively as a doubling strategy.
-- Very synchronized refill storms can still bottleneck in the refill path, but pending refill metadata stays thread-local by default to avoid shared refill locks.
+The radix answers the coarse question “can this address belong to RSMalloc?” `BIG_MAP` supplies exact metadata for freeing, usable-size queries, and realloc.
 
 ## Free Path
 
-Freeing follows this shape:
-
 ```mermaid
 flowchart TD
-    A["rs_free(ptr)"] --> NULL{"ptr is null?"}
-    NULL -- "yes" --> RET["return"]
-    NULL -- "no" --> OWN{"RADIX owns ptr?"}
-
-    OWN -- "no" --> PRELOAD{"preload build?"}
-    PRELOAD -- "yes" --> LIBC["free_fallback(ptr)"]
-    PRELOAD -- "no" --> FPOL{"FOREIGN_POINTER_ABORT?"}
-    FPOL -- "yes" --> FABORT["abort: foreign pointer"]
-    FPOL -- "no" --> RET
-
-    OWN -- "yes" --> ORIG["find_original_ptr(ptr)"]
-    ORIG --> TAG{"ALIGN_TAG found before ptr?"}
-    TAG -- "yes" --> RECOVER["read original_ptr slot"]
-    RECOVER --> ROWN{"RADIX owns recovered original?"}
-    ROWN -- "no" --> AABORT["abort: aligned metadata injection"]
-    ROWN -- "yes" --> HEADER["read original Header"]
-    TAG -- "no" --> HEADER
-
-    HEADER --> MAGIC{"header.magic"}
-    MAGIC -- "MAGIC" --> SMALL["small allocation free"]
-    SMALL --> STAMP["life_time = CURRENT_STAMP"]
-    STAMP --> FREED["magic = FREED_MAGIC"]
-    FREED --> PUSH["SLAB_CACHE.push(class, header)"]
-    PUSH --> HIGH{"current CPU cache >= high watermark?"}
-    HIGH -- "yes" --> TPS["transfer_push_single"]
-    HIGH -- "no" --> RPUSH["RSEQ push current CPU class cache"]
-    RPUSH --> ROK{"RSEQ push ok?"}
-    ROK -- "yes" --> RET
-    ROK -- "retry limit" --> TPS
-    TPS --> HINT{"old transfer head was null?"}
-    HINT -- "yes" --> BIT["mark transfer class hint nonempty"]
-    HINT -- "no" --> RET
-    BIT --> RET
-
-    MAGIC -- "BIG_MAGIC" --> BIGFREE["big_free(original payload)"]
-    BIGFREE --> MAP["BIG_MAP.remove(payload)"]
-    MAP --> MISSING{"metadata found?"}
-    MISSING -- "no" --> CORRUPT["abort: missing big metadata"]
-    MISSING -- "yes" --> BUDDY{"BUDDY_INIT and mapping base in buddy pool?"}
-    BUDDY -- "yes" --> BFREE["BUDDY_BACKEND.free(base, order)"]
-    BFREE --> RET
-    BUDDY -- "no" --> ALIGNED{"big allocation was aligned?"}
-    ALIGNED -- "yes" --> CLR_RANGE["RADIX.clear full mapped range"]
-    ALIGNED -- "no" --> CLR_BIG["RADIX.clear direct-big entry"]
-    CLR_RANGE --> UNMAP["munmap(mapping_base, mapped_size)"]
-    CLR_BIG --> UNMAP
-    UNMAP --> RET
-
-    MAGIC -- "FREED_MAGIC" --> DF{"MAGIC_DISABLE?"}
-    DF -- "no" --> DABORT["abort: double free"]
-    DF -- "yes" --> RET
-    MAGIC -- "other/corrupt" --> CF{"MAGIC_DISABLE?"}
-    CF -- "no" --> CABORT["abort: attack or corruption"]
-    CF -- "yes" --> RET
+    PTR["free(ptr)"] --> NULL{"Null?"}
+    NULL -- Yes --> DONE[Return]
+    NULL -- No --> OWN{"RADIX owns address?"}
+    OWN -- No --> FOREIGN["Preload fallback or configured foreign-pointer policy"]
+    OWN -- Yes --> ALIGN["Recover original aligned pointer if tagged"]
+    ALIGN --> MAGIC{"Header magic"}
+    MAGIC -- Small --> AGE["Stamp lifetime and freed magic"]
+    AGE --> PUSH["RSEQ push or transfer overflow"]
+    MAGIC -- Large --> META["Remove BIG_MAP metadata"]
+    META --> KIND{"Segmented bitmap?"}
+    KIND -- Yes --> BFREE["Clear bitmap occupancy and timestamp slots"]
+    KIND -- No --> UNMAP["Clear radix ownership and munmap"]
+    MAGIC -- Invalid --> ABORT["Double-free/corruption policy"]
 ```
 
-After the `RADIX` ownership check, `rs_free()` calls `find_original_ptr()` before reading the header. Normal pointers pass through unchanged. Aligned allocations may return an interior aligned pointer, so `find_original_ptr()` checks for the randomized alignment tag stored just before the returned aligned address, recovers the original allocation pointer, and verifies the recovered pointer is also owned by `RADIX` before trusting it.
+Ownership is checked before allocator metadata is trusted. Aligned allocations store a tag and original pointer before the adjusted payload; the recovered base is checked against the radix before dereference.
 
-Small frees stamp the header with the current lifetime and `FREED_MAGIC`, then return the block through `SLAB_CACHE.push(...)`. The push path uses the current CPU's RSEQ class cache while below the class high watermark; if the cache is already high or RSEQ push retries fail, it spills the block to that CPU's transfer cache and marks the relaxed transfer nonempty hint on an empty-to-nonempty transition.
+Small frees stamp `life_time`, change magic to the freed value, and enter the current CPU's cache. This CPU may differ from the allocation CPU by design.
 
-Big frees remove payload metadata from `BIG_MAP` first. Buddy-backed blocks are returned to `BUDDY_BACKEND` and keep region ownership managed by the buddy backend. Direct big mappings clear the appropriate `RADIX` shape (`set_single_big` for normal direct mappings or `set_range` for aligned mappings) and then `munmap` the mapping.
+## Reallocation
 
-Rust `GlobalAlloc::dealloc` currently delegates to the normal `rs_free` path. Preload `free_sized` and `free_aligned_sized` are compatibility shims over normal `free`.
+Reallocation preserves alignment when the input was produced by the aligned path.
 
-## Aligned Allocations
+Small realloc:
 
-The alignment path overallocates enough space for:
+- returns the same block when the current class already fits;
+- may grow a single-block page-backed span in place when it is the arena's latest bump;
+- otherwise allocates, copies, and frees.
 
-- requested payload,
-- alignment slop,
-- a tag and original-pointer slot.
+Segmented-bitmap realloc:
 
-The returned aligned pointer has metadata immediately before it:
+- keeps the block when its current order already fits;
+- repeatedly claims an adjacent half to grow in place when possible;
+- otherwise allocates, copies, and frees.
+
+Direct realloc attempts `mremap` without moving; failure falls back to allocate/copy/free. Shrinking currently keeps the existing allocation.
+
+## Ownership and Metadata Safety
+
+The ownership radix uses 512 KiB chunks over the low 56-bit user-address range. Its shape is:
 
 ```text
-[ original allocation ... ][ ALIGN_TAG ][ original_ptr ][ aligned payload ]
+L1 pointer table -> L2 pointer table -> L3 atomic bitmap leaf
 ```
 
-The tag is randomized at bootstrap unless randomization is disabled. Free/realloc/usable-size paths recover the original pointer through this tag.
+A 512-byte L3 bitmap covers 2 GiB. Intermediate tables are allocated lazily under one metadata-allocation lock and published with release ordering. Ownership bits are atomic.
 
-## Realloc Path
+The 512 KiB granularity deliberately trades exactness for compact metadata and fast rejection. It is not sufficient to identify allocation boundaries; headers, aligned tags, and `BIG_MAP` provide exact classification after coarse ownership succeeds.
 
-`rs_realloc` handles several cases:
+Header magic distinguishes live slab allocations, freed slab blocks, and large allocations. Optional hardening can also validate ownership for blocks popped from internal freelists and zero selected small payloads on free.
 
-- `null` pointer -> allocate,
-- new size `0` -> free and return null,
-- aligned pointer -> allocate with observed alignment, copy, free original,
-- small allocation shrinking within class -> return same pointer,
-- small allocation growing within class -> return same pointer,
-- small allocation growing across classes -> allocate/copy/free,
-- large small-class slab mappings may try in-place `mremap` when mapping shape allows,
-- direct big allocations may try in-place `mremap`,
-- buddy-backed big allocations may try in-place buddy growth before falling back to allocate/copy/free.
+## Trimming, Lifetime Adaptation, and Relief
 
-Fallback/copy paths route through the shared inner `rs_alloc` and `rs_free` operations. That keeps ownership checks, `BIG_META_MAP` updates, buddy return logic, and optional semi-hardening ownership checks centralized instead of duplicating unchecked big-block allocation/free behavior inside realloc.
+The background thread advances `CURRENT_STAMP` in 100 ms units and periodically considers reclaiming cached pages.
 
-## Big Allocation Path
+### Slab trimming
 
-Requests that do not match a small size class use `big_malloc()`.
+Slab trimming applies to classes whose payload can contain complete reclaimable pages. For each CPU/class transfer slot it:
 
-Big allocation behavior:
+1. acquires the slot's trim lock;
+2. atomically detaches the normal transfer list;
+3. classifies blocks by age and allocation history;
+4. republishes young/ineligible blocks in class-sized batches;
+5. advises complete payload pages from old blocks with `MADV_DONTNEED` or `MADV_FREE`;
+6. publishes successfully reclaimed blocks on the separate trimmed list.
 
-1. Add `Header::SIZE`.
-2. Align mapping size to 4096, or to 2 MiB when close enough and THP is enabled.
-3. If the buddy backend is initialized and the original request is `<= 64 MiB`, try `BUDDY_BACKEND`; internally the buddy path rounds up to at least the `4 MiB` minimum order.
-4. Otherwise mmap directly.
-5. Write a `BIG_MAGIC` header.
-6. Record metadata in `BIG_META_MAP` keyed by payload pointer.
-7. Mark ownership in `RADIX`.
+An EMA-like per-class lifetime estimate controls age eligibility. Reclaimed blocks remain valid allocator objects; only their payload pages have been advised away.
 
-Direct big allocations are unmapped on free. Buddy allocations are returned to the buddy pool.
+### Segmented-bitmap trimming
 
-## Buddy Backend
+Free bitmap slots retain dirty and historical-use state plus per-slot free timestamps. The trimmer atomically claims eligible free ranges before advising their pages away, then records whether the range is now trimmed. Allocation classification distinguishes never-allocated, reused, and reclaimed blocks so calloc can make a correct zeroing decision.
 
-`BUDDY_BACKEND` caches large regions for big allocations.
+### Pressure relief
 
-Current range:
+Small and segmented-bitmap cached-VA thresholds avoid scans when little memory is reclaimable. A process-memory pressure policy can temporarily disable segmented-bitmap allocation, force cached large blocks to be advised away, and re-enable the backend only after pressure remains below a lower threshold.
 
-- min order: `22` (`4 MiB`),
-- max order: `26` (`64 MiB`).
+Cached virtual address space is not equivalent to resident memory. Page arenas and segmented regions may remain reserved while their pages are untouched or reclaimed.
 
-Each region has:
+## Concurrency Map
 
-- region metadata,
-- base address and total size,
-- NUMA node id,
-- free lists for each order,
-- a per-region nonempty bitmap for quick order selection,
-- per-order locks for free-list mutation.
-
-Allocation first tries regions on the caller's local NUMA node, grows a new local-node region if needed, and only then scans remote node ranges when NUMA is active. Within a region, `nonempty_mask` skips empty order lists and selects the first usable order with bit operations instead of linearly probing every order. Freeing coalesces with free buddies where possible and keeps the bitmap in sync.
-
-`trim(requested_size)` uses `madvise(MADV_DONTNEED)`-style advice on free buddy blocks. `requested_size == 0` means trim all currently free buddy blocks; nonzero requests trim until at least the requested byte target is reached or no more eligible free blocks remain. The trim path takes the global trim lock and each order's free-list lock while advising blocks so allocation/free do not race with page advice over the same free lists.
-
-## NUMA Awareness
-
-NUMA topology is parsed from Linux sysfs into `NumaTopology`:
-
-- `cpu_to_node[cpu] -> node_id`,
-- compact `node_ids`,
-- `cpu_ranges[node_id] -> NumaCpuRange` for fast range lookup by node id.
-
-Invalid or missing CPU entries fall back to node `0`. Sparse node ids are supported by sizing the CPU range table so direct `cpu_ranges[node_id]` indexing remains valid.
-
-NUMA policy is applied at mapping time using `prefer_node(ptr, len, node_id)`, currently implemented through the `syscalls` crate's `mbind` syscall wrapper with `MPOL_PREFERRED | MPOL_F_STATIC_NODES`. This sets preferred placement; it does not pre-touch pages or force migration of already-faulted pages.
-
-Current NUMA-aware paths:
-
-- Transfer-cache victim stealing prefers same-node CPUs before remote node ranges.
-- Slab page-backend arenas prefer the current CPU's node when mapped.
-- Pending metadata queues are per-node/per-class and only pop local-node metadata.
-- Buddy regions are tagged with node id, prefer-node bound when mapped, and allocated local-node first.
-- Direct big allocation fallback prefers the current CPU's node.
-
-## Ownership Tracking: `RADIX`
-
-`RADIX` is the allocator ownership map. It answers: "does this address look owned by rsmalloc?"
-
-Uses:
-
-- distinguish rsmalloc pointers from foreign pointers,
-- decide whether free/realloc/usable-size should use internal logic or fallback/abort,
-- mark small slab mappings,
-- mark direct and aligned big mappings,
-- mark buddy regions.
-
-The radix implementation is a lazy multi-level bitmap tree covering the low canonical 56-bit user address range used on x86-64 LA57 systems. It uses 512 KiB chunks, a 1-bit top level, two 12-bit pointer levels, and a 12-bit bitmap leaf. Each bitmap leaf covers 2 GiB. Range marking validates overflow and bounds explicitly instead of wrapping indices.
-
-The radix implementation uses acquire/release atomics for reader/writer synchronization. Writers mutate under `SerialLock` and publish new radix nodes or bitmap updates with release operations; readers use acquire loads and may observe either the old or new ownership state during a race. The allocator only requires eventual visibility here, not a perfectly up-to-date ownership snapshot.
-
-## Trim
-
-Trimming is best-effort and uses `madvise` to return physical page pressure to the kernel while keeping allocator virtual mappings and cache structure intact.
-
-There are two trim sources:
-
-- explicit trim through `malloc_trim(...)` in preload mode or `RSMalloc::rs_trim(...)` in Rust mode,
-- the optional background trim worker.
-
-Both paths share a global non-blocking trim lock. If another trim pass is already active, the new trim attempt returns without waiting. This avoids overlapping manual trim, background trim, small-cache trim, and buddy trim passes.
-
-### Small-allocation trim
-
-Small-allocation trim scans the transfer caches for size classes equal to or greater than `4096` bytes. Smaller classes are intentionally left to normal reuse because they do not have enough page-aligned interior payload to make page advice useful.
-
-For each CPU and eligible size class:
-
-1. The per-slot `trim_lock` is acquired and the normal transfer list is detached with its 128-bit tagged CAS.
-2. Detached blocks are classified while batch pops remain excluded; ordinary blocks are periodically repushed in batches of `ITERATIONS[class] + 1`, briefly releasing the lock between batches.
-3. After the normal-list repush is complete, the lock is released and blocks older than the current average lifetime and marked trim-eligible are passed to `release_memory(...)`.
-4. Successfully advised blocks are pushed onto the cold `trimmed` list; the rest return to the normal transfer list.
-
-`release_memory(...)` only advises the page-aligned interior of a block:
-
-```text
-[ header ][ unaligned payload prefix ][ page-aligned trim range ][ unaligned suffix ]
-```
-
-This means small trim avoids corrupting allocator metadata or partial user-cache-line fragments. Successful trim clears the block's trim eligibility until it is reused/freed again. The trim pass also updates an average lifetime estimate so background trim adapts to observed cache age.
-
-### Buddy trim
-
-Buddy trim scans free buddy blocks. Each free block tracks:
-
-- lifetime stamp,
-- trim state: never allocated, allocated/reused, or trimmed.
-
-Manual buddy trim can force trimming up to a requested byte target. Background buddy trim only trims blocks older than the buddy average lifetime. Buddy trim holds the global trim lock and the relevant order free-list lock while walking free lists so allocation, free, coalescing, and page advice do not race over the same region state.
-
-Buddy trim advises all but the first page of each free block. The first page remains resident because it stores the free-list node metadata. Trim accounting and trim-state updates are only applied when `madvise` succeeds.
-
-### Lazy vs eager page trim
-
-Without `lazy-page-trim`, trim uses `MADV_DONTNEED`-style advice (`Advice::LinuxDontNeed`), so advised pages fault back as zero-filled memory.
-
-With `lazy-page-trim`, trim uses lazy free advice (`Advice::LinuxFree`). Lazy-free pages may retain old contents until the kernel reclaims them, so calloc paths must still zero memory that came from lazy-trimmed blocks.
-
-Allocation headers carry zero/reuse/trim state flags so `calloc` can skip zeroing only when the allocator can prove the returned payload is already zeroed.
-
-## Public Modes
-
-### Preload Mode
-
-Enabled with `preload` feature.
-
-Provides C ABI symbols such as:
-
-- `malloc`, `calloc`, `free`, `realloc`,
-- `reallocarray`, `recallocarray`,
-- `posix_memalign`, `memalign`, `aligned_alloc`, `valloc`, `pvalloc`,
-- `malloc_usable_size`,
-- `malloc_trim`,
-- sized-free compatibility shims.
-
-Foreign pointers can fall back to libc behavior in preload mode where fallback support is compiled.
-
-### Rust Global Allocator Mode
-
-Default non-preload mode exposes:
-
-- `RSMalloc`,
-- `RSMallocConfig`,
-- `GlobalAlloc` implementation,
-- raw helper methods (`rs_malloc`, `rs_free`, `rs_realloc`, etc.),
-- capabilities snapshot,
-- debug stats when enabled.
-
-Foreign pointer behavior is configured through `ForeignPointerSettings`; global allocator mode defaults toward aborting on foreign pointers unless configured otherwise.
-
-## Feature Flags
-
-Important architecture-affecting features:
-
-| Feature | Effect |
+| State | Correctness mechanism |
 | --- | --- |
-| `preload` | Builds C ABI / preload support. |
-| `page-backend-no-huge-page` | Applies no-huge-page advice to slab page-backend arenas to reduce RSS on systems with aggressive transparent huge-page promotion, trading that for higher TLB pressure. Ignored if `page-backend-huge-page` is also enabled. |
-| `page-backend-huge-page` | Applies huge-page advice to slab page-backend arenas when `page-backend-no-huge-page` is not enabled. This can reduce TLB pressure but may increase RSS on aggressive THP systems. |
-| `check-owned-on-alloc` | Semi-hardening diagnostic mode: verifies non-null popped allocation pointers are still owned by `RADIX` before returning them to callers. |
-| `zero-small-on-free` | Zeroes 16–64B allocations (cryptographic-key sized) on free using a plain byte-fill; cheap enough to leave the compiler free to optimize the surrounding code. |
-| `guard-pages-thp` | Lazily places a `PROT_NONE` guard page at the last 4KB of every 2MB-aligned page-allocator block (`src/backend/page_allocator.rs`) — materialized via `mprotect` only as the bump pointer's address reaches it, not pre-mapped. Requests up to 1MB are guaranteed never to straddle a guard (denied outright if the arithmetic says they would); larger requests only consume one leading guard on the way in, without dense coverage through their body (see [Guard Pages](#guard-pages)). |
-| `guard-pages-ignore-thp` | Shrinks `guard-pages-thp`'s interval from 2MB to 64KB for denser guard coverage (the straddle-guaranteed range becomes up to 32KB). Fragments page tables more often than the 2MB variant. |
-| `extended-header` | Uses wider metadata. |
-| `debug` | Enables base stats/debug counters, including RSEQ/refill debug signals. |
-| `debug-print` | Enables `debug` and emits an exit-time allocator report through `.fini_array`/`eprintln!`. |
-| `debug-printer-thread` | Enables `debug-print` and starts a live background report thread. |
-| `debug-exact` | Enables `debug-print` and adds higher-overhead lock counters for calls, retries, try-lock misses, and spin waits. |
-| `debug-predictor-exact` | Enables `debug-print` and uses higher-overhead exact refill prediction miss accounting. |
-| `predictor-debug` | Prints adaptive-batching decisions from the batching path. |
-| `transfer-debug` | Enables `debug-exact` and records transfer-cache steals, dry steals, and CAS retries. |
-| `transfer-debug-exact` | Enables `transfer-debug` and also counts transfer-cache push/pop calls. |
-| `debug-full` | Convenience feature for broad transfer/debug instrumentation. |
-| `debug-full-critic` | Convenience feature for broad instrumentation plus exact predictor diagnostics. |
-| `lazy-page-trim` | Uses lazy page-free advice for trim paths instead of eager `MADV_DONTNEED`-style advice. |
-| `print-cpu-on-double-free` | Adds current RSEQ CPU id to fatal double-free/corruption reports when available. |
+| Local CPU slab head | RSEQ commit store guarded by CPU-ID validation. |
+| Local cache usage | Locked atomic add/inc/dec after RSEQ commit. |
+| Transfer heads | 128-bit pointer + 64-bit generation CAS. |
+| Transfer availability and steal markers | Relaxed advisory bitmaps; never the ownership authority. |
+| Predictor state | Packed relaxed atomic; dropped feedback is permitted. |
+| Page-arena bump cursor | Atomic CAS reservation. |
+| Page-arena list/growth | Per-NUMA-node spin lock. |
+| Segmented slots | Atomic occupancy/dirty/history bitmap. |
+| Segmented region growth | Per-NUMA-node spin lock. |
+| Pending refill spans | Per-node/per-class spin lock plus thread-local first choice. |
+| Ownership radix leaves | Atomic bitmaps; lock only for allocating new tables. |
+| Exact large metadata | Locked red-black tree. |
+| Trimming | Global trim exclusion plus subsystem/slot claims. |
 
-Semi-hardening and debug feature tiers are intentionally explicit in the current alpha line. `check-owned-on-alloc` is useful when chasing freelist/metadata corruption, while `debug-print` is useful for coarse allocator state. `debug-exact`, `transfer-debug*`, and `debug-predictor-exact` can perturb timing and should be treated as diagnostic modes rather than benchmark-neutral instrumentation.
+Fork handlers in preload builds acquire or reset allocator locks whose ownership cannot safely survive `fork` with vanished threads.
 
-## Known Architectural Tradeoffs
+## Performance Tradeoffs
 
-- The small allocation fast path is optimized around CPU-locality and RSEQ, not thread ownership.
-- Victim stealing currently scans CPU transfer caches and is intentionally simple, with NUMA-local ranges preferred before remote ranges.
-- The extra `SLAB_CACHE` slot is reserved space and is not normal CPU-local traffic.
-- `TransferCache` is a relief valve and medium-class reuse layer; too much tiny/small traffic there usually means refill/capacity pressure should be inspected.
-- Thread-local pending refill metadata avoids shared refill locks but can temporarily strand pending slabs until reuse or thread-exit drain. Drained metadata enters the per-node global pending queue, not transfer caches.
-- `BIG_META_MAP` is an internal lock-protected red-black tree backed by mmap-allocated node chunks.
-- Buddy trimming uses `madvise`, not `munmap`, so it returns physical pressure to the kernel while keeping the virtual region structure.
-- NUMA policy is preferred placement rather than guaranteed physical placement; first-touch behavior still matters.
+RSMalloc intentionally optimizes for migration-tolerant per-CPU reuse and broad cross-thread recycling rather than permanent thread/page ownership.
 
-## Allocation Lifecycle Summary
+Strengths include:
 
-```mermaid
-sequenceDiagram
-    participant User
-    participant Inner as inner allocation ops
-    participant Slab as SLAB_CACHE
-    participant Transfer as TransferCache
-    participant Refill as bulk_fill
-    participant Pending as PENDING_QUEUE
-    participant Page as PAGE_ALLOCATOR
-    participant Big as big allocation path
-    participant Map as BIG_META_MAP
-    participant Radix as RADIX
+- no thread-owned small heap that must be abandoned or transferred on thread exit;
+- cheap local freelist publication through RSEQ;
+- NUMA-local reuse before remote search;
+- adaptive spatial hints and per-cache batch prediction;
+- bounded metadata through lazy radix allocation and bitmap large-object state;
+- low mapping frequency through page arenas and reusable large regions.
 
-    User->>Inner: malloc / GlobalAlloc::alloc
-    Inner->>Inner: bootstrap or RSMalloc init as needed
-    Inner->>Inner: match_size_class
+Costs include:
 
-    alt small/slab allocation
-        Inner->>Slab: pop current CPU class cache with RSEQ
-        alt class-cache hit
-            Slab-->>Inner: one Header
-        else RSEQ abort retry path
-            Slab->>Transfer: try one local transfer block
-            Transfer-->>Inner: Header or continue retry
-        else class-cache miss
-            Inner->>Transfer: try local transfer cache batch
-            Transfer->>Transfer: try same-node hinted CPUs
-            Transfer->>Transfer: try remote NUMA ranges if needed
-            alt transfer/victim hit
-                Transfer-->>Inner: initialized batch
-                Inner->>Slab: push batch remainder
-            else refill miss
-                Inner->>Refill: bulk_fill(class, cpu, batch)
-                Refill->>Refill: use thread-local pending span if present
-                alt no thread-local span
-                    Refill->>Pending: pop local-node pending span
-                end
-                alt no pending span
-                    Refill->>Page: allocate span from NUMA-preferred arena
-                    opt new arena and only page-backend-no-huge-page
-                        Page->>Page: advise arena no huge pages
-                    end
-                    opt new arena and only page-backend-huge-page
-                        Page->>Page: advise arena huge pages
-                    end
-                    Refill->>Radix: mark allocated span owned
-                end
-                alt bulk_fill succeeds
-                    Refill->>Refill: lazily initialize requested headers
-                    Refill-->>Inner: initialized batch
-                    Inner->>Slab: push batch remainder
-                else refill retries exhausted
-                    Inner->>Transfer: final one-block transfer retry
-                end
-            end
-        end
-        opt check-owned-on-alloc
-            Inner->>Radix: verify returned pointer is owned
-        end
-        Inner->>Inner: stamp MAGIC and ALLOCATED_FLAG
-        Inner-->>User: payload
+- a locked usage update on each successful local slab operation;
+- 128-bit atomic transfer heads under cross-CPU overflow traffic;
+- dependent linked-list loads during pop and batch extraction;
+- retained virtual arenas/regions even when pages have been reclaimed;
+- architecture and platform dependence on Linux RSEQ and x86-64 assembly.
 
-    else big allocation
-        Inner->>Big: big_malloc(size, aligned)
-        Big->>Big: try local-node buddy block if eligible
-        alt buddy hit
-            Big-->>Inner: buddy-backed payload
-        else direct mmap
-            Big->>Big: mmap and prefer current NUMA node
-            opt THP enabled and mapping shape allows
-                Big->>Big: request huge page backing
-            end
-            Big->>Radix: mark direct or aligned mapping owned
-        end
-        Big->>Map: insert payload metadata
-        Big-->>Inner: payload
-        opt check-owned-on-alloc
-            Inner->>Radix: verify returned pointer is owned
-        end
-        Inner-->>User: payload
-    end
+A workload that continuously moves one size class between many CPUs can force most blocks through transfer heads and strongly favor allocators built around page ownership and deferred remote frees. Conversely, mixed real applications can benefit from CPU-based ownership, migration tolerance, and immediate cross-thread reuse. These are architectural tradeoffs, not properties that one microbenchmark can settle.
 
-    User->>Inner: free(ptr)
-    Inner->>Radix: ownership gate
-    alt foreign pointer
-        Inner->>Inner: preload fallback or non-preload policy
-    else owned pointer
-        Inner->>Inner: recover aligned original pointer if needed
-        alt small MAGIC
-            Inner->>Slab: stamp FREED_MAGIC and push
-            Slab->>Transfer: spill if cache high or RSEQ push retries fail
-        else BIG_MAGIC
-            Inner->>Map: remove payload metadata
-            alt buddy-backed
-                Inner->>Big: return block to buddy backend
-            else direct mapping
-                Inner->>Radix: clear direct or aligned ownership
-                Inner->>Big: munmap direct mapping
-            end
-        else bad magic
-            Inner->>Inner: double-free or corruption handling
-        end
-    end
+## Correctness Boundaries
 
-    User->>Inner: realloc(ptr, new_size)
-    alt null or zero-size request
-        Inner->>Inner: allocate for null, free for zero
-    else non-null request
-        Inner->>Radix: ownership gate
-        alt foreign pointer
-            Inner->>Inner: preload fallback or non-preload policy
-        else owned pointer
-            Inner->>Inner: recover aligned original pointer if needed
-            alt aligned pointer needs growth
-                Inner->>Inner: aligned alloc, copy, free old
-            else BIG_MAGIC
-                Inner->>Big: try direct mremap or buddy in-place growth
-                alt cannot grow in place or crosses to slab
-                    Inner->>Inner: rs_alloc new block, copy, rs_free old
-                end
-            else small allocation
-                Inner->>Inner: return in place if class still fits
-                alt class changes or grows out of slab classes
-                    Inner->>PageBackend: optional in-place grow for single-block slab span
-                    Inner->>Inner: otherwise rs_alloc, copy, rs_free old
-                end
-            end
-        end
-    end
-```
+Several structures are intentionally approximate:
 
-## Things To Verify / Review
+- transfer nonempty bits;
+- being-stolen bits;
+- adaptive predictor state;
+- cached-VA and lifetime policy counters.
 
-This draft intentionally leaves a few review points explicit:
+They may change search order, batch size, trimming time, or memory retention, but must never establish object ownership or make an invalid pointer safe. Correctness rests on RSEQ commit rules, atomic transfer heads, segmented occupancy claims, radix ownership, exact large metadata, and validated headers.
 
-- whether the current low-level TLS destructor registration for pending refill drain is final,
-- whether the current size class set and refill byte targets are final enough to document as stable,
-- whether the Rust trim API should stay in its current alpha shape or gain more status variants/policy controls,
-- whether future small-class page/span metadata is needed for reclaim below 4096 bytes.
+When changing the allocator, preserve these boundaries:
+
+1. Never place a non-idempotent shared store before an RSEQ commit and assume abort will undo it.
+2. Never treat a transfer hint or predictor value as proof that a block exists.
+3. Never dereference recovered aligned-allocation metadata before ownership validation.
+4. Never weaken transfer-head ABA protection by packing tags into assumed-unused pointer bits.
+5. Never publish page, region, radix, or metadata state before initialization required by its acquire readers is complete.
+6. Keep expensive or contended recovery paths out of the ordinary local allocation/free instruction path unless measurement justifies the change.
+
+## Diagnostics
+
+Debug builds can report:
+
+- allocation/free traffic;
+- per-class refills and per-CPU cache usage;
+- predictor under/over classifications;
+- RSEQ aborts;
+- transfer pushes, pops, steals, dry steals, and CAS retries;
+- lock retries;
+- slab and segmented cached VA;
+- trim volume and block lifetime estimates;
+- segmented region state;
+- radix ownership density;
+- page-arena counts and mapping requests.
+
+These counters describe event frequency, not performance in isolation. Instrumentation can materially alter scheduling, contention windows, and allocation throughput. Performance conclusions require optimized A/B runs, while debug reports are best used to identify which architectural path a workload exercises.

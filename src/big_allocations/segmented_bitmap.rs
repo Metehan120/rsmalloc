@@ -536,7 +536,7 @@ impl TrimStats {
             let average = (self.ages / self.samples).clamp(10, 600);
             let blended = (EMA_ALPHA * average as f32 + (1.0 - EMA_ALPHA) * previous as f32)
                 .round()
-                .clamp(10.0, 120.0) as u32;
+                .clamp(15.0, 120.0) as u32;
             SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES.store(blended, Ordering::Relaxed);
         }
         #[cfg(feature = "debug")]

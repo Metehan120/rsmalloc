@@ -9,7 +9,7 @@ use crate::{
     BIG_MAGIC, Header, MAGIC, RSMallocError,
     big_allocations::big_allocation::big_malloc,
     core_prim::{
-        predictor::{BULK_FILL_BATCHING, TRANSFER_BATCHING},
+        predictor::{BULK_FILL_PREDICTOR_INIT_BATCH, PREDICTOR_INIT_BATCH},
         wrappers::UnsafePointer,
     },
     inner::free::find_original_ptr,
@@ -143,20 +143,30 @@ unsafe fn take_one_from_batch(
 }
 
 macro_rules! refill {
-    ($class:expr) => {
-        TRANSFER_BATCHING[$class].batch(ITERATIONS[$class])
-    };
+    ($class:expr, $cpu_id:expr) => {{
+        let batch = SLAB_CACHE
+            .transfer_predictor($cpu_id, $class)
+            .batch(PREDICTOR_INIT_BATCH, ITERATIONS[$class]);
+        #[cfg(feature = "predictor-debug")]
+        eprintln!("Predictor Block Batching: {} (class {})", batch, $class);
+        batch
+    }};
 }
 
 macro_rules! bulk_refill {
-    ($class:expr) => {
-        BULK_FILL_BATCHING[$class].batch(ITERATIONS[$class])
-    };
+    ($class:expr, $cpu_id:expr) => {{
+        let batch = SLAB_CACHE
+            .bulk_fill_predictor($cpu_id, $class)
+            .batch(BULK_FILL_PREDICTOR_INIT_BATCH, ITERATIONS[$class]);
+        #[cfg(feature = "predictor-debug")]
+        eprintln!("Predictor Bulk Fill: {} (class {})", batch, $class);
+        batch
+    }};
 }
 
 #[inline(never)]
 pub unsafe fn refill(class: usize, cpu_id: usize) -> UnsafePointer<Header> {
-    let bulk_batch = bulk_refill!(class);
+    let bulk_batch = bulk_refill!(class, cpu_id);
 
     if let Ok((start, tail, count)) = bulk_fill(class, cpu_id, bulk_batch) {
         let observed = if count == bulk_batch && bulk_batch < ITERATIONS[class] {
@@ -165,7 +175,12 @@ pub unsafe fn refill(class: usize, cpu_id: usize) -> UnsafePointer<Header> {
             count
         };
 
-        BULK_FILL_BATCHING[class].update_refill(observed, ITERATIONS[class]);
+        SLAB_CACHE.bulk_fill_predictor(cpu_id, class).update_refill(
+            BULK_FILL_PREDICTOR_INIT_BATCH,
+            observed,
+            ITERATIONS[class],
+        );
+
         let result = take_one_from_batch(
             class,
             start,
@@ -196,8 +211,8 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
         REFILLS_BY_CLASS[class].fetch_add(1, Ordering::Relaxed);
     }
 
-    let cache_batch = refill!(class);
     let cpu_id = get_rseq().cpu_id as usize;
+    let cache_batch = refill!(class, cpu_id);
 
     let transfer_result = SLAB_CACHE.try_pop(class, cache_batch, cpu_id);
     if let Some(transfer_cache) = transfer_result {
@@ -206,8 +221,12 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
         } else {
             transfer_cache.total
         };
+        SLAB_CACHE.transfer_predictor(cpu_id, class).update_refill(
+            PREDICTOR_INIT_BATCH,
+            observed,
+            ITERATIONS[class],
+        );
 
-        TRANSFER_BATCHING[class].update_refill(observed, ITERATIONS[class]);
         let one = take_one_from_batch(
             class,
             transfer_cache.start,
@@ -223,6 +242,14 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
 
         return one;
     }
+
+    SLAB_CACHE
+        .transfer_predictor(cpu_id, class)
+        .update_refill_noninline(
+            PREDICTOR_INIT_BATCH,
+            (cache_batch >> 1).max(1),
+            ITERATIONS[class],
+        );
 
     refill(class, cpu_id)
 }

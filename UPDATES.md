@@ -111,6 +111,8 @@ v0.3.0-alpha is an architectural cleanup and scalability pass over `0.2.0-alpha`
 
 - Rewrote the successful RSEQ pop sequence to reuse its result register for descriptor setup and the list head, validate the sampled CPU through constant offsets from the RSEQ base, remove the guarded next-node prefetch and final result copy, and keep the list-head store immediately adjacent to `post_commit_ip`.
 - Stopped clearing `rseq_cs` on ordinary success, empty-list, mismatch, and abort exits. Linux only requires explicit clearing before reclaiming the descriptor or referenced code; rsmalloc's descriptors and assembly have process lifetime, and every new operation still installs its own descriptor.
+- Moved `AdaptiveBatching` from thread-local state to the page-aligned per-CPU slab cache so each `(CPU, size class)` predictor follows the cache whose transfer availability it models, rather than fragmenting history across threads. Transfer and bulk-fill predictors remain separate; each packs its batch and low-demand streak into one `AtomicUsize`, uses relaxed loads and a single non-retrying relaxed CAS for advisory feedback, and interprets zero-initialized mapped storage through the configured initial batch without per-instance `Once` initialization.
+- Added bounded feedback for complete transfer-cache misses before falling back to bulk fill. The miss reports half of the attempted transfer batch through an out-of-line predictor update, keeping the failed-path bookkeeping out of `fill` while avoiding the overly aggressive behavior of treating every dry transfer lookup as demand for a single block.
 
 ### Small branch/overhead cleanups
 

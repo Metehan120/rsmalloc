@@ -1,104 +1,68 @@
-use crate::{internals::once::Once, utility::NUM_SIZE_CLASSES};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use crate::utility::NUM_SIZE_CLASSES;
 
 pub const DEFAULT_BATCH: usize = 128;
 pub static mut PREDICTOR_INIT_BATCH: usize = DEFAULT_BATCH;
 pub static mut BULK_FILL_PREDICTOR_INIT_BATCH: usize = 384;
 
 pub struct AdaptiveBatching {
-    batch: usize,
-    low_count: u8,
-    once: Once,
-    is_fill: bool,
-    _class: usize,
+    state: AtomicUsize,
 }
 
 impl AdaptiveBatching {
-    pub const fn new(fill: bool, class: usize) -> Self {
-        Self {
-            batch: 1,
-            low_count: 0,
-            once: Once::new(),
-            is_fill: fill,
-            _class: class,
-        }
-    }
-
-    pub unsafe fn update_global_batch_value(&mut self) {
-        self.once.call_once(|| {
-            let init_batch = if self.is_fill {
-                unsafe { BULK_FILL_PREDICTOR_INIT_BATCH }.max(1)
-            } else {
-                unsafe { PREDICTOR_INIT_BATCH }.max(1)
-            };
-
-            self.batch = init_batch;
-            self.low_count = 0;
-        });
+    #[inline(always)]
+    const fn encode(batch: usize, low_count: u8) -> usize {
+        (batch << 8) | low_count as usize
     }
 
     #[inline(always)]
-    pub unsafe fn update_refill(&mut self, demand: usize, max: usize) {
-        self.update_global_batch_value();
-
-        let demand = demand.max(1);
-        let batch = self.batch;
-
-        if demand > batch {
-            let grow = (batch + (batch >> 1)).max(demand);
-            self.batch = grow.min(max);
-            self.low_count = 0;
-            return;
+    fn decode(state: usize, init_batch: usize) -> (usize, u8) {
+        if state == 0 {
+            (init_batch.max(1), 0)
+        } else {
+            (state >> 8, state as u8)
         }
+    }
 
-        if demand * 4 < batch {
-            self.low_count += 1;
+    #[inline(always)]
+    pub fn update_refill(&self, init_batch: usize, demand: usize, max: usize) {
+        let old = self.state.load(Ordering::Relaxed);
+        let (batch, low_count) = Self::decode(old, init_batch);
+        let demand = demand.max(1);
 
-            if self.low_count == 4 {
-                self.batch = (batch >> 1).max(1);
-                self.low_count = 0;
+        let (next_batch, next_low_count) = if demand > batch {
+            ((batch + (batch >> 1)).max(demand).min(max), 0)
+        } else if demand.saturating_mul(4) < batch {
+            if low_count >= 3 {
+                ((batch >> 1).max(1), 0)
+            } else {
+                (batch, low_count + 1)
             }
         } else {
-            self.low_count = 0;
+            (batch, 0)
+        };
+
+        let new = Self::encode(next_batch, next_low_count);
+        if new != old {
+            let _ =
+                self.state
+                    .compare_exchange_weak(old, new, Ordering::Relaxed, Ordering::Relaxed);
         }
+    }
+
+    #[inline(never)]
+    pub fn update_refill_noninline(&self, init_batch: usize, demand: usize, max: usize) {
+        self.update_refill(init_batch, demand, max);
     }
 
     #[inline(always)]
-    pub unsafe fn batch(&mut self, fallback: usize) -> usize {
-        self.update_global_batch_value();
-        let out = self.batch.max(1).min(fallback);
-
-        #[cfg(feature = "predictor-debug")]
-        if self.is_fill {
-            eprintln!("Predictor Bulk Fill: {} (class {})", out, self._class);
-        } else {
-            eprintln!("Predictor Block Batching: {} (class {})", out, self._class);
-        }
-
-        out
+    pub fn batch(&self, init_batch: usize, fallback: usize) -> usize {
+        let state = self.state.load(Ordering::Relaxed);
+        let (batch, _) = Self::decode(state, init_batch);
+        batch.min(fallback)
     }
 }
-
-#[thread_local]
-pub static mut TRANSFER_BATCHING: [AdaptiveBatching; NUM_SIZE_CLASSES] = {
-    let mut i = 0;
-    let mut result = [const { AdaptiveBatching::new(false, 0) }; NUM_SIZE_CLASSES];
-    while i < NUM_SIZE_CLASSES {
-        result[i] = AdaptiveBatching::new(false, i);
-        i += 1;
-    }
-    result
-};
-
-#[thread_local]
-pub static mut BULK_FILL_BATCHING: [AdaptiveBatching; NUM_SIZE_CLASSES] = {
-    let mut i = 0;
-    let mut result = [const { AdaptiveBatching::new(true, 0) }; NUM_SIZE_CLASSES];
-    while i < NUM_SIZE_CLASSES {
-        result[i] = AdaptiveBatching::new(true, i);
-        i += 1;
-    }
-    result
-};
 
 pub const EMA_ALPHA: f32 = 0.25;
 

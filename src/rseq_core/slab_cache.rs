@@ -18,7 +18,10 @@ use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 use crate::ABORTS;
 use crate::{
     Header, NCPU, RSMallocError,
-    core_prim::wrappers::{SafePointer, UnsafePointer},
+    core_prim::{
+        predictor::AdaptiveBatching,
+        wrappers::{SafePointer, UnsafePointer},
+    },
     internals::{
         binder::NumaBind,
         lock::SpinLock,
@@ -56,6 +59,8 @@ pub struct TransferCache {
 pub struct MainCache {
     cache: [RseqCache; NUM_SIZE_CLASSES],
     mail: [TransferCache; NUM_SIZE_CLASSES],
+    transfer_batching: [AdaptiveBatching; NUM_SIZE_CLASSES],
+    bulk_fill_batching: [AdaptiveBatching; NUM_SIZE_CLASSES],
 }
 
 pub struct Bitmap {
@@ -478,6 +483,16 @@ impl SlabCache {
         let inner = self.get_inner();
         let list = &inner.cache[cpu_id].mail[class];
         list
+    }
+
+    #[inline(always)]
+    pub unsafe fn transfer_predictor(&self, cpu_id: usize, class: usize) -> &AdaptiveBatching {
+        &self.get_inner().cache[cpu_id].transfer_batching[class]
+    }
+
+    #[inline(always)]
+    pub unsafe fn bulk_fill_predictor(&self, cpu_id: usize, class: usize) -> &AdaptiveBatching {
+        &self.get_inner().cache[cpu_id].bulk_fill_batching[class]
     }
 
     #[inline(never)]

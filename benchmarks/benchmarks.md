@@ -4,7 +4,7 @@ This directory contains development benchmark snapshots for rsmalloc and a few
 widely used allocators. The raw overall result table is stored in
 [`benchmark_overall.txt`](benchmark_overall.txt).
 
-See [`real_workloads.md`](real_workloads.md) for microarchitectural observations.
+See [`real_workloads.md`](real_workloads.md) for microarchitectural observations. A reproducible MariaDB/sysbench allocator-memory harness is available under [`mariadb/`](mariadb/README.md).
 
 ## Important Warning
 

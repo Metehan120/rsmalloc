@@ -62,6 +62,12 @@ v0.3.0-alpha is an architectural cleanup and scalability pass over `0.2.0-alpha`
 
 - Added `PAGE_ALLOCATOR` and `PENDING_QUEUE` to the fork-prepare/parent/child lock handling (`lock_all_for_fork`/`reset_locks_on_fork`), alongside the existing large-allocation backend and `BIG_MAP` handling. Previously these two lock sets weren't included in fork handling at all, so a fork happening while either was held could leave a forked child with a permanently stuck lock.
 
+### Background-worker signal isolation
+
+- Fixed a MariaDB shutdown hang caused by the allocator's background worker inheriting an unblocked signal mask and interfering with application signal handling. Signals are now blocked before worker creation, avoiding a startup race, and the caller's original mask is restored by an RAII guard on success, spawn failure, or unwinding.
+- Uses Linux `rt_sigprocmask` through the existing `syscalls` dependency, without adding a direct `libc` dependency. Glibc's internal signals 32 and 33 are excluded from blocking.
+- Keeps the lifetime/trimming worker running throughout normal operation; no `atexit` hook, worker retirement, or disabled background maintenance is needed. Added signal-mask inheritance/restoration tests and verified clean MariaDB shutdown through both `mariadb-admin shutdown` and `SIGTERM` after read/write smoke workloads.
+
 ### Error handling
 
 - Added a centralized `RSMallocError` error model, derived with `thiserror`, for out-of-memory failures, double frees, metadata corruption, invalid or foreign pointers, unavailable RSEQ state, and security violations. Fatal allocator paths now print consistent subsystem, pointer, reason, errno, and OS-error context before aborting instead of assembling unrelated messages at each call site.

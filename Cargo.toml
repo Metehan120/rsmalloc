@@ -7,6 +7,7 @@ repository = "https://github.com/Metehan120/rsmalloc"
 edition = "2024"
 
 [dependencies]
+
 syscalls = { version = "=0.8.1", default-features = false }
 rustix = { version = "=1.1.4", features = [
     "linux_latest",
@@ -91,3 +92,4 @@ overflow-checks = false
 lto = "fat"
 codegen-units = 1
 debug = 2
+panic = "abort"

@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 
 use rustix::system::sysinfo;
+use syscalls::{Sysno, syscall};
 
 use crate::{
     AVERAGE_BLOCK_TIMES, CURRENT_STAMP, DISABLE_TRIM_THREAD,
@@ -11,9 +12,53 @@ use crate::{
 
 pub static RECLAIM_GUARD: AtomicBool = AtomicBool::new(false);
 
+const SIG_BLOCK: usize = 0;
+const SIG_SETMASK: usize = 2;
+// Linux x86-64 uses an 8-byte kernel signal set.
+const GLIBC_INTERNAL_SIGNALS: u64 = (1 << (32 - 1)) | (1 << (33 - 1));
+const WORKER_SIGNAL_MASK: u64 = !GLIBC_INTERNAL_SIGNALS;
+
+struct SignalMaskGuard(u64);
+
+impl SignalMaskGuard {
+    fn block() -> Option<Self> {
+        let signals = WORKER_SIGNAL_MASK;
+        let mut previous = 0u64;
+        unsafe {
+            syscall!(
+                Sysno::rt_sigprocmask,
+                SIG_BLOCK,
+                &signals as *const u64 as usize,
+                &mut previous as *mut u64 as usize,
+                size_of::<u64>()
+            )
+            .ok()?;
+        }
+        Some(Self(previous))
+    }
+}
+
+impl Drop for SignalMaskGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = syscall!(
+                Sysno::rt_sigprocmask,
+                SIG_SETMASK,
+                &self.0 as *const u64 as usize,
+                0usize,
+                size_of::<u64>()
+            );
+        }
+    }
+}
+
 #[cold]
 #[inline(never)]
 pub unsafe fn spawn(entry: unsafe fn() -> !) -> bool {
+    let Some(_mask) = SignalMaskGuard::block() else {
+        return false;
+    };
+
     std::thread::Builder::new()
         .name("rsmalloc-trimmer".into())
         .stack_size(64 * 1024)

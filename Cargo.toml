@@ -8,8 +8,8 @@ repository = "https://github.com/Metehan120/rsmalloc"
 edition = "2024"
 
 [dependencies]
-syscalls = { version = "0.8.1", default-features = false }
-rustix = { version = "1.1.4", features = [
+syscalls = { version = "=0.8.1", default-features = false }
+rustix = { version = "=1.1.4", features = [
     "linux_latest",
     "mm",
     "rand",
@@ -58,9 +58,9 @@ name = "rstress_app"
 harness = false
 
 [dev-dependencies]
-criterion = "0.8.2"
-loom = "0.7.2"
-rand = "0.10.2"
+criterion = "0.8"
+loom = "0.7"
+rand = "0.10"
 rusqlite = { version = "=0.40.1", features = ["bundled"] }
 
 [lib]

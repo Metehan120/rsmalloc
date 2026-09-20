@@ -50,18 +50,14 @@ impl RSMallocError {
     }
 }
 
-struct RseqResultConst;
-
-impl RseqResultConst {
-    pub const FAILED: usize = usize::MAX;
-    pub const SUCCESS: usize = 1;
-}
-
 #[repr(transparent)]
 #[derive(Debug, PartialEq)]
 pub struct RseqResult(usize);
 
 impl RseqResult {
+    pub const FAILED: usize = usize::MAX;
+    pub const SUCCESS: usize = 1;
+
     #[inline(always)]
     pub const unsafe fn new(value: usize) -> Self {
         Self(value)
@@ -79,11 +75,11 @@ impl RseqResult {
 
     #[inline(always)]
     pub const fn is_success(&self) -> bool {
-        self.0 == RseqResultConst::SUCCESS
+        self.0 == Self::SUCCESS
     }
 
     #[inline(always)]
     pub const fn is_failed(&self) -> bool {
-        self.0 == RseqResultConst::FAILED
+        self.0 == Self::FAILED
     }
 }

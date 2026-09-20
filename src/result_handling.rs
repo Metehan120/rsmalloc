@@ -64,21 +64,11 @@ pub struct RseqResult(usize);
 impl RseqResult {
     #[inline(always)]
     pub const unsafe fn new(value: usize) -> Self {
-        // # SAFETY:
-        // RseqResult is repr(transparent) which means it is the same layout as usize
-        // safe to exploit rust's repr structure with transmute here;
-        // guarantees 0 overhead in generated code, just in case transmute
-        // normal RseqResult(res) will also compile same as transmute
-        transmute::<usize, RseqResult>(value)
+        Self(value)
     }
 
     #[inline(always)]
     pub const unsafe fn new_header(value: *mut Header) -> RseqResult {
-        // # SAFETY:
-        // RseqResult is repr(transparent) which means it is the same layout as usize
-        // safe to exploit rust's repr structure with transmute here;
-        // guarantees 0 overhead in generated code, just in case transmute
-        // normal RseqResult(res) will also compile same as transmute
         transmute::<*mut Header, RseqResult>(value)
     }
 

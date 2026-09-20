@@ -457,9 +457,7 @@ impl PageAllocator {
         #[cfg(feature = "guard-pages-thp")]
         let data_size = data_size.checked_add(PAGE_SIZE)?;
         #[cfg(feature = "guard-pages-thp")]
-        let data_size = requested
-            .max(ARENA_SIZE)
-            .checked_align_to(1024 * 1024 * 2)?;
+        let data_size = data_size.checked_align_to(1024 * 1024 * 2)?;
 
         let metadata_size = size_of::<PageArena>().align_to(PAGE_SIZE);
         let map_size = metadata_size

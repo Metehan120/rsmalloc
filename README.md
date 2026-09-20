@@ -4,7 +4,7 @@ An RSEQ-based memory allocator for Rust, focused on low-overhead concurrent allo
 
 **Status: `0.2.0-alpha`. Alpha-quality software — not production-ready.** See [Status & Limitations](#status--limitations) below.
 
-[crates.io](https://crates.io/crates/rsmalloc) · [Architecture](ARCHITECTURE.md) · [Release Notes](UPDATES.md) · [Todo](TODO.md) · [Roadmap](ROADMAP.md) · [Benchmarks](benchmarks/benchmarks.md) · [Contributing](CONTRIBUTING.md)
+[crates.io](https://crates.io/crates/rsmalloc) · [Architecture](ARCHITECTURE.md) · [Release Notes](UPDATES.md) · [Roadmap](ROADMAP.md) · [Todo](TODO.md) · [Benchmarks](benchmarks/benchmarks.md) · [Contributing](CONTRIBUTING.md)
 
 > **Known issue:** Linux kernel `7.0.10` appears to trigger `SIGBUS` in some workloads when using rsmalloc. If you hit unexplained `SIGBUS` crashes, try a different kernel version before assuming allocator corruption.
 

@@ -129,7 +129,7 @@ impl<T> Lock for SpinLock<T> {
 
     #[inline(always)]
     fn spin_until_unlock(&self) {
-        while self.state.load(Ordering::Acquire) {
+        while self.get_lock() {
             #[cfg(feature = "debug-exact")]
             GLOBAL_SPIN_WAITS.fetch_add(1, Ordering::Relaxed);
             spin_loop();

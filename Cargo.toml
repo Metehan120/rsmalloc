@@ -76,10 +76,8 @@ name = "rstress"
 harness = false
 
 [dev-dependencies]
-criterion = "0.8.2"
-loom = "0.7.2"
-rand = "0.10.2"
-rusqlite = { version = "=0.40.1", features = ["bundled"] }
+criterion = "0.8"
+rand = "0.10"
 
 [lib]
 name = "rsmalloc"

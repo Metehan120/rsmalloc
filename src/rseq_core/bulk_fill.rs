@@ -76,7 +76,7 @@ unsafe fn alloc_metadata(
     let inner = SLAB_CACHE.get_inner();
     let node_id = SLAB_CACHE.node_for_cpu(cpu_id, inner);
 
-    let pending = PENDING_QUEUE.pop(node_id, class);
+    let pending = PENDING_QUEUE.pop(node_id, class, cpu_id);
     if !pending.is_null() {
         return Ok(pending);
     }
@@ -138,7 +138,7 @@ pub unsafe fn bulk_fill(
                     .compare_exchange(null_mut(), pending, Ordering::Release, Ordering::Relaxed)
                     .is_err()
             {
-                PENDING_QUEUE.insert(class, pending);
+                PENDING_QUEUE.insert(class, cpu_id, pending);
             }
             return Ok((head, tail, count));
         }
@@ -155,7 +155,7 @@ pub unsafe fn bulk_fill(
             .compare_exchange(null_mut(), metadata, Ordering::Release, Ordering::Relaxed)
             .is_err()
     {
-        PENDING_QUEUE.insert(class, metadata);
+        PENDING_QUEUE.insert(class, cpu_id, metadata);
     }
 
     Ok((head, tail, count))

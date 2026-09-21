@@ -1,3 +1,7 @@
+// Assisted by CODEX Audited by me
+//
+// - Metehan
+
 use std::{
     cell::UnsafeCell,
     mem::size_of,
@@ -15,7 +19,10 @@ pub static GLOBAL_QUEUE_REPORTS: AtomicUsize = AtomicUsize::new(0);
 
 const TAG_SHIFT: u32 = 64;
 const PTR_MASK: u128 = u64::MAX as u128;
+const PENDING_LANES: usize = 4;
+const PENDING_LANE_MASK: usize = PENDING_LANES - 1;
 
+#[repr(align(64))]
 struct Slot {
     head: AtomicU128,
 }
@@ -54,13 +61,33 @@ impl Slot {
                 Ordering::Acquire,
                 Ordering::Acquire,
             ) {
-                Ok(_) => {
-                    (*node).next_page.store(null_mut(), Ordering::Relaxed);
-                    return node;
-                }
+                Ok(_) => return node,
                 Err(observed) => old = observed,
             }
         }
+    }
+}
+
+struct ClassSlots {
+    lanes: [Slot; PENDING_LANES],
+}
+
+impl ClassSlots {
+    #[inline(always)]
+    unsafe fn push(&self, cpu_id: usize, node: *mut MetaData) {
+        self.lanes[cpu_id & PENDING_LANE_MASK].push(node);
+    }
+
+    #[inline(always)]
+    unsafe fn pop(&self, cpu_id: usize) -> *mut MetaData {
+        let preferred = cpu_id & PENDING_LANE_MASK;
+        for offset in 0..PENDING_LANES {
+            let node = self.lanes[(preferred + offset) & PENDING_LANE_MASK].pop();
+            if !node.is_null() {
+                return node;
+            }
+        }
+        null_mut()
     }
 }
 
@@ -76,7 +103,7 @@ fn repack_ptr(ptr: *mut MetaData, old: u128) -> u128 {
 }
 
 pub struct BulkFillQueue {
-    nodes: UnsafeCell<*mut [Slot; NUM_SIZE_CLASSES]>,
+    nodes: UnsafeCell<*mut [ClassSlots; NUM_SIZE_CLASSES]>,
     node_count: AtomicUsize,
     once: Once,
     is_numa: AtomicBool,
@@ -99,7 +126,7 @@ impl BulkFillQueue {
     pub unsafe fn init(&self, node_count: usize, is_numa: bool) {
         self.once.call_once(|| {
             let node_count = node_count.max(1);
-            let bytes = size_of::<[Slot; NUM_SIZE_CLASSES]>() * node_count;
+            let bytes = size_of::<[ClassSlots; NUM_SIZE_CLASSES]>() * node_count;
             record_mmap_call(bytes);
             if let Ok(mem) = mmap_anonymous(
                 null_mut(),
@@ -107,7 +134,7 @@ impl BulkFillQueue {
                 ProtFlags::READ | ProtFlags::WRITE,
                 MapFlags::PRIVATE,
             ) {
-                *self.nodes.get() = mem as *mut [Slot; NUM_SIZE_CLASSES];
+                *self.nodes.get() = mem as *mut [ClassSlots; NUM_SIZE_CLASSES];
                 self.node_count.store(node_count, Ordering::Release);
                 self.is_numa.store(is_numa, Relaxed);
             }
@@ -115,7 +142,7 @@ impl BulkFillQueue {
     }
 
     #[inline(always)]
-    unsafe fn slot(&self, node_id: u16, class: usize) -> Option<&Slot> {
+    unsafe fn class_slots(&self, node_id: u16, class: usize) -> Option<&ClassSlots> {
         let nodes = *self.nodes.get();
         if nodes.is_null() {
             return None;
@@ -135,24 +162,24 @@ impl BulkFillQueue {
 
     #[cold]
     #[inline(never)]
-    pub unsafe fn insert(&self, class: usize, node: *mut MetaData) {
-        let Some(slot) = self.slot((*node).node_id, class) else {
+    pub unsafe fn insert(&self, class: usize, cpu_id: usize, node: *mut MetaData) {
+        let Some(slots) = self.class_slots((*node).node_id, class) else {
             return;
         };
 
         #[cfg(feature = "debug")]
         GLOBAL_QUEUE_REPORTS.fetch_add(1, Ordering::Relaxed);
 
-        slot.push(node);
+        slots.push(cpu_id, node);
     }
 
     #[inline(always)]
-    pub unsafe fn pop(&self, node_id: u16, class: usize) -> *mut MetaData {
-        let Some(slot) = self.slot(node_id, class) else {
+    pub unsafe fn pop(&self, node_id: u16, class: usize, cpu_id: usize) -> *mut MetaData {
+        let Some(slots) = self.class_slots(node_id, class) else {
             return null_mut();
         };
 
-        slot.pop()
+        slots.pop(cpu_id)
     }
 }
 

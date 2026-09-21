@@ -1,3 +1,5 @@
+# Note for the dev branch: RSMalloc will support the upcoming stabilization of Rust's Allocator API. Since `grow` and `shrink` allow callers to change alignment, this will require a small rewrite of `realloc`. Alpha-3 may take a little longer because of this.
+
 # RSMalloc
 
 An RSEQ-based memory allocator for Rust, focused on low-overhead concurrent allocation for real applications rather than benchmark-only patterns. The small-allocation fast path uses Linux Restartable Sequences (RSEQ), so cache ownership follows the CPU, not the thread. Larger allocations go through a separate NUMA-aware buddy-cached path.

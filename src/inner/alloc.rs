@@ -164,7 +164,7 @@ macro_rules! bulk_refill {
 }
 
 #[inline(never)]
-pub unsafe fn refill(class: usize, cpu_id: usize) -> UnsafePointer<Header> {
+pub unsafe fn refill(class: usize, cpu_id: usize, fill_demand: usize) -> UnsafePointer<Header> {
     let bulk_batch = bulk_refill!(class, cpu_id);
 
     if let Ok((start, tail, count)) = bulk_fill(class, cpu_id, bulk_batch) {
@@ -173,6 +173,8 @@ pub unsafe fn refill(class: usize, cpu_id: usize) -> UnsafePointer<Header> {
         } else {
             count
         };
+        let penalty = (fill_demand / 2).max(1);
+        let observed = observed.saturating_sub(penalty).max(1);
 
         SLAB_CACHE.bulk_fill_predictor(cpu_id, class).update_refill(
             BULK_FILL_PREDICTOR_INIT_BATCH,
@@ -250,7 +252,7 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
             ITERATIONS[class],
         );
 
-    refill(class, cpu_id)
+    refill(class, cpu_id, cache_batch)
 }
 
 // In hardened builds, verify that a pointer popped from allocator-managed

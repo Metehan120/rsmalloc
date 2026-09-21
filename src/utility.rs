@@ -1,4 +1,4 @@
-use std::hint::unlikely;
+use std::hint::cold_path;
 
 use crate::{Header, internals::oncelock::OnceLock};
 
@@ -247,3 +247,23 @@ macro_rules! impl_align {
 }
 
 impl_align!(usize, u64, u32, u16);
+
+#[inline(always)]
+pub const fn unlikely(x: bool) -> bool {
+    if x {
+        cold_path();
+        true
+    } else {
+        false
+    }
+}
+
+#[inline(always)]
+pub const fn likely(x: bool) -> bool {
+    if x {
+        true
+    } else {
+        cold_path();
+        false
+    }
+}

@@ -46,7 +46,6 @@
 //!
 //! This crate currently targets nightly Rust, Linux, and `x86_64`.
 
-#![feature(likely_unlikely)]
 #![feature(thread_local)]
 #![cfg_attr(
     all(not(feature = "preload"), feature = "allocator-api"),

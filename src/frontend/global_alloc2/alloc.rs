@@ -2,7 +2,6 @@
 use std::alloc::AllocError;
 use std::{
     alloc::{GlobalAlloc, Layout},
-    hint::likely,
     num::NonZero,
     ptr::NonNull,
 };
@@ -21,6 +20,7 @@ use crate::{
         realloc::rs_realloc,
     },
     rseq_core::slab_cache::SLAB_CACHE,
+    utility::likely,
     v2::{
         allocation_api::{AllocationAPI, AllocationError, AllocationSize},
         config::Config,

@@ -1,4 +1,4 @@
-use std::{alloc::Layout, hint::unlikely, os::raw::c_void};
+use std::{alloc::Layout, os::raw::c_void};
 
 #[cfg(feature = "preload")]
 use crate::inner::preload::libc_int::set_nomem;
@@ -7,7 +7,7 @@ use crate::{
     core_prim::wrappers::UnsafePointer,
     inner::alloc::rs_alloc_no_flag,
     internals::rbtree::BIG_META_MAP,
-    utility::{SIZE_CLASSES, match_size_class},
+    utility::{SIZE_CLASSES, match_size_class, unlikely},
 };
 
 pub unsafe fn zero(pointer: *mut u8, len: usize) {

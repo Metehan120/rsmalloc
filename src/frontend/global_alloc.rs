@@ -1,5 +1,4 @@
 use std::alloc::{GlobalAlloc, Layout};
-use std::hint::likely;
 
 use crate::backend::bootstrap::{BootstrapConfig, main_bootstrap};
 use crate::big_allocations::segmented_bitmap::{
@@ -13,6 +12,7 @@ use crate::inner::calloc::{rs_calloc, zero};
 use crate::inner::free::rs_free;
 use crate::inner::realloc::rs_realloc;
 use crate::rseq_core::slab_cache::SLAB_CACHE;
+use crate::utility::likely;
 use crate::{GLOBAL_ALLOC_ONCE, Header};
 
 // ------------------

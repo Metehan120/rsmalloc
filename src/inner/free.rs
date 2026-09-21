@@ -1,11 +1,12 @@
 #[cfg(feature = "debug-full-critic")]
 use std::sync::atomic::AtomicUsize;
-use std::{hint::unlikely, os::raw::c_void, ptr::read_unaligned, sync::atomic::Ordering};
+use std::{os::raw::c_void, ptr::read_unaligned, sync::atomic::Ordering};
 
 use crate::{
     ALIGN_TAG, BIG_MAGIC, CURRENT_STAMP, FREED_MAGIC, Header, MAGIC, OFFSET_SIZE, RSMallocError,
     TAG_SIZE, big_allocations::big_allocation::big_free, core_prim::wrappers::UnsafePointer,
     internals::radix_tree::RADIX, rseq_core::slab_cache::SLAB_CACHE, traits::GenericCache,
+    utility::unlikely,
 };
 
 #[cfg(feature = "zero-small-on-free")]

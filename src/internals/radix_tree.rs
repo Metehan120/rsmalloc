@@ -5,11 +5,12 @@ use crate::{
     internals::lock::SpinLock,
     record_mmap_call,
     traits::Lock,
+    utility::unlikely,
 };
 
 use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 use std::{
-    hint::{cold_path, unlikely},
+    hint::cold_path,
     ptr::null_mut,
     sync::atomic::{
         AtomicU64, AtomicUsize,

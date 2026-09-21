@@ -3,7 +3,6 @@ use std::sync::atomic::Ordering::Relaxed;
 
 use std::{
     cell::UnsafeCell,
-    hint::likely,
     ptr::{addr_of, null_mut, read_volatile},
     sync::atomic::{
         AtomicU64, AtomicUsize,
@@ -36,7 +35,7 @@ use crate::{
         slab_cache::rseq_asm::RseqCore,
     },
     traits::{GenericCache, RseqCoreTrait},
-    utility::{CACHE_HIGH_BLOCKS, NUM_SIZE_CLASSES},
+    utility::{CACHE_HIGH_BLOCKS, NUM_SIZE_CLASSES, likely},
 };
 
 pub mod reclaim;

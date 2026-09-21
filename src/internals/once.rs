@@ -1,7 +1,9 @@
 use std::{
-    hint::{likely, spin_loop},
+    hint::spin_loop,
     sync::atomic::{AtomicU8, Ordering},
 };
+
+use crate::utility::likely;
 
 pub struct Once {
     state: AtomicU8,

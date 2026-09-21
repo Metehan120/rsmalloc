@@ -1,7 +1,6 @@
-use std::hint::unlikely;
+use std::ptr::null_mut;
 #[cfg(feature = "debug-full-critic")]
 use std::sync::atomic::AtomicUsize;
-use std::{hint::likely, ptr::null_mut};
 
 #[cfg(feature = "preload")]
 use crate::inner::preload::libc_int::set_nomem;
@@ -16,7 +15,7 @@ use crate::{
     internals::{radix_tree::RADIX, rbtree::BIG_META_MAP},
     rseq_core::{bulk_fill::bulk_fill, rseq_offsets::get_rseq, slab_cache::SLAB_CACHE},
     traits::GenericCache,
-    utility::{ITERATIONS, SIZE_CLASSES, match_size_class},
+    utility::{ITERATIONS, SIZE_CLASSES, likely, match_size_class, unlikely},
 };
 use crate::{Flags, backend::background_thread::maybe_start_background_reclaimer};
 #[cfg(feature = "debug")]

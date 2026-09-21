@@ -22,7 +22,8 @@ portable-atomic = "1"
 thiserror = { version = "2", default-features = false }
 
 [features]
-default = []
+default = ["allocator-api"]
+allocator-api = []
 preload = []
 check-owned-on-alloc = []
 

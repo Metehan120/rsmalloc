@@ -1,4 +1,4 @@
-// This test written by CODEX
+// Written by CODEX
 //
 // Good enough, leave it as is
 

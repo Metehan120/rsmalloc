@@ -1,3 +1,5 @@
+#[cfg(feature = "allocator-api")]
+use std::alloc::AllocError;
 use std::{
     alloc::{GlobalAlloc, Layout},
     hint::likely,
@@ -36,7 +38,10 @@ pub trait RSMallocCoreAPI {
 
 /// The v2 Rust global allocator.
 ///
-/// Construct this in a `static` and install it with `#[global_allocator]`.
+/// Construct this in a `static` and install it with `#[global_allocator]`, or
+/// use it with allocator-aware collections through [`std::alloc::Allocator`].
+/// That interface reports the requested size and backs zero-sized layouts with
+/// real allocations, which must also be deallocated through the allocator.
 pub struct RSMalloc {
     pub(crate) config: Config,
 }
@@ -73,18 +78,52 @@ impl RSMalloc {
     unsafe fn alloc_non_inline(&self, layout: Layout) -> *mut u8 {
         self.alloc(layout)
     }
+
+    #[cfg(feature = "allocator-api")]
+    #[inline(always)]
+    fn allocate_layout<const ZEROED: bool>(
+        &self,
+        layout: Layout,
+    ) -> Result<NonNull<[u8]>, AllocError> {
+        unsafe {
+            self.init();
+            let pointer = if likely(layout.align() <= 16) {
+                if ZEROED {
+                    rs_calloc(1, layout.size())
+                } else {
+                    rs_alloc(layout.size(), false)
+                }
+            } else {
+                let pointer = Self::memalign_non_inline(layout.align(), layout.size());
+                if ZEROED && !pointer.is_null() {
+                    zero(pointer.cast_as_ptr(), layout.size());
+                }
+                pointer
+            };
+            let pointer = NonNull::new(pointer.cast_as_ptr::<u8>()).ok_or(AllocError)?;
+            Ok(NonNull::slice_from_raw_parts(pointer, layout.size()))
+        }
+    }
+
+    #[cfg(feature = "allocator-api")]
+    #[inline(always)]
+    unsafe fn resize_layout(
+        &self,
+        pointer: NonNull<u8>,
+        new_layout: Layout,
+    ) -> Result<NonNull<[u8]>, AllocError> {
+        self.init();
+        let pointer = rs_realloc(
+            UnsafePointer::new(pointer.as_ptr()).cast(),
+            new_layout.size().max(1),
+            Some(new_layout.align()),
+        );
+        let pointer = NonNull::new(pointer.cast_as_ptr::<u8>()).ok_or(AllocError)?;
+        Ok(NonNull::slice_from_raw_parts(pointer, new_layout.size()))
+    }
 }
 
 unsafe impl GlobalAlloc for RSMalloc {
-    /// Allocates memory.
-    ///
-    /// This path is designed to behave like the POSIX-style rsmalloc allocation
-    /// path where that does not conflict with Rust's `GlobalAlloc` contract.
-    ///
-    /// # Safety
-    ///
-    /// The caller must uphold Rust's `GlobalAlloc::alloc` safety contract for
-    /// `layout`.
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         unsafe { self.init() };
@@ -96,42 +135,17 @@ unsafe impl GlobalAlloc for RSMalloc {
         }
     }
 
-    /// Deallocates memory.
-    ///
-    /// This path is designed to match the allocator's POSIX-style free behavior
-    /// while still being used through Rust's `GlobalAlloc` interface.
-    ///
-    /// # Safety
-    ///
-    /// `ptr` must have been allocated by this allocator with a compatible `layout`.
     #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, _: Layout) {
         rs_free(UnsafePointer::new(ptr as *mut Header));
     }
 
-    /// Reallocates memory.
-    ///
-    /// This path is designed to follow POSIX-style realloc behavior where that does
-    /// not conflict with Rust's `GlobalAlloc` contract.
-    ///
-    /// # Safety
-    ///
-    /// `ptr` must have been allocated by this allocator with `layout`, and the
-    /// caller must uphold Rust's `GlobalAlloc::realloc` safety contract.
     #[inline]
     unsafe fn realloc(&self, ptr: *mut u8, _: Layout, new_size: usize) -> *mut u8 {
         unsafe { self.init() };
         rs_realloc(UnsafePointer::new(ptr as *mut Header), new_size, None).cast_as_ptr()
     }
 
-    /// Allocates zeroed memory.
-    ///
-    /// This path is designed to match POSIX-style calloc behavior where possible.
-    ///
-    /// # Safety
-    ///
-    /// The caller must uphold Rust's `GlobalAlloc::alloc_zeroed` safety contract
-    /// for `layout`.
     #[inline]
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         unsafe { self.init() };
@@ -148,9 +162,63 @@ unsafe impl GlobalAlloc for RSMalloc {
     }
 }
 
+#[cfg(feature = "allocator-api")]
+unsafe impl std::alloc::Allocator for RSMalloc {
+    #[inline]
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        self.allocate_layout::<false>(layout)
+    }
+
+    #[inline]
+    fn allocate_zeroed(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        self.allocate_layout::<true>(layout)
+    }
+
+    #[inline]
+    unsafe fn deallocate(&self, pointer: NonNull<u8>, _: Layout) {
+        rs_free(UnsafePointer::new(pointer.as_ptr()).cast());
+    }
+
+    #[inline]
+    unsafe fn grow(
+        &self,
+        pointer: NonNull<u8>,
+        _: Layout,
+        new_layout: Layout,
+    ) -> Result<NonNull<[u8]>, AllocError> {
+        self.resize_layout(pointer, new_layout)
+    }
+
+    #[inline]
+    unsafe fn grow_zeroed(
+        &self,
+        pointer: NonNull<u8>,
+        old_layout: Layout,
+        new_layout: Layout,
+    ) -> Result<NonNull<[u8]>, AllocError> {
+        let block = self.resize_layout(pointer, new_layout)?;
+        zero(
+            block.cast::<u8>().as_ptr().add(old_layout.size()),
+            new_layout.size() - old_layout.size(),
+        );
+        Ok(block)
+    }
+
+    #[inline]
+    unsafe fn shrink(
+        &self,
+        pointer: NonNull<u8>,
+        _: Layout,
+        new_layout: Layout,
+    ) -> Result<NonNull<[u8]>, AllocError> {
+        self.resize_layout(pointer, new_layout)
+    }
+}
+
 unsafe impl AllocationAPI for RSMalloc {
     type Size = AllocationSize;
 
+    #[inline]
     fn allocate(&self, size: Self::Size) -> Result<NonNull<u8>, AllocationError> {
         unsafe { self.init() };
         let pointer = unsafe { rs_alloc(size.bytes(), false) };
@@ -158,6 +226,7 @@ unsafe impl AllocationAPI for RSMalloc {
         NonNull::new(pointer.cast_as_ptr()).ok_or(AllocationError::OutOfMemory)
     }
 
+    #[inline]
     fn allocate_zeroed(&self, size: Self::Size) -> Result<NonNull<u8>, AllocationError> {
         unsafe { self.init() };
         let pointer = unsafe { rs_calloc(1, size.bytes()) };
@@ -165,6 +234,7 @@ unsafe impl AllocationAPI for RSMalloc {
         NonNull::new(pointer.cast_as_ptr()).ok_or(AllocationError::OutOfMemory)
     }
 
+    #[inline]
     fn allocate_aligned(
         &self,
         size: Self::Size,
@@ -180,10 +250,12 @@ unsafe impl AllocationAPI for RSMalloc {
         NonNull::new(pointer.cast_as_ptr()).ok_or(AllocationError::OutOfMemory)
     }
 
+    #[inline]
     unsafe fn deallocate(&self, pointer: NonNull<u8>) {
         rs_free(UnsafePointer::new(pointer.as_ptr()).cast());
     }
 
+    #[inline]
     unsafe fn reallocate(
         &self,
         pointer: NonNull<u8>,
@@ -200,6 +272,7 @@ unsafe impl AllocationAPI for RSMalloc {
         NonNull::new(pointer.cast_as_ptr()).ok_or(AllocationError::OutOfMemory)
     }
 
+    #[inline]
     unsafe fn usable_size(&self, pointer: NonNull<u8>) -> Result<usize, AllocationError> {
         self.init();
         let size = usable_size(UnsafePointer::new(pointer.as_ptr()).cast());

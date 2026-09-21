@@ -121,8 +121,7 @@ unsafe impl GlobalAlloc for RSMalloc {
     #[inline]
     unsafe fn realloc(&self, ptr: *mut u8, _: Layout, new_size: usize) -> *mut u8 {
         unsafe { self.init() };
-
-        rs_realloc(UnsafePointer::new(ptr as *mut Header), new_size).cast_as_ptr()
+        rs_realloc(UnsafePointer::new(ptr as *mut Header), new_size, None).cast_as_ptr()
     }
 
     /// Allocates zeroed memory.
@@ -197,8 +196,7 @@ unsafe impl AllocationAPI for RSMalloc {
             return Err(AllocationError::NotSupported);
         }
 
-        let pointer = rs_realloc(UnsafePointer::new(pointer.as_ptr()).cast(), size);
-
+        let pointer = rs_realloc(UnsafePointer::new(pointer.as_ptr()).cast(), size, None);
         NonNull::new(pointer.cast_as_ptr()).ok_or(AllocationError::OutOfMemory)
     }
 

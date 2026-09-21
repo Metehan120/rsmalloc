@@ -580,10 +580,15 @@ unsafe impl GlobalAlloc for RSMalloc {
     /// `ptr` must have been allocated by this allocator with `layout`, and the
     /// caller must uphold Rust's `GlobalAlloc::realloc` safety contract.
     #[inline]
-    unsafe fn realloc(&self, ptr: *mut u8, _: Layout, new_size: usize) -> *mut u8 {
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         self.init();
 
-        rs_realloc(UnsafePointer::new(ptr as *mut Header), new_size).cast_as_ptr()
+        rs_realloc(
+            UnsafePointer::new(ptr as *mut Header),
+            new_size,
+            Some(layout.align()),
+        )
+        .cast_as_ptr()
     }
 
     /// Allocates zeroed memory.
@@ -746,7 +751,12 @@ impl RSMalloc {
         memalign_inner(alignment, size, false).cast_as_ptr()
     }
 
-    /// Reallocates memory through rsmalloc's Rust-facing realloc-style API.
+    /// Reallocates memory with the requested size and alignment.
+    ///
+    /// `Some(alignment)` requests a nonzero power-of-two alignment; `None`
+    /// preserves the alignment observed from the old pointer (16 for null).
+    /// Invalid alignment returns null without freeing the original allocation.
+    /// With valid alignment, a non-null pointer with zero `new_size` is freed.
     ///
     /// # Safety
     ///
@@ -754,9 +764,19 @@ impl RSMalloc {
     /// been freed. On failure, this returns null and leaves the original pointer
     /// allocated, matching realloc-style semantics.
     #[inline]
-    pub unsafe fn rs_realloc(&self, ptr: *mut u8, new_size: usize) -> *mut u8 {
+    pub unsafe fn rs_realloc(
+        &self,
+        ptr: *mut u8,
+        new_size: usize,
+        new_alignment: Option<usize>,
+    ) -> *mut u8 {
         self.init();
-        rs_realloc(UnsafePointer::new(ptr as *mut Header), new_size).cast_as_ptr()
+        rs_realloc(
+            UnsafePointer::new(ptr as *mut Header),
+            new_size,
+            new_alignment,
+        )
+        .cast_as_ptr()
     }
 
     /// Frees memory allocated by rsmalloc's Rust-facing malloc-style API.

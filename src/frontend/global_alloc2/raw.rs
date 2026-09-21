@@ -17,7 +17,17 @@ pub trait RawInterface {
 
     unsafe fn rs_alloc(&self, size: usize) -> *mut u8;
     unsafe fn rs_free(&self, ptr: *mut u8);
-    unsafe fn rs_realloc(&self, old: *mut u8, new_size: usize) -> *mut u8;
+    /// Resizes with an optional new alignment, deriving old allocation details internally.
+    /// `Some(alignment)` requires a nonzero power of two; `None` preserves the
+    /// alignment observed from `old` (or uses 16 when `old` is null).
+    /// Invalid alignment or allocation failure returns null without freeing `old`.
+    /// With valid alignment, a non-null `old` and zero size frees `old` and returns null.
+    unsafe fn rs_realloc(
+        &self,
+        old: *mut u8,
+        new_size: usize,
+        new_alignment: Option<usize>,
+    ) -> *mut u8;
     unsafe fn rs_aligned(&self, alignment: usize, size: usize) -> *mut u8;
     unsafe fn rs_zeroed(&self, size: usize) -> *mut u8;
     unsafe fn rs_trim(&self, trim_size: Self::TrimIn) -> Self::TrimOut;
@@ -71,9 +81,14 @@ impl RawInterface for RSMallocRaw {
         memalign_inner(alignment, size, false).cast_as_ptr()
     }
 
-    unsafe fn rs_realloc(&self, old: *mut u8, new_size: usize) -> *mut u8 {
+    unsafe fn rs_realloc(
+        &self,
+        old: *mut u8,
+        new_size: usize,
+        new_alignment: Option<usize>,
+    ) -> *mut u8 {
         self.global.manual_init();
-        rs_realloc(UnsafePointer::new(old).cast(), new_size).cast_as_ptr()
+        rs_realloc(UnsafePointer::new(old).cast(), new_size, new_alignment).cast_as_ptr()
     }
 
     unsafe fn rs_zeroed(&self, size: usize) -> *mut u8 {

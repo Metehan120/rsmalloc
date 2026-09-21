@@ -1,8 +1,3 @@
-// This file is assisated by AI only for audit and debugging, theres shouldnt be any AI hallucinations but better checking in future
-//
-// Namings were made by me at 3AM (in a sense, not exactly 3AM ofc) do not assume its AI because of clean namings its just me bored ;)
-// - Metehan
-
 use std::{
     os::raw::c_void,
     ptr::{copy_nonoverlapping, null_mut},
@@ -27,8 +22,39 @@ use crate::{
     utility::{Alignment, ITERATIONS, SIZE_CLASSES, match_size_class},
 };
 
-// TODO: Check for safety logic bugs
-unsafe fn small_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointer<Header> {
+#[inline]
+unsafe fn allocate_replacement(size: usize, alignment: usize) -> UnsafePointer<Header> {
+    if alignment <= 16 {
+        rs_alloc(size, false)
+    } else {
+        memalign_inner(alignment, size, false)
+    }
+}
+
+unsafe fn replace_allocation(
+    old_ptr: UnsafePointer<Header>,
+    new_ptr: UnsafePointer<Header>,
+    copy_size: usize,
+) -> UnsafePointer<Header> {
+    // allocation failure must leave the original allocation untouched
+    if new_ptr.is_null() {
+        return UnsafePointer::NULL;
+    }
+
+    copy_nonoverlapping(
+        old_ptr.cast_as_ptr::<u8>(),
+        new_ptr.cast_as_ptr::<u8>(),
+        copy_size,
+    );
+    rs_free(old_ptr);
+    new_ptr
+}
+
+unsafe fn small_realloc(
+    ptr: SafePointer<Header>,
+    new_size: usize,
+    new_alignment: usize,
+) -> UnsafePointer<Header> {
     let payload_ptr = ptr;
     let header_ptr = payload_ptr.get_actual_header();
 
@@ -39,23 +65,12 @@ unsafe fn small_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePoin
         return payload_ptr.apply_unsafe();
     }
 
-    let new_class = match match_size_class(new_size) {
-        Some(class) => class,
-        None => {
-            let new = rs_alloc(new_size, false);
-            if new.is_null() {
-                return UnsafePointer::NULL;
-            }
-
-            copy_nonoverlapping(
-                payload_ptr.cast_as_ptr() as *const u8,
-                new.cast_as_ptr(),
-                old_payload_size.min(new_size),
-            );
-
-            rs_free(payload_ptr.apply_unsafe());
-            return new.cast();
-        }
+    let Some(new_class) = match_size_class(new_size) else {
+        return replace_allocation(
+            payload_ptr.apply_unsafe(),
+            allocate_replacement(new_size, new_alignment),
+            old_payload_size.min(new_size),
+        );
     };
 
     if old_class == new_class {
@@ -99,22 +114,18 @@ unsafe fn small_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePoin
         }
     }
 
-    let new_ptr = rs_alloc(new_size, false);
-    if new_ptr.is_null() {
-        return UnsafePointer::NULL;
-    }
-
-    copy_nonoverlapping(
-        payload_ptr.cast_as_ptr() as *const u8,
-        new_ptr.cast_as_ptr(),
+    replace_allocation(
+        payload_ptr.apply_unsafe(),
+        allocate_replacement(new_size, new_alignment),
         old_payload_size.min(new_size),
-    );
-    rs_free(payload_ptr.apply_unsafe());
-    new_ptr
+    )
 }
 
-// TODO: Check for safety logic bugs
-unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointer<Header> {
+unsafe fn big_realloc(
+    ptr: SafePointer<Header>,
+    new_size: usize,
+    new_alignment: usize,
+) -> UnsafePointer<Header> {
     let old_ptr = ptr.cast_usize();
     let old_mapping = (old_ptr - Header::SIZE) as *mut c_void;
     let old_meta = match BIG_META_MAP.get(old_ptr) {
@@ -142,22 +153,13 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
     };
 
     if match_size_class(new_size).is_some() {
-        let new_alloc = rs_alloc(new_size, false);
-        if new_alloc.is_null() {
-            return UnsafePointer::NULL;
-        }
-
-        copy_nonoverlapping(
-            old_ptr as *const u8,
-            new_alloc.cast_as_ptr(),
+        return replace_allocation(
+            ptr.apply_unsafe(),
+            allocate_replacement(new_size, new_alignment),
             old_meta.size.min(new_size),
         );
-        rs_free(UnsafePointer::from(old_ptr as *mut Header));
-
-        return new_alloc;
     }
 
-    let old_total = old_mapped_size;
     let Some(new_total) = new_size.checked_add(Header::SIZE) else {
         return UnsafePointer::NULL;
     };
@@ -183,7 +185,12 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
         else {
             return UnsafePointer::NULL;
         };
-        if let Ok(new_addr) = mremap(old_mapping, old_total, direct_new, MremapFlags::empty()) {
+        if let Ok(new_addr) = mremap(
+            old_mapping,
+            old_mapped_size,
+            direct_new,
+            MremapFlags::empty(),
+        ) {
             let new_meta = BigAllocMeta {
                 next: std::ptr::null_mut(),
                 size: new_size,
@@ -244,19 +251,11 @@ unsafe fn big_realloc(ptr: SafePointer<Header>, new_size: usize) -> UnsafePointe
         }
     }
 
-    let new_alloc = rs_alloc(new_size, false);
-    if new_alloc.is_null() {
-        return UnsafePointer::NULL;
-    }
-
-    copy_nonoverlapping(
-        old_ptr as *const u8,
-        new_alloc.cast_as_ptr(),
+    replace_allocation(
+        ptr.apply_unsafe(),
+        allocate_replacement(new_size, new_alignment),
         old_meta.size.min(new_size),
-    );
-    rs_free(UnsafePointer::from(old_ptr as *mut Header));
-
-    new_alloc.cast()
+    )
 }
 
 #[inline(always)]
@@ -264,10 +263,37 @@ fn observed_alignment(addr: usize) -> usize {
     1usize << addr.trailing_zeros()
 }
 
+unsafe fn aligned_realloc(
+    ptr: UnsafePointer<Header>,
+    new_size: usize,
+    new_alignment: usize,
+) -> UnsafePointer<Header> {
+    let old_usable = usable_size(ptr.cast());
+    if new_size <= old_usable && observed_alignment(ptr.cast_usize()) >= new_alignment {
+        return ptr;
+    }
+
+    let new_ptr = allocate_replacement(new_size, new_alignment);
+    replace_allocation(ptr, new_ptr, old_usable.min(new_size))
+}
+
 #[inline(always)]
-pub unsafe fn rs_realloc(ptr: UnsafePointer<Header>, new_size: usize) -> UnsafePointer<Header> {
+pub unsafe fn rs_realloc(
+    ptr: UnsafePointer<Header>,
+    new_size: usize,
+    #[cfg(not(feature = "preload"))] new_alignment: Option<usize>,
+) -> UnsafePointer<Header> {
+    #[cfg(not(feature = "preload"))]
+    if new_alignment.is_some_and(|alignment| !alignment.is_power_of_two()) {
+        return UnsafePointer::NULL;
+    }
+
     if ptr.is_null() {
-        return rs_alloc(new_size.max(1), false).cast();
+        #[cfg(feature = "preload")]
+        let new_alignment = 16;
+        #[cfg(not(feature = "preload"))]
+        let new_alignment = new_alignment.unwrap_or(16);
+        return allocate_replacement(new_size.max(1), new_alignment);
     }
 
     if new_size == 0 {
@@ -278,8 +304,7 @@ pub unsafe fn rs_realloc(ptr: UnsafePointer<Header>, new_size: usize) -> UnsafeP
     let ptr_addr = ptr.cast_usize();
 
     if RADIX.is_owned(ptr_addr) {
-        let ptr_copy_for_search = UnsafePointer::new(ptr.cast_as_ptr::<Header>());
-        let searched = find_original_ptr(ptr_copy_for_search).apply_safe();
+        let searched = find_original_ptr(ptr.cast()).apply_safe();
         let searched_header = searched.get_actual_header();
 
         if !cfg!(feature = "disable-magic-security-checks") {
@@ -292,38 +317,22 @@ pub unsafe fn rs_realloc(ptr: UnsafePointer<Header>, new_size: usize) -> UnsafeP
             }
         }
 
-        if searched.cast_usize() != ptr_addr {
-            let ptr_copy_for_usable = UnsafePointer::new(ptr.cast_as_ptr::<Header>());
-            let old_usable = usable_size(ptr_copy_for_usable);
+        let is_offset = searched.cast_usize() != ptr_addr;
+        let old_alignment = observed_alignment(ptr_addr);
+        #[cfg(feature = "preload")]
+        let new_alignment = if is_offset { old_alignment } else { 16 };
+        #[cfg(not(feature = "preload"))]
+        let new_alignment = new_alignment.unwrap_or(old_alignment);
 
-            if new_size <= old_usable {
-                return ptr;
-            }
-
-            let new_ptr = memalign_inner(observed_alignment(ptr_addr), new_size, false);
-            if new_ptr.is_null() {
-                return UnsafePointer::NULL;
-            }
-
-            copy_nonoverlapping(
-                ptr.cast_as_ptr() as *const u8,
-                new_ptr.cast_as_ptr(),
-                old_usable.min(new_size),
-            );
-
-            let ptr_copy_for_free = UnsafePointer::new(ptr.cast_as_ptr::<Header>());
-            rs_free(ptr_copy_for_free);
-            return new_ptr;
+        if is_offset || old_alignment < new_alignment {
+            return aligned_realloc(ptr, new_size, new_alignment);
         }
-
-        let searched_safe = searched;
-        let searched_header = searched_safe.get_actual_header();
 
         if searched_header.magic == BIG_MAGIC {
-            return big_realloc(searched_safe, new_size);
+            return big_realloc(searched, new_size, new_alignment);
         }
 
-        return small_realloc(searched_safe, new_size);
+        return small_realloc(searched, new_size, new_alignment);
     }
 
     #[cfg(feature = "preload")]

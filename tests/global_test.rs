@@ -70,6 +70,118 @@ mod tests {
     }
 
     #[test]
+    fn realloc_reuses_pointer_for_compatible_alignment_changes() {
+        unsafe {
+            let ptr = RAW.rs_aligned(256, 1024);
+            assert!(!ptr.is_null());
+            ptr.write_bytes(0x5a, 1024);
+            let shrunk = RAW.rs_realloc(ptr, 128, Some(32));
+            assert_eq!(shrunk, ptr);
+            let grown = RAW.rs_realloc(shrunk, 768, Some(256));
+            assert_eq!(grown, ptr);
+            assert!(
+                std::slice::from_raw_parts(grown, 128)
+                    .iter()
+                    .all(|&b| b == 0x5a)
+            );
+            RAW.rs_free(grown);
+        }
+    }
+
+    #[test]
+    fn realloc_moves_when_pointer_does_not_meet_new_alignment() {
+        unsafe {
+            for new_size in [32, 8192] {
+                let ptr = RAW.rs_alloc(128);
+                assert!(!ptr.is_null());
+                ptr.write_bytes(0x3c, 128);
+                let alignment = 1usize << ((ptr as usize).trailing_zeros() + 1);
+                let resized = RAW.rs_realloc(ptr, new_size, Some(alignment));
+                assert!(!resized.is_null());
+                assert_ne!(resized, ptr);
+                assert_eq!(resized as usize % alignment, 0);
+                assert!(
+                    std::slice::from_raw_parts(resized, new_size.min(128))
+                        .iter()
+                        .all(|&b| b == 0x3c)
+                );
+                RAW.rs_free(resized);
+            }
+        }
+    }
+
+    #[test]
+    fn realloc_none_preserves_observed_alignment_on_growth() {
+        unsafe {
+            let ptr = RAW.rs_aligned(256, 128);
+            assert!(!ptr.is_null());
+            let alignment = 1usize << (ptr as usize).trailing_zeros();
+            ptr.write_bytes(0x7e, 128);
+            let resized = RAW.rs_realloc(ptr, 8192, None);
+            assert!(!resized.is_null());
+            assert_eq!(resized as usize % alignment, 0);
+            assert!(
+                std::slice::from_raw_parts(resized, 128)
+                    .iter()
+                    .all(|&b| b == 0x7e)
+            );
+            RAW.rs_free(resized);
+        }
+    }
+
+    #[test]
+    fn realloc_invalid_alignment_and_failure_preserve_allocation() {
+        unsafe {
+            let ptr = RAW.rs_aligned(64, 128);
+            assert!(!ptr.is_null());
+            ptr.write_bytes(0x91, 128);
+            for alignment in [0, 3] {
+                assert!(RAW.rs_realloc(ptr, 256, Some(alignment)).is_null());
+            }
+            assert!(RAW.rs_realloc(ptr, usize::MAX, Some(256)).is_null());
+            assert!(
+                std::slice::from_raw_parts(ptr, 128)
+                    .iter()
+                    .all(|&b| b == 0x91)
+            );
+            RAW.rs_free(ptr);
+        }
+    }
+
+    #[test]
+    fn realloc_null_honors_optional_alignment() {
+        unsafe {
+            for alignment in [None, Some(256)] {
+                let ptr = RAW.rs_realloc(std::ptr::null_mut(), 128, alignment);
+                assert!(!ptr.is_null());
+                assert_eq!(ptr as usize % alignment.unwrap_or(16), 0);
+                assert!(RAW.rs_realloc(ptr, 0, alignment).is_null());
+            }
+        }
+    }
+
+    #[test]
+    fn allocation_api_reallocate_keeps_its_alignment_preserving_interface() {
+        use rsmalloc::v2::allocation_api::{AllocationAPI, AllocationSize};
+        unsafe {
+            let ptr = GLOBAL
+                .allocate_aligned(AllocationSize::from_bytes(128), 256)
+                .unwrap();
+            ptr.as_ptr().write_bytes(0x48, 128);
+            let resized = GLOBAL
+                .reallocate(ptr, AllocationSize::from_bytes(8192))
+                .unwrap();
+            assert_eq!(resized.as_ptr() as usize % 256, 0);
+            assert!(
+                std::slice::from_raw_parts(resized.as_ptr(), 128)
+                    .iter()
+                    .all(|&b| b == 0x48)
+            );
+            GLOBAL.deallocate(resized);
+        }
+    }
+
+    #[test]
     fn direct_rsmalloc_helpers_work() {
         unsafe {
             let ptr = RAW.rs_alloc(256);
@@ -78,7 +190,7 @@ mod tests {
                 *ptr.add(i) = i as u8;
             }
 
-            let ptr = RAW.rs_realloc(ptr, 512);
+            let ptr = RAW.rs_realloc(ptr, 512, None);
             assert!(!ptr.is_null());
             for i in 0..256 {
                 assert_eq!(*ptr.add(i), i as u8, "byte mismatch at offset {i}");

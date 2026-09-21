@@ -580,15 +580,10 @@ unsafe impl GlobalAlloc for RSMalloc {
     /// `ptr` must have been allocated by this allocator with `layout`, and the
     /// caller must uphold Rust's `GlobalAlloc::realloc` safety contract.
     #[inline]
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+    unsafe fn realloc(&self, ptr: *mut u8, _: Layout, new_size: usize) -> *mut u8 {
         self.init();
 
-        rs_realloc(
-            UnsafePointer::new(ptr as *mut Header),
-            new_size,
-            Some(layout.align()),
-        )
-        .cast_as_ptr()
+        rs_realloc(UnsafePointer::new(ptr as *mut Header), new_size, None).cast_as_ptr()
     }
 
     /// Allocates zeroed memory.

@@ -5,18 +5,19 @@ use std::{
     cell::UnsafeCell,
     ptr::{addr_of, null_mut, read_volatile},
     sync::atomic::{
-        AtomicU64, AtomicUsize,
+        AtomicPtr, AtomicU64, AtomicUsize,
         Ordering::{self},
     },
 };
 
 use portable_atomic::AtomicU128;
+use rsmalloc_macro::assert_sizes;
 use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 
 #[cfg(feature = "debug")]
 use crate::ABORTS;
 use crate::{
-    Header, NCPU, RSMallocError,
+    Header, MetaData, NCPU, RSMallocError,
     core_prim::{
         predictor::AdaptiveBatching,
         wrappers::{SafePointer, UnsafePointer},
@@ -55,12 +56,14 @@ pub struct TransferCache {
 }
 
 // NOTE: Use 4096-byte alignment to avoid false sharing between cache lines and NUMA node balancing.
+#[assert_sizes(4096)]
 #[repr(C, align(4096))]
 pub struct MainCache {
     cache: [RseqCache; NUM_SIZE_CLASSES],
     mail: [TransferCache; NUM_SIZE_CLASSES],
     transfer_batching: [AdaptiveBatching; NUM_SIZE_CLASSES],
     bulk_fill_batching: [AdaptiveBatching; NUM_SIZE_CLASSES],
+    pending_refill: [AtomicPtr<MetaData>; NUM_SIZE_CLASSES],
 }
 
 pub struct Bitmap {
@@ -493,6 +496,11 @@ impl SlabCache {
     #[inline(always)]
     pub unsafe fn bulk_fill_predictor(&self, cpu_id: usize, class: usize) -> &AdaptiveBatching {
         &self.get_inner().cache[cpu_id].bulk_fill_batching[class]
+    }
+
+    #[inline(always)]
+    pub unsafe fn pending_refill(&self, cpu_id: usize, class: usize) -> &AtomicPtr<MetaData> {
+        &self.get_inner().cache[cpu_id].pending_refill[class]
     }
 
     #[inline(never)]

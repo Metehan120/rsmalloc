@@ -9,7 +9,7 @@ use crate::{
     big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND,
     inner::{fallback::fallback_reinit_on_fork, preload::libc_int::pthread_atfork},
     internals::{lock::SpinLockGuard, rbtree::BIG_MAP},
-    rseq_core::{pending_queue::PENDING_QUEUE, rseq_offsets::__rseq_size},
+    rseq_core::rseq_offsets::__rseq_size,
 };
 use crate::{rseq_core::rseq_offsets::__rseq_offset, traits::Lock};
 
@@ -27,11 +27,9 @@ unsafe extern "C" fn fork_prepare() {
     SEGMENTED_BITMAP_BACKEND.lock_all_for_fork();
     BIG_MAP.lock_for_fork();
     PAGE_ALLOCATOR.lock_all_for_fork();
-    PENDING_QUEUE.lock_all_for_fork();
 }
 
 unsafe extern "C" fn fork_parent() {
-    PENDING_QUEUE.reset_locks_on_fork();
     PAGE_ALLOCATOR.reset_locks_on_fork();
     BIG_MAP.reset_lock_on_fork();
     SEGMENTED_BITMAP_BACKEND.reset_locks_on_fork();
@@ -57,7 +55,6 @@ unsafe extern "C" fn fork_child() {
     SEGMENTED_BITMAP_BACKEND.reset_locks_on_fork();
     BIG_MAP.reset_lock_on_fork();
     PAGE_ALLOCATOR.reset_locks_on_fork();
-    PENDING_QUEUE.reset_locks_on_fork();
     GLOBAL_TRIM_LOCK.reset_at_fork();
 
     {

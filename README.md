@@ -1,4 +1,3 @@
-# Note for the dev branch: RSMalloc will support the upcoming stabilization of Rust's Allocator API. Since `grow` and `shrink` allow callers to change alignment, this will require a small rewrite of `realloc`. Alpha-3 may take a little longer because of this.
 
 # RSMalloc
 
@@ -6,13 +5,15 @@ An RSEQ-based memory allocator for Rust, focused on low-overhead concurrent allo
 
 **Status: `0.3.0-alpha`. Alpha-quality software — not production-ready.** See [Status & Limitations](#status--limitations) below.
 
+**Major milestone:** RSMalloc's default Rust `GlobalAlloc` and C `LD_PRELOAD` configurations now build on stable Rust. The allocator no longer depends on Rust thread-local storage: refill metadata and adaptive batching are maintained per CPU, and overflow refill metadata uses an ABA-tagged lock-free queue. The optional `allocator-api` feature remains nightly-only until Rust stabilizes `std::alloc::Allocator`.
+
 [crates.io](https://crates.io/crates/rsmalloc) · [Architecture](ARCHITECTURE.md) · [Release Notes](UPDATES.md) · [Roadmap](TODO.md) · [Benchmarks](benchmarks/benchmarks.md) · [Contributing](CONTRIBUTING.md)
 
 > **Known issue:** Linux kernel `7.0.10` appears to trigger `SIGBUS` in some workloads when using rsmalloc. If you hit unexplained `SIGBUS` crashes, try a different kernel version before assuming allocator corruption.
 
 ## Quick Start
 
-Requires nightly Rust (`rustc 1.96.0`+) and a libc with RSEQ TLS support (glibc 2.35+ or equivalent) — rsmalloc relies on libc-registered `__rseq_size`/`__rseq_offset` rather than registering RSEQ itself, so an older libc will fail to bootstrap.
+Requires stable Rust and a libc with RSEQ TLS support (glibc 2.35+ or equivalent) — rsmalloc relies on libc-registered `__rseq_size`/`__rseq_offset` rather than registering RSEQ itself, so an older libc will fail to bootstrap. The optional `allocator-api` feature still requires nightly Rust because `std::alloc::Allocator` remains unstable.
 
 ```rust
 use rsmalloc::v2::alloc::RSMalloc;
@@ -45,7 +46,7 @@ None of this has been evaluated at production scale or across a wide range of wo
 ## Status & Limitations
 
 - Alpha-quality software with limited test coverage — expect rough edges, not memory-safety guarantees beyond what's documented.
-- Requires nightly Rust and `rustc 1.96.0`+.
+- The default and preload configurations support stable Rust. The optional `allocator-api` feature requires nightly Rust.
 - Requires a libc with RSEQ TLS support (glibc 2.35+ or equivalent); rsmalloc reads libc's `__rseq_size`/`__rseq_offset` rather than registering RSEQ itself, so older libc versions won't bootstrap.
 - The preload path and the Rust `GlobalAlloc` path are still being separated and stabilized; the public Rust API may still change before a stable release.
 - Big-allocation metadata uses an internal lock-protected red-black tree.

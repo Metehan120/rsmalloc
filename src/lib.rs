@@ -44,16 +44,19 @@
 //! rsmalloc also supports `LD_PRELOAD`-style use for C applications. See the
 //! README for preload build and runtime details.
 //!
-//! This crate currently targets nightly Rust, Linux, and `x86_64`.
+//! This crate targets stable Rust, Linux, and `x86_64`. The optional
+//! `allocator-api` feature requires nightly while `std::alloc::Allocator` remains unstable.
 
-#![feature(thread_local)]
 #![cfg_attr(
     all(not(feature = "preload"), feature = "allocator-api"),
     feature(allocator_api)
 )]
 #![allow(binary_asm_labels, unsafe_op_in_unsafe_fn, static_mut_refs)]
 
-use std::{fmt::Debug, sync::atomic::Ordering};
+use std::{
+    fmt::Debug,
+    sync::atomic::{AtomicPtr, Ordering},
+};
 
 #[cfg(not(target_arch = "x86_64"))]
 compile_error!(
@@ -120,7 +123,7 @@ pub enum Flags {
 
 #[repr(C, align(16))]
 struct MetaData {
-    pub next_page: *mut MetaData,
+    pub next_page: AtomicPtr<MetaData>,
     pub start: usize,
     pub end: usize,
     pub next: usize,

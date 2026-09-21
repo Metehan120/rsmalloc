@@ -5,33 +5,86 @@ use std::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering, Ordering::Relaxed},
 };
 
+use portable_atomic::AtomicU128;
 use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 
-use crate::{
-    MetaData,
-    internals::{lock::SpinLock, once::Once},
-    record_mmap_call,
-    traits::Lock,
-    utility::NUM_SIZE_CLASSES,
-};
+use crate::{MetaData, internals::once::Once, record_mmap_call, utility::NUM_SIZE_CLASSES};
 
 #[cfg(feature = "debug")]
 pub static GLOBAL_QUEUE_REPORTS: AtomicUsize = AtomicUsize::new(0);
 
+const TAG_SHIFT: u32 = 64;
+const PTR_MASK: u128 = u64::MAX as u128;
+
 struct Slot {
-    lock: SpinLock<*mut MetaData>,
+    head: AtomicU128,
 }
 
-pub struct ThreadQueue {
+impl Slot {
+    #[inline(always)]
+    unsafe fn push(&self, node: *mut MetaData) {
+        let mut old = self.head.load(Ordering::Relaxed);
+        loop {
+            (*node).next_page.store(unpack_ptr(old), Ordering::Relaxed);
+            match self.head.compare_exchange_weak(
+                old,
+                repack_ptr(node, old),
+                Ordering::Release,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return,
+                Err(observed) => old = observed,
+            }
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn pop(&self) -> *mut MetaData {
+        let mut old = self.head.load(Ordering::Acquire);
+        loop {
+            let node = unpack_ptr(old);
+            if node.is_null() {
+                return null_mut();
+            }
+
+            let next = (*node).next_page.load(Ordering::Relaxed);
+            match self.head.compare_exchange_weak(
+                old,
+                repack_ptr(next, old),
+                Ordering::Acquire,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    (*node).next_page.store(null_mut(), Ordering::Relaxed);
+                    return node;
+                }
+                Err(observed) => old = observed,
+            }
+        }
+    }
+}
+
+#[inline(always)]
+fn unpack_ptr(word: u128) -> *mut MetaData {
+    (word & PTR_MASK) as usize as *mut MetaData
+}
+
+#[inline(always)]
+fn repack_ptr(ptr: *mut MetaData, old: u128) -> u128 {
+    let tag = ((old >> TAG_SHIFT) as u64).wrapping_add(1);
+    ((ptr as usize as u128) & PTR_MASK) | ((tag as u128) << TAG_SHIFT)
+}
+
+pub struct BulkFillQueue {
     nodes: UnsafeCell<*mut [Slot; NUM_SIZE_CLASSES]>,
     node_count: AtomicUsize,
     once: Once,
     is_numa: AtomicBool,
 }
 
-unsafe impl Sync for ThreadQueue {}
+unsafe impl Sync for BulkFillQueue {}
 
-impl ThreadQueue {
+impl BulkFillQueue {
     pub const fn new() -> Self {
         Self {
             nodes: UnsafeCell::new(null_mut()),
@@ -90,39 +143,7 @@ impl ThreadQueue {
         #[cfg(feature = "debug")]
         GLOBAL_QUEUE_REPORTS.fetch_add(1, Ordering::Relaxed);
 
-        let head = &mut *slot.lock.lock();
-        (*node).next_page = *head;
-        *head = node;
-    }
-
-    #[cfg(feature = "preload")]
-    pub unsafe fn lock_all_for_fork(&self) {
-        let nodes = *self.nodes.get();
-        if nodes.is_null() {
-            return;
-        }
-
-        let node_count = self.node_count.load(Ordering::Acquire);
-        for node in 0..node_count {
-            for class in 0..NUM_SIZE_CLASSES {
-                core::mem::forget((*nodes.add(node))[class].lock.lock());
-            }
-        }
-    }
-
-    #[cfg(feature = "preload")]
-    pub unsafe fn reset_locks_on_fork(&self) {
-        let nodes = *self.nodes.get();
-        if nodes.is_null() {
-            return;
-        }
-
-        let node_count = self.node_count.load(Ordering::Acquire);
-        for node in 0..node_count {
-            for class in 0..NUM_SIZE_CLASSES {
-                (*nodes.add(node))[class].lock.reset_at_fork();
-            }
-        }
+        slot.push(node);
     }
 
     #[inline(always)]
@@ -131,15 +152,8 @@ impl ThreadQueue {
             return null_mut();
         };
 
-        let head = &mut *slot.lock.lock();
-        let node = *head;
-        if node.is_null() {
-            return null_mut();
-        }
-        *head = (*node).next_page;
-        (*node).next_page = null_mut();
-        node
+        slot.pop()
     }
 }
 
-pub static PENDING_QUEUE: ThreadQueue = ThreadQueue::new();
+pub static PENDING_QUEUE: BulkFillQueue = BulkFillQueue::new();

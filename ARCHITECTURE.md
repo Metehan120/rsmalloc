@@ -2,7 +2,7 @@
 
 This document describes the current `0.3.0-alpha` architecture. RSMalloc is experimental: internal layouts and policies may change before a stable release, but the invariants documented here are the ones the current implementation relies on.
 
-RSMalloc currently targets nightly Rust on Linux `x86_64`. It requires libc-provided Restartable Sequences (RSEQ) TLS state.
+RSMalloc currently targets stable Rust on Linux `x86_64`; the optional `allocator-api` feature requires nightly while `std::alloc::Allocator` remains unstable. RSMalloc requires libc-provided Restartable Sequences (RSEQ) TLS state.
 
 ## Design Model
 

@@ -4,6 +4,15 @@
 
 v0.3.0-alpha is an architectural cleanup and scalability pass over `0.2.0-alpha`, targeting weaknesses in alpha-2: fork-safety gaps in the newer page-backend/pending-queue locks, incomplete debug-stats coverage relative to the exit-time text report, and a module layout that mixed public-surface code in with internals. It also introduces a new Rust API, replaces the buddy backend with an experimental segmented-bitmap design, makes the page-backend allocation fast path lock-free, adds opt-in guard-page hardening, and closes out correctness bugs found while chasing benchmark numbers.
 
+### Stable Rust and lock-free refill metadata
+
+- Removed RSMalloc's remaining Rust TLS dependency by moving partially consumed refill `MetaData` from `ThreadBulk` into per-CPU/per-class `MainCache` slots. Refill workers atomically claim a slot before mutating its metadata and return it with release publication; collisions fall back to the NUMA-aware pending queue.
+- Removed the `ThreadBulk` TLS destructor, `__cxa_thread_atexit_impl` registration, thread-exit draining, `#![feature(thread_local)]`, and the obsolete `-Z tls-model=initial-exec` build flag.
+- Replaced the pending metadata queue's per-node/per-class `SpinLock` heads with ABA-tagged `AtomicU128` Treiber stacks. The low word preserves the complete 64-bit pointer and the high word carries a 64-bit generation counter. `MetaData::next_page` is now an `AtomicPtr` so node reuse cannot race with a competing pop's intrusive-link read.
+- Removed pending-queue fork lock/reset handling; the atomic queue head is inherited in a complete pre- or post-CAS state instead of carrying a lock that can remain owned by a vanished thread.
+- Removed the repository's nightly toolchain pin and made the default Cargo feature set stable-compatible. The default Rust `GlobalAlloc` and C `LD_PRELOAD` configurations now build on stable Rust. The optional `allocator-api` feature remains behind nightly because stable Rust 1.98.1 still reports `std::alloc::Allocator` under tracking issue `#32838`.
+- Added a compile-time assertion that `MainCache` remains exactly 4096 bytes, preserving the RSEQ CPU-cache stride after adding per-CPU refill slots, plus a concurrent pending-stack regression test that verifies every metadata node is returned exactly once.
+
 ### Module layout
 
 - Split public-surface code out of the crate root into `frontend/`: `global_alloc.rs` (Rust `GlobalAlloc` impl) and `abi/` (C ABI) now live under `frontend/global_alloc.rs` and `frontend/abi/`, mirroring the existing `backend/` (page arenas) naming. `global_alloc` compiles only without `preload`; `abi` only with it.
@@ -60,7 +69,7 @@ v0.3.0-alpha is an architectural cleanup and scalability pass over `0.2.0-alpha`
 
 ### Fork safety
 
-- Added `PAGE_ALLOCATOR` and `PENDING_QUEUE` to the fork-prepare/parent/child lock handling (`lock_all_for_fork`/`reset_locks_on_fork`), alongside the existing large-allocation backend and `BIG_MAP` handling. Previously these two lock sets weren't included in fork handling at all, so a fork happening while either was held could leave a forked child with a permanently stuck lock.
+- Added `PAGE_ALLOCATOR` to the fork-prepare/parent/child lock handling alongside the large-allocation backend and `BIG_MAP`. The pending metadata queue was initially included as well, then its lock/reset handling was removed when the queue became an ABA-tagged lock-free `AtomicU128` stack.
 
 ### Background-worker signal isolation
 
@@ -119,6 +128,7 @@ v0.3.0-alpha is an architectural cleanup and scalability pass over `0.2.0-alpha`
 - Stopped clearing `rseq_cs` on ordinary success, empty-list, mismatch, and abort exits. Linux only requires explicit clearing before reclaiming the descriptor or referenced code; rsmalloc's descriptors and assembly have process lifetime, and every new operation still installs its own descriptor.
 - Moved `AdaptiveBatching` from thread-local state to the page-aligned per-CPU slab cache so each `(CPU, size class)` predictor follows the cache whose transfer availability it models, rather than fragmenting history across threads. Transfer and bulk-fill predictors remain separate; each packs its batch and low-demand streak into one `AtomicUsize`, uses relaxed loads and a single non-retrying relaxed CAS for advisory feedback, and interprets zero-initialized mapped storage through the configured initial batch without per-instance `Once` initialization.
 - Added bounded feedback for complete transfer-cache misses before falling back to bulk fill. The miss reports half of the attempted transfer batch through an out-of-line predictor update, keeping the failed-path bookkeeping out of `fill` while avoiding the overly aggressive behavior of treating every dry transfer lookup as demand for a single block.
+- Moved partially consumed bulk-fill metadata from thread-local `ThreadBulk` storage into per-CPU/per-class atomic slots in `MainCache`, eliminating the remaining Rust TLS and thread-destructor dependency while retaining the NUMA-aware pending queue as the collision/overflow path.
 
 ### Small branch/overhead cleanups
 

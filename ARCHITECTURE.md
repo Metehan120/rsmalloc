@@ -123,6 +123,7 @@ pub struct MainCache {
     mail: [TransferCache; NUM_SIZE_CLASSES],
     transfer_batching: [AdaptiveBatching; NUM_SIZE_CLASSES],
     bulk_fill_batching: [AdaptiveBatching; NUM_SIZE_CLASSES],
+    pending_refill: [AtomicPtr<MetaData>; NUM_SIZE_CLASSES],
 }
 ```
 
@@ -131,7 +132,7 @@ pub struct MainCache {
 - an intrusive freelist head manipulated by RSEQ;
 - an atomic usage counter used to enforce per-class high-water limits.
 
-The 4096-byte alignment separates CPU state, supports NUMA binding of CPU ranges, and prevents unrelated CPUs from sharing the same cache page.
+The 4096-byte alignment separates CPU state, supports NUMA binding of CPU ranges, and prevents unrelated CPUs from sharing the same cache page. The layout is compile-time asserted to remain exactly 4096 bytes, including the per-class pending-refill pointers.
 
 ### RSEQ commit protocol
 
@@ -241,6 +242,8 @@ A completely satisfied request is fed back as the requested amount plus 25%, whi
 
 A null transfer result is different from a measured demand of zero: it proves temporary supply was absent but says little about what the application would consume. The null path therefore reports half of the attempted batch through an out-of-line update, avoiding aggressive collapse or code growth in `fill`.
 
+Bulk-fill feedback also accounts for the transfer-cache demand that led to the refill. Half of that immediate demand, with a minimum penalty of one, is saturating-subtracted from the initialized count before the result is clamped to one and fed to the bulk predictor. This estimates reusable refill headroom rather than treating blocks consumed by the current miss as evidence that the next speculative bulk batch should be equally large.
+
 Transfer and bulk-fill predictors remain independent because moving already initialized blocks and touching fresh refill memory have different costs and supply behavior.
 
 ## Bulk Initialization and Pending Metadata
@@ -255,13 +258,24 @@ When transfer reuse fails, `bulk_fill` obtains blocks from a refill span:
 
 The lookup order is:
 
-1. the current thread's pending span for the class;
-2. the node/class pending queue;
+1. the current CPU's pending span for the class;
+2. the NUMA-node/class pending overflow queue;
 3. a new span from `PAGE_ALLOCATOR`.
 
-One initialized block is returned to the allocation, and the rest are pushed to the current CPU's local cache. If a span still contains uninitialized blocks, it remains in thread-local pending state. A thread-exit destructor drains pending spans into the NUMA-local global pending queue so work is not stranded when threads disappear.
+Each `(CPU, size class)` has an `AtomicPtr<MetaData>` inside `MainCache`. A refill claims exclusive ownership with an acquire `swap(null)`. If the span still has uninitialized blocks, it is returned with a release CAS. A collision means another refill published a span while the slot was claimed; the returning span then overflows to the global pending queue instead of replacing it. This keeps the ordinary pending-refill path to pointer-width atomics and removes allocator-owned TLS and thread-exit draining.
 
-The pending queue is sharded by `(NUMA node, size class)` and protected by per-slot spin locks. It is a refill structure, not part of the ordinary allocation/free fast path.
+One initialized block is returned to the allocation, and the rest are pushed to the current CPU's local cache.
+
+The overflow queue is sharded by `(NUMA node, size class)` and then into exactly four cache-line-separated lanes. Push selects `cpu_id & 3`; pop starts with that preferred lane and probes the other three if necessary. The fixed lane count bounds probing and metadata size while spreading concurrent refill traffic without CPU-count-dependent allocation or lane-hint bitmaps.
+
+Each lane is an intrusive Treiber stack with an `AtomicU128` head:
+
+```text
+high 64 bits: generation
+low  64 bits: complete MetaData pointer
+```
+
+The generation prevents ABA while preserving all pointer bits, including LA57-compatible addresses. `MetaData::next_page` is atomic because nodes can be removed and reused concurrently. Release push publishes the initialized link; acquire pop claims it. The queue is a refill fallback, not part of the ordinary allocation/free fast path.
 
 ## Page Allocator
 
@@ -415,6 +429,10 @@ Small and segmented-bitmap cached-VA thresholds avoid scans when little memory i
 
 Cached virtual address space is not equivalent to resident memory. Page arenas and segmented regions may remain reserved while their pages are untouched or reclaimed.
 
+## Future Design Considerations
+
+A future span-based slab design may allow safe trimming of size classes below 4 KiB. Other internal designs may continue to evolve when they provide measurable benefits without making the fast path significantly heavier.
+
 ## Concurrency Map
 
 | State | Correctness mechanism |
@@ -424,11 +442,12 @@ Cached virtual address space is not equivalent to resident memory. Page arenas a
 | Transfer heads | 128-bit pointer + 64-bit generation CAS. |
 | Transfer availability and steal markers | Relaxed advisory bitmaps; never the ownership authority. |
 | Predictor state | Packed relaxed atomic; dropped feedback is permitted. |
+| Per-CPU pending refill span | Pointer-width acquire claim and release CAS return; collision overflows globally. |
+| Pending overflow spans | Four cache-line-separated lanes per node/class; 128-bit pointer + generation CAS. |
 | Page-arena bump cursor | Atomic CAS reservation. |
 | Page-arena list/growth | Per-NUMA-node spin lock. |
 | Segmented slots | Atomic occupancy/dirty/history bitmap. |
 | Segmented region growth | Per-NUMA-node spin lock. |
-| Pending refill spans | Per-node/per-class spin lock plus thread-local first choice. |
 | Ownership radix leaves | Atomic bitmaps; lock only for allocating new tables. |
 | Exact large metadata | Locked red-black tree. |
 | Trimming | Global trim exclusion plus subsystem/slot claims. |
@@ -445,6 +464,7 @@ Strengths include:
 - cheap local freelist publication through RSEQ;
 - NUMA-local reuse before remote search;
 - adaptive spatial hints and per-cache batch prediction;
+- per-CPU refill-span reuse without allocator-owned TLS or thread-exit cleanup;
 - bounded metadata through lazy radix allocation and bitmap large-object state;
 - low mapping frequency through page arenas and reusable large regions.
 
@@ -452,6 +472,7 @@ Costs include:
 
 - a locked usage update on each successful local slab operation;
 - 128-bit atomic transfer heads under cross-CPU overflow traffic;
+- 128-bit atomic pending-queue heads when per-CPU refill publication collides or local state is empty;
 - dependent linked-list loads during pop and batch extraction;
 - retained virtual arenas/regions even when pages have been reclaimed;
 - architecture and platform dependence on Linux RSEQ and x86-64 assembly.
@@ -474,7 +495,7 @@ When changing the allocator, preserve these boundaries:
 1. Never place a non-idempotent shared store before an RSEQ commit and assume abort will undo it.
 2. Never treat a transfer hint or predictor value as proof that a block exists.
 3. Never dereference recovered aligned-allocation metadata before ownership validation.
-4. Never weaken transfer-head ABA protection by packing tags into assumed-unused pointer bits.
+4. Never weaken transfer or pending-queue ABA protection by packing tags into assumed-unused pointer bits.
 5. Never publish page, region, radix, or metadata state before initialization required by its acquire readers is complete.
 6. Keep expensive or contended recovery paths out of the ordinary local allocation/free instruction path unless measurement justifies the change.
 

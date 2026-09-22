@@ -4,12 +4,12 @@ rsmalloc is alpha-stage software. As a memory allocator, it sits on every `mallo
 
 ## Supported versions
 
-Only the latest `0.2.0-alpha` release on the `main`/`development` branches is supported. There is no LTS or backport policy at this stage; fixes land as new alpha releases.
+Only the latest `0.3.0-alpha` release on the `main`/`development` branches is supported. There is no LTS or backport policy at this stage; fixes land as new alpha releases.
 
 | Version | Supported |
 |---|---|
-| `0.2.0-alpha` (latest) | Yes |
-| `0.1.0-alpha` and earlier | No |
+| `0.3.0-alpha` (latest) | Yes |
+| `0.2.0-alpha` and earlier | No |
 
 ## Reporting a vulnerability
 

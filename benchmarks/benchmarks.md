@@ -20,7 +20,7 @@ The current release-candidate snapshot includes:
 - mimalloc `3.5`
 - jemalloc `5.3.1`
 
-The raw file contains 22 alpha-3 results. Aggregate charts use the **21 tests shared by all five allocators**. `cfrac` is excluded because its glibc row is missing.
+The raw file contains 22 alpha-3 results, and aggregate charts use all **22 tests shared by all five allocators**.
 
 RSMalloc has two `rptestN` measurements. Aggregates use the first result (`0.597 s`), collected while running the complete suite. The independent result (`0.631 s`) remains in the raw file to show observed run-order variance.
 
@@ -61,7 +61,7 @@ The tables should therefore be read as a workload profile, not as a universal al
 
 ## Summary
 
-The following values were calculated from the 21-test common set in [`benchmark_overall.txt`](benchmark_overall.txt). Exact ties at the harness's reported precision are excluded from clean winner counts.
+The following values were calculated from the 22-test common set in [`benchmark_overall.txt`](benchmark_overall.txt). Exact ties at the harness's reported precision are excluded from clean winner counts.
 
 ### Per-test winner counts
 
@@ -75,22 +75,22 @@ Seven elapsed-time tests tie:
 - `redis`: RSMalloc, mimalloc, and tcmalloc
 - `z3`: all five allocators
 
-The clean elapsed-time wins therefore total 14 rather than 21.
+The clean elapsed-time wins therefore total 15 rather than 22.
 
 ```mermaid
 xychart-beta
-    title "Fastest-time clean wins across 21 common tests"
+    title "Fastest-time clean wins across 22 common tests"
     x-axis [rsmalloc, glibc, tcmalloc, mimalloc, jemalloc]
-    y-axis "wins" 0 --> 21
-    bar [1, 1, 4, 7, 1]
+    y-axis "wins" 0 --> 22
+    bar [1, 1, 4, 8, 1]
 ```
 
 ```mermaid
 xychart-beta
-    title "Lowest-RSS wins across 21 common tests"
+    title "Lowest-RSS wins across 22 common tests"
     x-axis [rsmalloc, glibc, tcmalloc, mimalloc, jemalloc]
-    y-axis "wins" 0 --> 21
-    bar [1, 14, 5, 1, 0]
+    y-axis "wins" 0 --> 22
+    bar [1, 15, 5, 1, 0]
 ```
 
 ### Overall relative score
@@ -102,7 +102,7 @@ xychart-beta
     title "Elapsed-time relative score"
     x-axis [rsmalloc, glibc, tcmalloc, mimalloc, jemalloc]
     y-axis "score x100" 0 --> 180
-    bar [124, 157, 144, 104, 115]
+    bar [123, 154, 142, 104, 114]
 ```
 
 ```mermaid
@@ -110,7 +110,7 @@ xychart-beta
     title "RSS relative score"
     x-axis [rsmalloc, glibc, tcmalloc, mimalloc, jemalloc]
     y-axis "score x100" 0 --> 240
-    bar [151, 116, 157, 187, 225]
+    bar [153, 115, 163, 185, 229]
 ```
 
 ### Stress cases
@@ -149,14 +149,14 @@ xychart-beta
 
 ### Page-reclaim and system-time totals
 
-These totals cover the same 21-test common set and are not included in the relative scores.
+These totals cover the same 22-test common set and are not included in the relative scores.
 
 | Allocator | Minor page-reclaims | System CPU time |
 | --- | ---: | ---: |
-| RSMalloc | 118,376 | 4.78 s |
-| glibc | 909,303 | 54.20 s |
-| tcmalloc | 457,200 | 42.30 s |
-| mimalloc | 115,004 | 3.77 s |
-| jemalloc | 1,296,325 | 6.70 s |
+| RSMalloc | 118,625 | 4.78 s |
+| glibc | 909,741 | 54.20 s |
+| tcmalloc | 459,050 | 42.30 s |
+| mimalloc | 115,224 | 3.77 s |
+| jemalloc | 1,296,726 | 6.70 s |
 
 Instrumentation, scheduler variation, and outlier stress tests can strongly affect these totals. Use the raw per-test rows when investigating a specific result.

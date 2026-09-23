@@ -449,7 +449,7 @@ A future span-based slab design may allow safe trimming of size classes below 4 
 | Segmented slots | Atomic occupancy/dirty/history bitmap. |
 | Segmented region growth | Per-NUMA-node spin lock. |
 | Ownership radix leaves | Atomic bitmaps; lock only for allocating new tables. |
-| Exact large metadata | Locked red-black tree. |
+| Exact large metadata | Sharded hash table with one lock per shard. |
 | Trimming | Global trim exclusion plus subsystem/slot claims. |
 
 Fork handlers in preload builds acquire or reset allocator locks whose ownership cannot safely survive `fork` with vanished threads.

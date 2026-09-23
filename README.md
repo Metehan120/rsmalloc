@@ -49,7 +49,7 @@ None of this has been evaluated at production scale or across a wide range of wo
 - The default and preload configurations support stable Rust. The optional `allocator-api` feature requires nightly Rust.
 - Requires a libc with RSEQ TLS support (glibc 2.35+ or equivalent); rsmalloc reads libc's `__rseq_size`/`__rseq_offset` rather than registering RSEQ itself, so older libc versions won't bootstrap.
 - The preload path and the Rust `GlobalAlloc` path are still being separated and stabilized; the public Rust API may still change before a stable release.
-- Big-allocation metadata uses an internal lock-protected red-black tree.
+- Big-allocation metadata uses an internal sharded, lock-protected hash map.
 - Not yet audited across every libc/loader/fork combination.
 - Benchmarks are a development signal, not an authoritative performance claim — test with your own workload.
 

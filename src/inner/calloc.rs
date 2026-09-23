@@ -6,7 +6,7 @@ use crate::{
     Flags, Header, RSMallocError,
     core_prim::wrappers::UnsafePointer,
     inner::alloc::rs_alloc_no_flag,
-    internals::rbtree::BIG_META_MAP,
+    internals::big_meta_map::BIG_META_MAP,
     utility::{SIZE_CLASSES, match_size_class, unlikely},
 };
 

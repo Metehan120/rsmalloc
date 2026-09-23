@@ -12,9 +12,9 @@ use crate::{
     big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND,
     core_prim::wrappers::UnsafePointer,
     internals::{
+        big_meta_map::BIG_MAP,
         binder::NumaBind,
         radix_tree::{CHUNK_SIZE, RADIX},
-        rbtree::BIG_MAP,
     },
     record_mmap_call,
     rseq_core::{rseq_offsets::get_rseq, slab_cache::SLAB_CACHE},
@@ -132,7 +132,6 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
     BIG_MAP.insert(
         payload_ptr as usize,
         BigAllocMeta {
-            next: null_mut(),
             size,
             order: mapped_total.next_power_of_two().trailing_zeros() as usize,
             segmented_bitmap_region,

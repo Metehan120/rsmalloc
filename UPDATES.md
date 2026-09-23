@@ -14,6 +14,10 @@ v0.3.0-alpha is an architectural cleanup and scalability pass over `0.2.0-alpha`
 - Removed the repository's nightly toolchain pin and made the default Cargo feature set stable-compatible. The default Rust `GlobalAlloc` and C `LD_PRELOAD` configurations now build on stable Rust. The optional `allocator-api` feature remains behind nightly because stable Rust 1.98.1 still reports `std::alloc::Allocator` under tracking issue `#32838`.
 - Added a compile-time assertion that `MainCache` remains exactly 4096 bytes, preserving the RSEQ CPU-cache stride after adding per-CPU refill slots, plus a concurrent pending-stack regression test that verifies every metadata node is returned exactly once.
 
+### Sharded large-allocation metadata
+
+- Replaced the single-lock red-black tree used for exact large-allocation metadata with a 64-shard hash table. Each shard has independent bucket chains, locking, and reusable node storage, so unrelated large allocations no longer serialize on one global lock.
+
 ### Module layout
 
 - Split public-surface code out of the crate root into `frontend/`: `global_alloc.rs` (Rust `GlobalAlloc` impl) and `abi/` (C ABI) now live under `frontend/global_alloc.rs` and `frontend/abi/`, mirroring the existing `backend/` (page arenas) naming. `global_alloc` compiles only without `preload`; `abi` only with it.
@@ -36,7 +40,7 @@ v0.3.0-alpha is an architectural cleanup and scalability pass over `0.2.0-alpha`
 
 ### Lock-free page-backend fast path
 
-- Promoted `PageAllocator` into the allocator's central memory-reservation backend. Slab refills, segmented-bitmap region growth, radix ownership tables, and red-black-tree metadata now request arena-backed memory through it before falling back to their own direct mappings.
+- Promoted `PageAllocator` into the allocator's central memory-reservation backend. Slab refills, segmented-bitmap region growth, radix ownership tables, and large-allocation metadata now request arena-backed memory through it before falling back to their own direct mappings.
 - Reworked each NUMA node's current page arena around an atomic arena pointer and an atomic bump offset. Ordinary page-backed allocations now reserve space with a CAS loop without taking the node lock; the lock is restricted to exhausted-arena removal, searches through older arenas, and mapping/publishing a new arena.
 - Moved NUMA selection and the bounded refill retry policy into `PageAllocator::alloc`, giving those consumers one shared reservation policy. Requests now use checked page alignment and fall back to direct mappings when they are too large for the configured arena or the arena path cannot satisfy them.
 

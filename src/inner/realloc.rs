@@ -18,7 +18,7 @@ use crate::{
         alloc::{rs_alloc, usable_size},
         free::{find_original_ptr, rs_free},
     },
-    internals::{radix_tree::RADIX, rbtree::BIG_META_MAP},
+    internals::{big_meta_map::BIG_META_MAP, radix_tree::RADIX},
     utility::{Alignment, ITERATIONS, SIZE_CLASSES, match_size_class},
 };
 
@@ -169,7 +169,6 @@ unsafe fn big_realloc(
 
     if is_in_segmented_bitmap && old_mapped_size >= aligned_new {
         let new_meta = BigAllocMeta {
-            next: std::ptr::null_mut(),
             size: new_size,
             order: old_meta.order,
             segmented_bitmap_region: old_meta.segmented_bitmap_region,
@@ -192,7 +191,6 @@ unsafe fn big_realloc(
             MremapFlags::empty(),
         ) {
             let new_meta = BigAllocMeta {
-                next: std::ptr::null_mut(),
                 size: new_size,
                 order: direct_new.next_power_of_two().trailing_zeros() as usize,
                 segmented_bitmap_region: 0,
@@ -224,7 +222,6 @@ unsafe fn big_realloc(
                 let _ = BIG_META_MAP.replace(
                     old_ptr,
                     BigAllocMeta {
-                        next: std::ptr::null_mut(),
                         size: old_meta.size,
                         order: current_order,
                         segmented_bitmap_region: old_meta.segmented_bitmap_region,
@@ -235,7 +232,6 @@ unsafe fn big_realloc(
                 let new_mapped_size = 1usize << new_order;
                 if new_mapped_size >= aligned_new {
                     let new_meta = BigAllocMeta {
-                        next: std::ptr::null_mut(),
                         size: new_size,
                         order: current_order,
                         segmented_bitmap_region: old_meta.segmented_bitmap_region,

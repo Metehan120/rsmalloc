@@ -133,7 +133,6 @@ struct MetaData {
 #[repr(C, align(16))]
 #[derive(Copy, Clone, Default)]
 struct BigAllocMeta {
-    pub next: *mut BigAllocMeta,
     pub size: usize,
     pub order: usize,
     pub segmented_bitmap_region: usize,

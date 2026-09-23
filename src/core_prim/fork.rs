@@ -8,7 +8,7 @@ use crate::{
     backend::page_allocator::PAGE_ALLOCATOR,
     big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND,
     inner::{fallback::fallback_reinit_on_fork, preload::libc_int::pthread_atfork},
-    internals::{lock::SpinLockGuard, rbtree::BIG_MAP},
+    internals::{big_meta_map::BIG_MAP, lock::SpinLockGuard},
     rseq_core::rseq_offsets::__rseq_size,
 };
 use crate::{rseq_core::rseq_offsets::__rseq_offset, traits::Lock};

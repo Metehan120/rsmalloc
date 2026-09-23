@@ -12,7 +12,7 @@ use crate::{
         wrappers::UnsafePointer,
     },
     inner::free::find_original_ptr,
-    internals::{radix_tree::RADIX, rbtree::BIG_META_MAP},
+    internals::{big_meta_map::BIG_META_MAP, radix_tree::RADIX},
     rseq_core::{bulk_fill::bulk_fill, rseq_offsets::get_rseq, slab_cache::SLAB_CACHE},
     traits::GenericCache,
     utility::{ITERATIONS, SIZE_CLASSES, likely, match_size_class, unlikely},

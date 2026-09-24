@@ -212,7 +212,7 @@ This makes the transfer system adaptive in two dimensions: hints predict **where
 
 ### Trimming synchronization
 
-`trim_lock` protects the detach/classify/republish interval used by slab trimming. Allocation-side pops that encounter an active trim pass wait for republished state rather than interpreting a temporarily detached list as permanent exhaustion.
+`trim_lock` protects the detach/classify/republish interval used by slab trimming. Ordinary allocation-side probes do not block on an active trim pass; they treat that slot as temporarily unavailable and continue searching. The forced fallback pass waits for republished state so a temporarily detached list cannot hide reusable memory indefinitely.
 
 ## Per-CPU Refill Prediction
 

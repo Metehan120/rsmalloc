@@ -23,7 +23,7 @@ impl SlabCache {
         let inner = &*self.inner.get();
 
         if !self.is_empty(inner, class, cpu_id) {
-            if let Some(popped) = self.transfer_pop_batch(class, cpu_id, batch_size) {
+            if let Some(popped) = self.transfer_pop_batch(class, cpu_id, batch_size, false) {
                 return Some(popped);
             }
         }
@@ -237,6 +237,7 @@ impl SlabCache {
         class: usize,
         cpu_id: usize,
         batch_size: usize,
+        force: bool,
     ) -> Option<TransferReturn> {
         #[cfg(feature = "transfer-debug-exact")]
         crate::TOTAL_TRANSFER_POP_CALLS.fetch_add(1, Ordering::Relaxed);
@@ -252,6 +253,10 @@ impl SlabCache {
             let mut pack = Tagging.untag_ptr(old);
 
             if list.trim_lock.get_lock() {
+                if !force {
+                    return None;
+                }
+
                 loop {
                     old = list_ptr.load(Ordering::Acquire);
                     pack = Tagging.untag_ptr(old);

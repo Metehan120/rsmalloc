@@ -286,7 +286,7 @@ impl SlabCache {
                         continue;
                     }
 
-                    let result = self.transfer_pop_batch(class, victim, batch_size);
+                    let result = self.transfer_pop_batch(class, victim, batch_size, force_steal);
                     self.clear_being_stolen(inner, class, victim);
 
                     if let Some(block) = result {

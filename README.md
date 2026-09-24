@@ -9,6 +9,7 @@ An RSEQ-based memory allocator for Rust, focused on low-overhead concurrent allo
 > **Known issue:** Linux kernel `7.0.10` appears to trigger `SIGBUS` in some workloads when using rsmalloc. If you hit unexplained `SIGBUS` crashes, try a different kernel version before assuming allocator corruption.
 
 > **Alpha-3 announcement:** RSMalloc `0.3.0-alpha` will make the default Rust `GlobalAlloc` and C `LD_PRELOAD` configurations usable with stable Rust. The allocator's remaining nightly-only TLS dependency has been removed in the development branch. The optional `allocator-api` feature will continue to require nightly until Rust stabilizes `std::alloc::Allocator`.
+
 > **Second Alpha-3 announcement**: The Allocator API has entered the final stage of stabilization and is currently targeted for Rust 1.100. If Rust 1.100 is released before or alongside Alpha-3, I am considering enabling Allocator API support by default.
 
 ## Alpha 3.0: Rust API transition

@@ -202,4 +202,30 @@ pub unsafe trait AllocationAPI {
         pointer: NonNull<u8>,
         new_size: Self::Size,
     ) -> Result<NonNull<u8>, AllocationError>;
+
+    /// Resizes an allocation with a requested alignment for the result.
+    ///
+    /// `new_alignment` must be a nonzero power of two supported by the
+    /// allocator. The returned pointer satisfies at least this alignment; it
+    /// may retain a stronger alignment when the block can be reused. Unlike
+    /// [`AllocationAPI::reallocate`], this operation may move a block solely
+    /// to satisfy a stronger alignment.
+    ///
+    /// On success, the old pointer is invalidated even if its address is
+    /// unchanged, and the existing contents are preserved through the smaller
+    /// of the old and new requested sizes. On error, the original allocation
+    /// remains live and unmodified. Zero-sized `new_size` follows the same
+    /// policy as [`AllocationAPI::reallocate`]; rsmalloc returns
+    /// [`AllocationError::NotSupported`] without freeing the block.
+    ///
+    /// # Safety
+    ///
+    /// `pointer` must identify a currently live allocation returned by an
+    /// equivalent instance of this allocator.
+    unsafe fn alligned_reallocate(
+        &self,
+        pointer: NonNull<u8>,
+        new_size: Self::Size,
+        new_alignment: usize,
+    ) -> Result<NonNull<u8>, AllocationError>;
 }

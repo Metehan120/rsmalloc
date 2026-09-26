@@ -122,13 +122,18 @@ fn main() -> Result<(), AllocationError> {
     let size = AllocationSize::array_bytes::<u64>(128)?;
     let pointer = ALLOCATOR.allocate_aligned(size, align_of::<u64>())?;
 
-    // The allocation remains valid until it is deallocated or successfully reallocated.
+    // Request more space and a stronger alignment without retaining a Layout.
+    // A successful reallocation invalidates the old pointer, even if unchanged.
+    let pointer = unsafe {
+        ALLOCATOR.alligned_reallocate(pointer, AllocationSize::from_bytes(2048), 64)?
+    };
+    assert_eq!((pointer.as_ptr() as usize) % 64, 0);
     unsafe { ALLOCATOR.deallocate(pointer) };
     Ok(())
 }
 ```
 
-`RSMalloc::raw()` exposes the lower-level malloc-style pointer interface through `v2::alloc::RawInterface`. Its operations are unsafe and are intended for callers that explicitly need raw-pointer semantics. Manual trimming and the safe `rs_usable_size` helper are available through `v2::alloc::RSMallocCoreAPI`.
+Use `AllocationAPI::reallocate` to preserve an allocation's existing alignment, or `AllocationAPI::alligned_reallocate` to request a new alignment. Both leave the original allocation live on error. The current method name is spelled `alligned_reallocate` in the API. `RSMalloc::raw()` exposes the lower-level malloc-style pointer interface through `v2::alloc::RawInterface`. Its operations are unsafe and are intended for callers that explicitly need raw-pointer semantics. Manual trimming and the safe `rs_usable_size` helper are available through `v2::alloc::RSMallocCoreAPI`.
 
 ### Runtime environment variables (preload builds)
 

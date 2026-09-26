@@ -281,6 +281,27 @@ unsafe impl AllocationAPI for RSMalloc {
         }
         Err(AllocationError::NotOwned)
     }
+
+    unsafe fn alligned_reallocate(
+        &self,
+        pointer: NonNull<u8>,
+        new_size: Self::Size,
+        new_alignment: usize,
+    ) -> Result<NonNull<u8>, AllocationError> {
+        self.init();
+
+        let size = new_size.bytes();
+        if size == 0 {
+            return Err(AllocationError::NotSupported);
+        }
+
+        let pointer = rs_realloc(
+            UnsafePointer::new(pointer.as_ptr()).cast(),
+            size,
+            Some(new_alignment),
+        );
+        NonNull::new(pointer.cast_as_ptr()).ok_or(AllocationError::OutOfMemory)
+    }
 }
 
 pub enum SimpleTrimSize {

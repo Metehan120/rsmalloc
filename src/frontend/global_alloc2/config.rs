@@ -50,7 +50,7 @@ pub struct THPSettings {
     pub thp: THP,
     /// Whether buddy regions should explicitly request huge pages.
     ///
-    /// [`BuddyTHP::Force`] has no effect while [`THP::Disabled`] is selected.
+    /// [`SegmentedBitmapTHP::Force`] has no effect while [`THP::Disabled`] is selected.
     pub segmented_bitmap_use_thp: SegmentedBitmapTHP,
 }
 

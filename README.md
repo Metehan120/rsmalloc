@@ -61,17 +61,17 @@ The v2 API separates ordinary performance and memory-retention tuning from secur
 use rsmalloc::v2::{
     alloc::RSMalloc,
     config::{
-        BuddyTHP, Config, PerCacheLimit, Percentage, ReliefSettings, ReliefState, THP,
-        THPSettings, Tuning,
+        Config, PerCacheLimit, Percentage, ReliefSettings, ReliefState, SegmentedBitmapTHP,
+        THP, THPSettings, Tuning,
     },
 };
 
 const CONFIG: Config = Config::new(
     Tuning::DEFAULT
-        .with_thp(THPSettings::new(THP::Enabled, BuddyTHP::Force))
+        .with_thp(THPSettings::new(THP::Enabled, SegmentedBitmapTHP::Force))
         .with_refill_init_batch(16)
         .with_max_refill_retries(4)
-        .with_max_per_buddy_cache(PerCacheLimit::Bytes(512 * 1024 * 1024))
+        .with_max_per_segmented_bitmap_cache(PerCacheLimit::Bytes(512 * 1024 * 1024))
         .with_relief(ReliefSettings::new(
             ReliefState::Enabled,
             Percentage::new(85),
@@ -86,6 +86,23 @@ static GLOBAL: RSMalloc = RSMalloc::new(CONFIG);
 Defaults: randomized magic values enabled, abort on foreign pointers, general THP enabled (buddy THP forcing off), a 64 MiB buddy per-cache target, a 256 MiB minimum slab arena, 10 MiB small and 512 MiB big background-trim thresholds, memory-pressure relief disabled, and the allocator-default refill prediction.
 
 Security-sensitive configuration is hidden unless the `expose-security-critical-settings` feature is enabled. Keeping fixed magic values additionally requires the explicit unsafe `MagicSafetyDisable::acknowledge_safety_risk()` token.
+
+### Migrating legacy Rust configuration
+
+For an existing root-level `RSMallocConfig`, the temporary `legacy_config_to_v2!` macro converts ordinary tuning into a v2 `Config` in a const context:
+
+```rust
+use rsmalloc::{RSMallocConfig, legacy_config_to_v2};
+use rsmalloc::v2::alloc::RSMalloc;
+
+const CONFIG: rsmalloc::v2::config::Config =
+    legacy_config_to_v2!(RSMallocConfig::DEFAULT.with_max_refill_retries(4));
+
+#[global_allocator]
+static GLOBAL: RSMalloc = RSMalloc::new(CONFIG);
+```
+
+The macro is available in Rust allocator builds, not `preload` builds. It uses v2's 512 MiB default big-allocation trim threshold because the legacy config only specifies a small-allocation threshold. It **rejects** fixed magic, ignored foreign pointers, and arena sizes above 512 KiB that are not multiples of 512 KiB; these cannot be migrated silently. Convert security-sensitive choices explicitly with v2's `expose-security-critical-settings` feature and its required unsafe acknowledgement. The legacy configuration type and this macro are migration aids, not the preferred API for new code.
 
 ### Native allocation interface
 

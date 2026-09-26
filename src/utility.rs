@@ -1,7 +1,9 @@
+use rsmalloc_macro::validate_size_classes;
 use std::hint::cold_path;
 
 use crate::{Header, internals::oncelock::OnceLock};
 
+#[validate_size_classes]
 pub const SIZE_CLASSES: [usize; 34] = [
     // Tiny (16-128) - 16 Byte steps
     16, 32, 48, 64, 80, 96, 128, // Small (160-512) - 32/64 Byte steps

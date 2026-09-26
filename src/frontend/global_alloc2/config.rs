@@ -471,6 +471,83 @@ impl Config {
         }
     }
 
+    /// Implementation of the temporary `legacy_config_to_v2!` compatibility macro.
+    /// Security-weakening legacy settings require explicit migration to the v2 API.
+    #[cfg(not(feature = "preload"))]
+    #[allow(deprecated)]
+    #[doc(hidden)]
+    pub const fn from_legacy_compat(legacy: crate::RSMallocConfig) -> Self {
+        use crate::frontend::global_alloc as old;
+
+        if !matches!(legacy.magic_safety, old::MagicSafety::MagicRandomization) {
+            panic!("fixed legacy magic requires explicit v2 security configuration");
+        }
+        if !matches!(
+            legacy.foreign_pointer.global_alloc,
+            old::ForeignPointerPolicy::Abort
+        ) {
+            panic!("ignoring foreign pointers requires explicit v2 security configuration");
+        }
+
+        let arena_size = if legacy.arena_min_size.0 < CHUNK_SIZE {
+            CHUNK_SIZE
+        } else {
+            legacy.arena_min_size.0
+        };
+        if arena_size % CHUNK_SIZE != 0 {
+            panic!("legacy arena size must be a multiple of 512 KiB for v2");
+        }
+
+        let thp = if matches!(legacy.thp_settings.thp, old::THP::Enabled) {
+            THP::Enabled
+        } else {
+            THP::Disabled
+        };
+        let segmented_thp = if matches!(
+            legacy.thp_settings.segmented_bitmap_use_thp,
+            old::SegmentedBitmapTHP::Force
+        ) {
+            SegmentedBitmapTHP::Force
+        } else {
+            SegmentedBitmapTHP::Disabled
+        };
+        let cache = match legacy.max_per_segmented_bitmap_cache {
+            old::PerCacheLimit::Bytes(bytes) => PerCacheLimit::Bytes(bytes),
+            old::PerCacheLimit::Default => PerCacheLimit::Default,
+        };
+        let trim_worker = if matches!(
+            legacy.trim_thread.background_worker,
+            old::TrimThread::Enabled
+        ) {
+            TrimThread::Enabled
+        } else {
+            TrimThread::Disabled
+        };
+        let relief_state = if matches!(legacy.relief.state, old::ReliefState::Enabled) {
+            ReliefState::Enabled
+        } else {
+            ReliefState::Disabled
+        };
+
+        Self::new(Tuning {
+            thp: THPSettings::new(thp, segmented_thp),
+            refill_init_batch: legacy.predictor_settings.init_batch,
+            max_refill_retries: legacy.max_refill_retries,
+            max_per_segmented_bitmap_cache: cache,
+            trim: TrimSettings::new(
+                trim_worker,
+                Bytes(legacy.trim_thread.threshold.0),
+                Bytes::BIG_TRIM_DEFAULT,
+            ),
+            relief: ReliefSettings::new(
+                relief_state,
+                Percentage::new(legacy.relief.segmented_bitmap_disable_percentage.0),
+                Percentage::new(legacy.relief.segmented_bitmap_enable_percentage.0),
+            ),
+            arena_min_size: ArenaBytes(arena_size),
+        })
+    }
+
     /// Replaces the ordinary tuning while preserving security settings.
     #[must_use]
     pub const fn with_tuning(self, tuning: Tuning) -> Self {
@@ -533,4 +610,26 @@ impl Default for Tuning {
     fn default() -> Self {
         Self::DEFAULT
     }
+}
+
+/// Temporarily converts a legacy `RSMallocConfig` into a v2 `Config`.
+///
+/// This works in const contexts, including a `#[global_allocator]` static.
+/// Fixed magic, ignored foreign pointers, and arena sizes not divisible by
+/// 512 KiB are rejected instead of silently changing their behavior. Migrate
+/// these settings explicitly using the v2 API when needed.
+///
+/// ```ignore
+/// use rsmalloc::{legacy_config_to_v2, RSMallocConfig};
+/// use rsmalloc::v2::alloc::RSMalloc;
+///
+/// #[global_allocator]
+/// static GLOBAL: RSMalloc = RSMalloc::new(legacy_config_to_v2!(RSMallocConfig::DEFAULT));
+/// ```
+#[cfg(not(feature = "preload"))]
+#[macro_export]
+macro_rules! legacy_config_to_v2 {
+    ($config:expr) => {
+        $crate::v2::config::Config::from_legacy_compat($config)
+    };
 }

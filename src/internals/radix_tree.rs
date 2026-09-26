@@ -262,6 +262,16 @@ impl RadixTree {
         }
     }
 
+    #[cfg(feature = "preload")]
+    pub fn lock_for_fork(&self) {
+        core::mem::forget(self.nodes.alloc_lock.lock());
+    }
+
+    #[cfg(feature = "preload")]
+    pub fn reset_lock_on_fork(&self) {
+        self.nodes.alloc_lock.reset_at_fork();
+    }
+
     #[inline(always)]
     pub unsafe fn set_single_big(&self, addr: usize, val: bool) {
         if unlikely(!Self::valid_user_addr(addr)) {

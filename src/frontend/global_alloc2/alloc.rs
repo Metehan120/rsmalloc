@@ -256,6 +256,16 @@ unsafe impl AllocationAPI for RSMalloc {
     }
 
     #[inline]
+    unsafe fn usable_size(&self, pointer: NonNull<u8>) -> Result<usize, AllocationError> {
+        self.init();
+        let size = usable_size(UnsafePointer::new(pointer.as_ptr()).cast());
+        if size != 0 {
+            return Ok(size);
+        }
+        Err(AllocationError::NotOwned)
+    }
+
+    #[inline]
     unsafe fn reallocate(
         &self,
         pointer: *mut u8,
@@ -264,22 +274,8 @@ unsafe impl AllocationAPI for RSMalloc {
         self.init();
 
         let size = new_size.bytes();
-        if size == 0 {
-            return Err(AllocationError::NotSupported);
-        }
-
         let pointer = rs_realloc(UnsafePointer::new(pointer).cast(), size, None);
         NonNull::new(pointer.cast_as_ptr()).ok_or(AllocationError::OutOfMemory)
-    }
-
-    #[inline]
-    unsafe fn usable_size(&self, pointer: NonNull<u8>) -> Result<usize, AllocationError> {
-        self.init();
-        let size = usable_size(UnsafePointer::new(pointer.as_ptr()).cast());
-        if size != 0 {
-            return Ok(size);
-        }
-        Err(AllocationError::NotOwned)
     }
 
     unsafe fn aligned_reallocate(
@@ -291,10 +287,6 @@ unsafe impl AllocationAPI for RSMalloc {
         self.init();
 
         let size = new_size.bytes();
-        if size == 0 {
-            return Err(AllocationError::NotSupported);
-        }
-
         let pointer = rs_realloc(
             UnsafePointer::new(pointer).cast(),
             size,

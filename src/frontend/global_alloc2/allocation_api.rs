@@ -120,9 +120,10 @@ impl AllocationSizeAPI for AllocationSize {
 
 /// General-purpose, metadata-owning allocation interface.
 ///
-/// Implementations may reject zero-sized requests with an error. If a
-/// zero-sized request succeeds, it must still return a non-null pointer that can
-/// later be passed to [`AllocationAPI::deallocate`].
+/// Allocation methods may reject zero-sized requests with an error. If a
+/// zero-sized allocation succeeds, it must return a non-null pointer that can
+/// later be passed to [`AllocationAPI::deallocate`]. Reallocation to zero instead
+/// frees the old allocation.
 ///
 /// All methods returning [`AllocationError::NotSupported`] leave existing
 /// allocations untouched.
@@ -132,7 +133,7 @@ impl AllocationSizeAPI for AllocationSize {
 /// Implementors must return non-null, pairwise-disjoint live allocations and
 /// keep them valid until a successful `deallocate` or `reallocate` invalidates
 /// them. Safe allocation methods must never expose overlapping storage, and
-/// every failure from `reallocate` must leave the original allocation live and
+/// every reallocation error must leave the original allocation live and
 /// unmodified. Deallocating a null pointer must be a no-op; reallocating a null
 /// pointer must behave as allocation.
 pub unsafe trait AllocationAPI {
@@ -188,13 +189,12 @@ pub unsafe trait AllocationAPI {
     /// A null `pointer` requests a new allocation instead. On success, a
     /// non-null old pointer is invalidated even when the returned address
     /// is unchanged. Bytes through the smaller of the old and new requested
-    /// sizes are preserved. On every error—including
-    /// [`AllocationError::NotSupported`]—the original allocation remains live
+    /// sizes are preserved. For a nonzero `new_size`, every error—including
+    /// [`AllocationError::NotSupported`]—leaves the original allocation live
     /// and unmodified.
     ///
-    /// A zero-sized `new_size` follows the implementation's documented
-    /// zero-sized allocation policy; it must not silently invalidate `pointer`
-    /// while returning an error.
+    /// A zero-sized `new_size` frees a non-null `pointer` and returns no
+    /// allocation. A null `pointer` requires no deallocation.
     ///
     /// # Safety
     ///
@@ -217,10 +217,10 @@ pub unsafe trait AllocationAPI {
     ///
     /// On success, a non-null old pointer is invalidated even if its address is
     /// unchanged, and the existing contents are preserved through the smaller
-    /// of the old and new requested sizes. On error, the original allocation
-    /// remains live and unmodified. Zero-sized `new_size` follows the same
-    /// policy as [`AllocationAPI::reallocate`]; rsmalloc returns
-    /// [`AllocationError::NotSupported`] without freeing the block.
+    /// of the old and new requested sizes. For a nonzero `new_size`, errors leave
+    /// the original allocation live and unmodified. A zero-sized `new_size`
+    /// frees a non-null `pointer` and returns no allocation, as with
+    /// [`AllocationAPI::reallocate`].
     ///
     /// # Safety
     ///

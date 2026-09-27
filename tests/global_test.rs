@@ -172,7 +172,7 @@ mod tests {
                 .unwrap();
             ptr.as_ptr().write_bytes(0x48, 128);
             let resized = GLOBAL
-                .reallocate(ptr, AllocationSize::from_bytes(8192))
+                .reallocate(ptr.as_ptr(), AllocationSize::from_bytes(8192))
                 .unwrap();
             assert_eq!(resized.as_ptr() as usize % 256, 0);
             assert!(
@@ -180,7 +180,7 @@ mod tests {
                     .iter()
                     .all(|&b| b == 0x48)
             );
-            GLOBAL.deallocate(resized);
+            GLOBAL.deallocate(resized.as_ptr());
         }
     }
 

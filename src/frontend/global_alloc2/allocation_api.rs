@@ -133,7 +133,8 @@ impl AllocationSizeAPI for AllocationSize {
 /// keep them valid until a successful `deallocate` or `reallocate` invalidates
 /// them. Safe allocation methods must never expose overlapping storage, and
 /// every failure from `reallocate` must leave the original allocation live and
-/// unmodified.
+/// unmodified. Deallocating a null pointer must be a no-op; reallocating a null
+/// pointer must behave as allocation.
 pub unsafe trait AllocationAPI {
     /// Size token accepted by this allocator.
     type Size: AllocationSizeAPI<Out = Self::Size> + Copy;
@@ -172,18 +173,20 @@ pub unsafe trait AllocationAPI {
 
     /// Deallocates a live allocation without requiring its original size.
     ///
-    /// On success, `pointer` is invalidated and must not be used again.
+    /// A null `pointer` is accepted and does nothing. Otherwise, on success,
+    /// `pointer` is invalidated and must not be used again.
     ///
     /// # Safety
     ///
-    /// `pointer` must identify a currently live allocation returned by an
-    /// equivalent instance of this allocator. Passing an arbitrary or already
-    /// freed pointer can cause undefined behavior.
-    unsafe fn deallocate(&self, pointer: NonNull<u8>);
+    /// A non-null `pointer` must identify a currently live allocation returned
+    /// by an equivalent instance of this allocator. Passing an arbitrary or
+    /// already freed pointer can cause undefined behavior.
+    unsafe fn deallocate(&self, pointer: *mut u8);
 
     /// Resizes an allocation while preserving its existing alignment.
     ///
-    /// On success, the old pointer is invalidated even when the returned address
+    /// A null `pointer` requests a new allocation instead. On success, a
+    /// non-null old pointer is invalidated even when the returned address
     /// is unchanged. Bytes through the smaller of the old and new requested
     /// sizes are preserved. On every error—including
     /// [`AllocationError::NotSupported`]—the original allocation remains live
@@ -195,23 +198,24 @@ pub unsafe trait AllocationAPI {
     ///
     /// # Safety
     ///
-    /// `pointer` must identify a currently live allocation returned by an
-    /// equivalent instance of this allocator.
+    /// A non-null `pointer` must identify a currently live allocation returned
+    /// by an equivalent instance of this allocator.
     unsafe fn reallocate(
         &self,
-        pointer: NonNull<u8>,
+        pointer: *mut u8,
         new_size: Self::Size,
     ) -> Result<NonNull<u8>, AllocationError>;
 
     /// Resizes an allocation with a requested alignment for the result.
     ///
+    /// A null `pointer` requests a new allocation with `new_alignment`.
     /// `new_alignment` is nonzero and must be a power of two supported by the
     /// allocator. The returned pointer satisfies at least this alignment; it
     /// may retain a stronger alignment when the block can be reused. Unlike
     /// [`AllocationAPI::reallocate`], this operation may move a block solely
     /// to satisfy a stronger alignment.
     ///
-    /// On success, the old pointer is invalidated even if its address is
+    /// On success, a non-null old pointer is invalidated even if its address is
     /// unchanged, and the existing contents are preserved through the smaller
     /// of the old and new requested sizes. On error, the original allocation
     /// remains live and unmodified. Zero-sized `new_size` follows the same
@@ -220,11 +224,11 @@ pub unsafe trait AllocationAPI {
     ///
     /// # Safety
     ///
-    /// `pointer` must identify a currently live allocation returned by an
-    /// equivalent instance of this allocator.
+    /// A non-null `pointer` must identify a currently live allocation returned
+    /// by an equivalent instance of this allocator.
     unsafe fn aligned_reallocate(
         &self,
-        pointer: NonNull<u8>,
+        pointer: *mut u8,
         new_size: Self::Size,
         new_alignment: NonZero<usize>,
     ) -> Result<NonNull<u8>, AllocationError>;

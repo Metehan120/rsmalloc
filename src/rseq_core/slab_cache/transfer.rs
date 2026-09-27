@@ -113,7 +113,7 @@ impl SlabCache {
         let list_ptr = &list.list;
 
         loop {
-            let old = list_ptr.load(Ordering::Relaxed);
+            let old = list_ptr.load(Ordering::Acquire);
             let pack = Tagging.untag_ptr(old);
 
             (*tail).next = pack.current_header;
@@ -180,7 +180,7 @@ impl SlabCache {
         crate::TOTAL_TRANSFER_PUSH_CALLS.fetch_add(1, Ordering::Relaxed);
 
         loop {
-            let old = list_ptr.load(Ordering::Relaxed);
+            let old = list_ptr.load(Ordering::Acquire);
             let pack = Tagging.untag_ptr(old);
 
             (*header).next = pack.current_header;

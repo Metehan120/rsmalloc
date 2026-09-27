@@ -62,6 +62,7 @@ v0.3.0-alpha is an architectural cleanup and scalability pass over `0.2.0-alpha`
 - Widened the transfer cache's ABA protection from an 8-bit tag packed into the pointer's high byte to a full 64-bit generation counter, by switching `TransferCache::list`/`trimmed` from a tagged `AtomicUsize` to a 128-bit `AtomicU128` (via the `portable-atomic` crate, hardware `CMPXCHG16B`/`CASP`-backed on x86-64/arm64) holding the full 64-bit pointer in the low word and the tag in the high word. The old scheme needed only 256 same-slot push/pop cycles between a thread's stale load and its retried CAS to spuriously succeed; the new one needs `2^64`, which isn't reachable at any real hardware throughput.
 - As a side effect, this also removes an implicit LA57 canonical-address assumption the old high-byte tag depended on — the pointer field is no longer masked at all.
 - `Tagging::pack` extracts and increments the tag as a plain `u64` (`wrapping_add`) instead of doing wrapping arithmetic across the full `u128`, since a 128-bit add costs an add+adc pair for no benefit when only the high word ever changes; this restored throughput to parity with the old 8-bit-tag scheme in benchmarking.
+- Changed single and batch transfer pushes to acquire the existing list head before linking it, preserving publication of the prior chain through the new head.
 
 ### Debug/stats API parity
 

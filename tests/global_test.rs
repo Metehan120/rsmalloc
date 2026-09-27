@@ -5,7 +5,10 @@
 #[cfg(not(feature = "preload"))]
 #[cfg(test)]
 mod tests {
-    use std::alloc::{GlobalAlloc, Layout};
+    use std::{
+        alloc::{GlobalAlloc, Layout},
+        num::NonZero,
+    };
 
     use rsmalloc::v2::alloc::{RSMalloc, RSMallocRaw, RawInterface};
 
@@ -165,7 +168,7 @@ mod tests {
         use rsmalloc::v2::allocation_api::{AllocationAPI, AllocationSize};
         unsafe {
             let ptr = GLOBAL
-                .allocate_aligned(AllocationSize::from_bytes(128), 256)
+                .allocate_aligned(AllocationSize::from_bytes(128), NonZero::new(256).unwrap())
                 .unwrap();
             ptr.as_ptr().write_bytes(0x48, 128);
             let resized = GLOBAL

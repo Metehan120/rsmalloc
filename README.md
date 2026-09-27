@@ -109,7 +109,7 @@ The macro is available in Rust allocator builds, not `preload` builds. It uses v
 For allocator-specific use that does not depend on Rust's `GlobalAlloc` or unstable `Allocator` API, import `AllocationAPI` and construct byte-count requests with `AllocationSize`:
 
 ```rust
-use std::mem::align_of;
+use std::{mem::align_of, num::NonZero};
 
 use rsmalloc::v2::{
     alloc::RSMalloc,
@@ -120,12 +120,12 @@ static ALLOCATOR: RSMalloc = RSMalloc::new_default();
 
 fn main() -> Result<(), AllocationError> {
     let size = AllocationSize::array_bytes::<u64>(128)?;
-    let pointer = ALLOCATOR.allocate_aligned(size, align_of::<u64>())?;
+    let pointer = ALLOCATOR.allocate_aligned(size, NonZero::new(align_of::<u64>()).unwrap())?;
 
     // Request more space and a stronger alignment without retaining a Layout.
     // A successful reallocation invalidates the old pointer, even if unchanged.
     let pointer = unsafe {
-        ALLOCATOR.aligned_reallocate(pointer, AllocationSize::from_bytes(2048), 64)?
+        ALLOCATOR.aligned_reallocate(pointer, AllocationSize::from_bytes(2048), NonZero::new(64).unwrap())?
     };
     assert_eq!((pointer.as_ptr() as usize) % 64, 0);
     unsafe { ALLOCATOR.deallocate(pointer) };
@@ -133,7 +133,7 @@ fn main() -> Result<(), AllocationError> {
 }
 ```
 
-Use `AllocationAPI::reallocate` to preserve an allocation's existing alignment, or `AllocationAPI::aligned_reallocate` to request a new alignment. Both leave the original allocation live on error. The current method name is spelled `aligned_reallocate` in the API. `RSMalloc::raw()` exposes the lower-level malloc-style pointer interface through `v2::alloc::RawInterface`. Its operations are unsafe and are intended for callers that explicitly need raw-pointer semantics. Manual trimming and the safe `rs_usable_size` helper are available through `v2::alloc::RSMallocCoreAPI`.
+The aligned methods accept `NonZero<usize>` alignments; the allocator still requires a supported power of two. Use `AllocationAPI::reallocate` to preserve an allocation's existing alignment, or `AllocationAPI::aligned_reallocate` to request a new alignment. Both leave the original allocation live on error. The current method name is spelled `aligned_reallocate` in the API. `RSMalloc::raw()` exposes the lower-level malloc-style pointer interface through `v2::alloc::RawInterface`. Its operations are unsafe and are intended for callers that explicitly need raw-pointer semantics. Manual trimming and the safe `rs_usable_size` helper are available through `v2::alloc::RSMallocCoreAPI`.
 
 ### Runtime environment variables (preload builds)
 

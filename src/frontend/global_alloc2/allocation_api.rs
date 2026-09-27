@@ -5,7 +5,7 @@
 //! and reallocation preserves the existing alignment. This interface is
 //! independent of Rust's `GlobalAlloc` and unstable `Allocator` traits.
 
-use std::{error::Error, fmt, io, ptr::NonNull};
+use std::{error::Error, fmt, io, num::NonZero, ptr::NonNull};
 
 /// Error returned by a fallible [`AllocationAPI`] operation.
 #[non_exhaustive]
@@ -13,7 +13,7 @@ use std::{error::Error, fmt, io, ptr::NonNull};
 pub enum AllocationError {
     /// The allocator could not satisfy the allocation request.
     OutOfMemory,
-    /// The requested alignment was zero, not a power of two, or unsupported.
+    /// The requested alignment was not a power of two or is unsupported.
     InvalidAlignment,
     /// Computing the requested allocation size overflowed `usize`.
     SizeOverflow,
@@ -143,12 +143,12 @@ pub unsafe trait AllocationAPI {
 
     /// Allocates a block with an explicit alignment.
     ///
-    /// `alignment` is measured in bytes and must be a supported, nonzero power
-    /// of two. The contents are uninitialized.
+    /// `alignment` is a nonzero byte count and must be a supported power of two.
+    /// The contents are uninitialized.
     fn allocate_aligned(
         &self,
         size: Self::Size,
-        alignment: usize,
+        alignment: NonZero<usize>,
     ) -> Result<NonNull<u8>, AllocationError>;
 
     /// Allocates a block whose requested bytes are initialized to zero.
@@ -205,7 +205,7 @@ pub unsafe trait AllocationAPI {
 
     /// Resizes an allocation with a requested alignment for the result.
     ///
-    /// `new_alignment` must be a nonzero power of two supported by the
+    /// `new_alignment` is nonzero and must be a power of two supported by the
     /// allocator. The returned pointer satisfies at least this alignment; it
     /// may retain a stronger alignment when the block can be reused. Unlike
     /// [`AllocationAPI::reallocate`], this operation may move a block solely
@@ -226,6 +226,6 @@ pub unsafe trait AllocationAPI {
         &self,
         pointer: NonNull<u8>,
         new_size: Self::Size,
-        new_alignment: usize,
+        new_alignment: NonZero<usize>,
     ) -> Result<NonNull<u8>, AllocationError>;
 }

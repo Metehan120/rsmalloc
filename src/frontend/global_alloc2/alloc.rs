@@ -282,7 +282,7 @@ unsafe impl AllocationAPI for RSMalloc {
         Err(AllocationError::NotOwned)
     }
 
-    unsafe fn alligned_reallocate(
+    unsafe fn aligned_reallocate(
         &self,
         pointer: NonNull<u8>,
         new_size: Self::Size,

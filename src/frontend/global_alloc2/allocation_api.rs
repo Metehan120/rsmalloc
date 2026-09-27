@@ -222,7 +222,7 @@ pub unsafe trait AllocationAPI {
     ///
     /// `pointer` must identify a currently live allocation returned by an
     /// equivalent instance of this allocator.
-    unsafe fn alligned_reallocate(
+    unsafe fn aligned_reallocate(
         &self,
         pointer: NonNull<u8>,
         new_size: Self::Size,

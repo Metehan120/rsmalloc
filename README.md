@@ -7,7 +7,7 @@ An RSEQ-based memory allocator for Rust, focused on low-overhead concurrent allo
 
 **Major milestone:** RSMalloc's default Rust `GlobalAlloc` and C `LD_PRELOAD` configurations now build on stable Rust. The allocator no longer depends on Rust thread-local storage: refill metadata and adaptive batching are maintained per CPU, and overflow refill metadata uses an ABA-tagged lock-free queue. The optional `allocator-api` feature remains nightly-only until Rust stabilizes `std::alloc::Allocator`.
 
-[crates.io](https://crates.io/crates/rsmalloc) · [Architecture](ARCHITECTURE.md) · [Release Notes](UPDATES.md) · [Roadmap](TODO.md) · [Benchmarks](benchmarks/benchmarks.md) · [Contributing](CONTRIBUTING.md)
+[crates.io](https://crates.io/crates/rsmalloc) · [Architecture](ARCHITECTURE.md) · [Release Notes](UPDATES.md) · [Roadmap](ROADMAP.md) · [Todo](TODO.md) · [Benchmarks](benchmarks/benchmarks.md) · [Contributing](CONTRIBUTING.md)
 
 > **Known issue:** Linux kernel `7.0.10` appears to trigger `SIGBUS` in some workloads when using rsmalloc. If you hit unexplained `SIGBUS` crashes, try a different kernel version before assuming allocator corruption.
 

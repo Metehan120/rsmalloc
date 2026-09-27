@@ -122,8 +122,8 @@ impl AllocationSizeAPI for AllocationSize {
 ///
 /// Allocation methods may reject zero-sized requests with an error. If a
 /// zero-sized allocation succeeds, it must return a non-null pointer that can
-/// later be passed to [`AllocationAPI::deallocate`]. Reallocation to zero instead
-/// frees the old allocation.
+/// later be passed to [`AllocationAPI::deallocate`]. Reallocation of a non-null
+/// pointer to zero instead frees the old allocation and returns `Ok(null_mut())`.
 ///
 /// All methods returning [`AllocationError::NotSupported`] leave existing
 /// allocations untouched.
@@ -193,8 +193,10 @@ pub unsafe trait AllocationAPI {
     /// [`AllocationError::NotSupported`]—leaves the original allocation live
     /// and unmodified.
     ///
-    /// A zero-sized `new_size` frees a non-null `pointer` and returns no
-    /// allocation. A null `pointer` requires no deallocation.
+    /// A zero-sized `new_size` with a non-null `pointer` frees it and returns
+    /// `Ok(null_mut())`. A null `pointer` requests allocation, including when
+    /// `new_size` is zero. For a nonzero `new_size`, `Ok` contains a non-null
+    /// pointer.
     ///
     /// # Safety
     ///
@@ -204,7 +206,7 @@ pub unsafe trait AllocationAPI {
         &self,
         pointer: *mut u8,
         new_size: Self::Size,
-    ) -> Result<NonNull<u8>, AllocationError>;
+    ) -> Result<*mut u8, AllocationError>;
 
     /// Resizes an allocation with a requested alignment for the result.
     ///
@@ -219,8 +221,10 @@ pub unsafe trait AllocationAPI {
     /// unchanged, and the existing contents are preserved through the smaller
     /// of the old and new requested sizes. For a nonzero `new_size`, errors leave
     /// the original allocation live and unmodified. A zero-sized `new_size`
-    /// frees a non-null `pointer` and returns no allocation, as with
-    /// [`AllocationAPI::reallocate`].
+    /// with a non-null `pointer` frees it and returns `Ok(null_mut())`, as with
+    /// [`AllocationAPI::reallocate`]. A null `pointer` requests allocation even
+    /// when `new_size` is zero. For a nonzero `new_size`, `Ok` contains a
+    /// non-null pointer.
     ///
     /// # Safety
     ///
@@ -231,5 +235,5 @@ pub unsafe trait AllocationAPI {
         pointer: *mut u8,
         new_size: Self::Size,
         new_alignment: NonZero<usize>,
-    ) -> Result<NonNull<u8>, AllocationError>;
+    ) -> Result<*mut u8, AllocationError>;
 }

@@ -174,13 +174,13 @@ mod tests {
             let resized = GLOBAL
                 .reallocate(ptr.as_ptr(), AllocationSize::from_bytes(8192))
                 .unwrap();
-            assert_eq!(resized.as_ptr() as usize % 256, 0);
+            assert_eq!(resized as usize % 256, 0);
             assert!(
-                std::slice::from_raw_parts(resized.as_ptr(), 128)
+                std::slice::from_raw_parts(resized, 128)
                     .iter()
                     .all(|&b| b == 0x48)
             );
-            GLOBAL.deallocate(resized.as_ptr());
+            GLOBAL.deallocate(resized);
         }
     }
 

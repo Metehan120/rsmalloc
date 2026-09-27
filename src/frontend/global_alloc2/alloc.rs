@@ -270,12 +270,15 @@ unsafe impl AllocationAPI for RSMalloc {
         &self,
         pointer: *mut u8,
         new_size: Self::Size,
-    ) -> Result<NonNull<u8>, AllocationError> {
+    ) -> Result<*mut u8, AllocationError> {
         self.init();
 
         let size = new_size.bytes();
         let pointer = rs_realloc(UnsafePointer::new(pointer).cast(), size, None);
-        NonNull::new(pointer.cast_as_ptr()).ok_or(AllocationError::OutOfMemory)
+        if size == 0 || !pointer.is_null() {
+            return Ok(pointer.cast_as_ptr());
+        }
+        Err(AllocationError::OutOfMemory)
     }
 
     unsafe fn aligned_reallocate(
@@ -283,7 +286,7 @@ unsafe impl AllocationAPI for RSMalloc {
         pointer: *mut u8,
         new_size: Self::Size,
         new_alignment: NonZero<usize>,
-    ) -> Result<NonNull<u8>, AllocationError> {
+    ) -> Result<*mut u8, AllocationError> {
         self.init();
 
         let size = new_size.bytes();
@@ -292,7 +295,10 @@ unsafe impl AllocationAPI for RSMalloc {
             size,
             Some(new_alignment.get()),
         );
-        NonNull::new(pointer.cast_as_ptr()).ok_or(AllocationError::OutOfMemory)
+        if size == 0 || !pointer.is_null() {
+            return Ok(pointer.cast_as_ptr());
+        }
+        Err(AllocationError::OutOfMemory)
     }
 }
 

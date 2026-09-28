@@ -5,10 +5,9 @@
 #[cfg(not(feature = "preload"))]
 #[cfg(test)]
 mod tests {
-    use std::{
-        alloc::{GlobalAlloc, Layout},
-        num::NonZero,
-    };
+    use std::alloc::{GlobalAlloc, Layout};
+    #[cfg(feature = "native-allocation-api")]
+    use std::num::NonZero;
 
     use rsmalloc::v2::alloc::{RSMalloc, RSMallocRaw, RawInterface};
 
@@ -163,6 +162,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "native-allocation-api")]
     #[test]
     fn allocation_api_reallocate_keeps_its_alignment_preserving_interface() {
         use rsmalloc::v2::allocation_api::{AllocationAPI, AllocationSize};

@@ -24,6 +24,7 @@ thiserror = { version = "2", default-features = false }
 [features]
 default = []
 allocator-api = []
+native-allocation-api = []
 preload = []
 check-owned-on-alloc = []
 

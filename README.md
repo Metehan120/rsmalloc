@@ -106,7 +106,7 @@ The macro is available in Rust allocator builds, not `preload` builds. It uses v
 
 ### Native allocation interface
 
-For allocator-specific use that does not depend on Rust's `GlobalAlloc` or unstable `Allocator` API, import `AllocationAPI` and construct byte-count requests with `AllocationSize`:
+The native allocation interface is optional and disabled by default. Enable the `native-allocation-api` Cargo feature (for example, `rsmalloc = { version = "0.3.0-alpha", features = ["native-allocation-api"] }`). It does not require the nightly-only `allocator-api` feature. For allocator-specific use that does not depend on Rust's `GlobalAlloc` or unstable `Allocator` API, import `AllocationAPI` and construct byte-count requests with `AllocationSize`:
 
 ```rust
 use std::{mem::align_of, num::NonZero};
@@ -162,6 +162,7 @@ The aligned methods accept `NonZero<usize>` alignments; the allocator still requ
 | Feature | Effect |
 |---|---|
 | `preload` | Builds the C ABI / `LD_PRELOAD` surface. |
+| `native-allocation-api` | Enables the optional `v2::allocation_api::AllocationAPI` malloc-style Rust interface; disabled by default. |
 | `expose-security-critical-settings` | Exposes the v2 configuration knobs that can weaken magic randomization or foreign-pointer handling. |
 | `extended-header` | Wider per-allocation header metadata. |
 | `page-backend-no-huge-page` | No-huge-page advice for slab arenas — cuts RSS on THP-aggressive systems (e.g. CachyOS), costs TLB pressure. |

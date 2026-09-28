@@ -5,7 +5,7 @@ use rsmalloc_macro::stable_api_surface;
 #[cfg(feature = "abort-on-rseq-failure")]
 use crate::RSMallocError;
 #[cfg(feature = "abort-on-rseq-failure")]
-use std::hint::unlikely;
+use crate::utility::unlikely;
 
 #[repr(C, align(32))]
 #[derive(Debug, Clone, Copy)]

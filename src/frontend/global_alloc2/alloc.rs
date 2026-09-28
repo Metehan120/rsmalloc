@@ -7,6 +7,8 @@ use std::{
 };
 
 pub use crate::frontend::global_alloc2::{debug::*, raw::*};
+#[cfg(feature = "native-allocation-api")]
+use crate::v2::allocation_api::{AllocationAPI, AllocationError, AllocationSize};
 use crate::{
     GLOBAL_ALLOC_ONCE, Header,
     backend::bootstrap::main_bootstrap,
@@ -21,10 +23,7 @@ use crate::{
     },
     rseq_core::slab_cache::SLAB_CACHE,
     utility::likely,
-    v2::{
-        allocation_api::{AllocationAPI, AllocationError, AllocationSize},
-        config::Config,
-    },
+    v2::config::Config,
 };
 
 pub trait RSMallocCoreAPI {
@@ -215,6 +214,7 @@ unsafe impl std::alloc::Allocator for RSMalloc {
     }
 }
 
+#[cfg(feature = "native-allocation-api")]
 unsafe impl AllocationAPI for RSMalloc {
     type Size = AllocationSize;
 

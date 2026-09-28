@@ -354,6 +354,9 @@ impl RSMallocCoreAPI for RSMalloc {
             }
         }
 
+        if size > 0 {
+            return Some(size);
+        }
         None
     }
 

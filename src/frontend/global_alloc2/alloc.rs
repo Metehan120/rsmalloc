@@ -288,6 +288,9 @@ unsafe impl AllocationAPI for RSMalloc {
         new_alignment: NonZero<usize>,
     ) -> Result<*mut u8, AllocationError> {
         self.init();
+        if !new_alignment.is_power_of_two() {
+            return Err(AllocationError::InvalidAlignment);
+        }
 
         let size = new_size.bytes();
         let pointer = rs_realloc(

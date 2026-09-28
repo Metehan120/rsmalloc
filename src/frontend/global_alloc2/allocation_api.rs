@@ -21,6 +21,8 @@ pub enum AllocationError {
     NotOwned,
     /// The allocator does not implement the requested operation.
     NotSupported,
+    /// The allocator could not determine the precise cause of an allocation failure.
+    SomethingWentWrong,
     /// The operating system rejected the operation with this raw error code.
     OsError(i32),
 }
@@ -33,6 +35,7 @@ impl fmt::Display for AllocationError {
             Self::SizeOverflow => f.write_str("allocation size overflowed usize"),
             Self::NotOwned => f.write_str("pointer is not owned by the allocator"),
             Self::NotSupported => f.write_str("allocation operation is not supported"),
+            Self::SomethingWentWrong => f.write_str("allocation failed for an unspecified reason"),
             Self::OsError(error_num) => write!(
                 f,
                 "operating system error {error_num}: {}",
@@ -158,6 +161,21 @@ pub unsafe trait AllocationAPI {
     /// Any additional usable capacity reported by [`AllocationAPI::usable_size`]
     /// is not guaranteed to be initialized.
     fn allocate_zeroed(&self, size: Self::Size) -> Result<NonNull<u8>, AllocationError>;
+
+    /// Allocates `nmem.bytes()` elements of `zero_size.bytes()` bytes each.
+    ///
+    /// The requested `nmem.bytes() * zero_size.bytes()` bytes are initialized to
+    /// zero; additional usable capacity is not guaranteed to be zeroed. The
+    /// multiplication is checked by the allocator, so it cannot wrap into a
+    /// smaller allocation. RSMalloc reports any failure from this operation,
+    /// including multiplication overflow or allocation failure, as
+    /// [`AllocationError::SomethingWentWrong`]. Neither argument specifies an
+    /// alignment beyond the allocator's default.
+    fn allocate_zeroed_nmem(
+        &self,
+        nmem: Self::Size,
+        zero_size: Self::Size,
+    ) -> Result<NonNull<u8>, AllocationError>;
 
     /// Returns the usable payload size of a live allocation.
     ///

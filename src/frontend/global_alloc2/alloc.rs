@@ -234,6 +234,17 @@ unsafe impl AllocationAPI for RSMalloc {
         NonNull::new(pointer.cast_as_ptr()).ok_or(AllocationError::OutOfMemory)
     }
 
+    fn allocate_zeroed_nmem(
+        &self,
+        nmem: Self::Size,
+        zero_size: Self::Size,
+    ) -> Result<NonNull<u8>, AllocationError> {
+        unsafe { self.init() };
+        let pointer = unsafe { rs_calloc(nmem.bytes(), zero_size.bytes()) };
+
+        NonNull::new(pointer.cast_as_ptr()).ok_or(AllocationError::SomethingWentWrong)
+    }
+
     #[inline]
     fn allocate_aligned(
         &self,

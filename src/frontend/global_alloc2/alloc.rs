@@ -214,7 +214,7 @@ unsafe impl std::alloc::Allocator for RSMalloc {
     }
 }
 
-#[cfg(feature = "native-allocation-api")]
+#[cfg(any(feature = "native-allocation-api", doc))]
 unsafe impl AllocationAPI for RSMalloc {
     type Size = AllocationSize;
 

@@ -7,7 +7,7 @@ use std::{
 };
 
 pub use crate::frontend::global_alloc2::{debug::*, raw::*};
-#[cfg(feature = "native-allocation-api")]
+#[cfg(any(feature = "native-allocation-api", doc))]
 use crate::v2::allocation_api::{AllocationAPI, AllocationError, AllocationSize};
 use crate::{
     GLOBAL_ALLOC_ONCE, Header,

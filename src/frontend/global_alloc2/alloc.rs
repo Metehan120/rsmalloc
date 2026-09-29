@@ -6,7 +6,9 @@ use std::{
     ptr::NonNull,
 };
 
-pub use crate::frontend::global_alloc2::{debug::*, raw::*};
+#[cfg(any(feature = "debug", doc))]
+pub use crate::frontend::global_alloc2::debug::*;
+pub use crate::frontend::global_alloc2::raw::*;
 #[cfg(any(feature = "native-allocation-api", doc))]
 use crate::v2::allocation_api::{AllocationAPI, AllocationError, AllocationSize};
 use crate::{
@@ -26,12 +28,30 @@ use crate::{
     v2::config::Config,
 };
 
+/// Allocator-specific maintenance and inspection operations.
+///
+/// These methods are separate from [`AllocationAPI`]: they do not allocate or
+/// transfer ownership of a block. `RSMalloc` implements this trait whether or
+/// not the optional native allocation interface is enabled.
 pub trait RSMallocCoreAPI {
     type TrimIn;
     type TrimOut;
 
+    /// Requests a best-effort trim of eligible cached pages.
+    ///
+    /// For `RSMalloc`, `Some(bytes)` reports reclaimed bytes and `None` means
+    /// nothing was reclaimed. A trim request does not invalidate live allocations;
+    /// reclamation is best-effort and may fall short of the requested amount.
     fn trim(&self, size: Self::TrimIn) -> Self::TrimOut;
+    /// Returns the usable payload size of a live rsmalloc allocation.
+    ///
+    /// The result can exceed the originally requested size. Only bytes the
+    /// caller initialized may be read, regardless of the reported capacity.
+    /// `None` means the allocator did not report a usable size.
     fn rs_usable_size(&self, pointer: NonNull<u8>) -> Option<usize>;
+    /// Initializes allocator-wide state ahead of the first allocation.
+    ///
+    /// Ordinary allocation calls initialize it automatically.
     fn manual_init(&self);
 }
 
@@ -316,8 +336,14 @@ unsafe impl AllocationAPI for RSMalloc {
     }
 }
 
+/// Trim request used by [`RSMallocCoreAPI`] on [`RSMalloc`].
 pub enum SimpleTrimSize {
+    /// Requests an unbounded pass over eligible slab caches and
+    /// segmented-bitmap blocks, in that order. This is best-effort; not all
+    /// cached pages are necessarily reclaimable.
     All,
+    /// Tries to reclaim at least this many bytes, scanning slab caches first
+    /// and segmented-bitmap blocks for any remaining amount.
     Bytes(NonZero<usize>),
 }
 
@@ -346,18 +372,15 @@ impl RSMallocCoreAPI for RSMalloc {
         unsafe { self.init() };
 
         let requested = size.get_size();
-        let size = unsafe { SEGMENTED_BITMAP_BACKEND.trim(requested) };
-        if size < requested && requested != 0 {
-            let small = unsafe { SLAB_CACHE.trim_small(requested.saturating_sub(size)) };
-            if small > 0 {
-                return Some(size + small);
-            }
-        }
+        let slab = unsafe { SLAB_CACHE.trim_small(requested) };
+        let segmented_bitmap = if requested == 0 || slab < requested {
+            unsafe { SEGMENTED_BITMAP_BACKEND.trim(requested.saturating_sub(slab)) }
+        } else {
+            0
+        };
 
-        if size > 0 {
-            return Some(size);
-        }
-        None
+        let reclaimed = slab.saturating_add(segmented_bitmap);
+        (reclaimed > 0).then_some(reclaimed)
     }
 
     /// Initializes the allocator manually.

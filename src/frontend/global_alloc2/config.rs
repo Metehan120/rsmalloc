@@ -28,10 +28,10 @@ impl THP {
     }
 }
 
-/// Transparent huge-page behavior for buddy allocator regions.
+/// Transparent huge-page behavior for segmented-bitmap regions.
 #[derive(Clone, Copy, Debug)]
 pub enum SegmentedBitmapTHP {
-    /// Do not explicitly request huge pages for buddy regions.
+    /// Do not explicitly request huge pages for segmented-bitmap regions.
     Disabled,
     /// Request huge pages when global THP support is enabled.
     Force,
@@ -43,19 +43,20 @@ impl SegmentedBitmapTHP {
     }
 }
 
-/// Transparent huge-page settings for allocator mappings and buddy regions.
+/// Transparent huge-page settings for allocator mappings and segmented-bitmap regions.
 #[derive(Clone, Copy, Debug)]
 pub struct THPSettings {
     /// Global transparent huge-page policy.
     pub thp: THP,
-    /// Whether buddy regions should explicitly request huge pages.
+    /// Whether segmented-bitmap regions should explicitly request huge pages.
     ///
     /// [`SegmentedBitmapTHP::Force`] has no effect while [`THP::Disabled`] is selected.
     pub segmented_bitmap_use_thp: SegmentedBitmapTHP,
 }
 
 impl THPSettings {
-    /// Default policy: enable general THP support without forcing it for buddy regions.
+    /// Default policy: enable general THP support without forcing it for
+    /// segmented-bitmap regions.
     pub const DEFAULT: Self = Self {
         thp: THP::Enabled,
         segmented_bitmap_use_thp: SegmentedBitmapTHP::Disabled,
@@ -70,10 +71,13 @@ impl THPSettings {
     }
 }
 
-/// Maximum target size of an individual buddy cache region.
+/// Initial segmented-bitmap region size.
+///
+/// The backend rounds this to at least 64 MiB and a power of two. Later
+/// growth adds 64 MiB regions.
 #[derive(Clone, Copy, Debug)]
 pub enum PerCacheLimit {
-    /// Requested bytes per buddy cache. The backend normalizes the value.
+    /// Requested initial region bytes. The backend normalizes the value.
     Bytes(usize),
     /// Use rsmalloc's 64 MiB default.
     Default,
@@ -174,12 +178,12 @@ impl TrimSettings {
     }
 }
 
-/// Buddy memory-pressure relief state.
+/// Segmented-bitmap memory-pressure relief state.
 #[derive(Clone, Copy, Debug)]
 pub enum ReliefState {
-    /// Allow the allocator to disable buddy caching under memory pressure.
+    /// Allow the allocator to disable segmented-bitmap allocation under memory pressure.
     Enabled,
-    /// Keep buddy caching enabled regardless of the relief thresholds.
+    /// Keep segmented-bitmap allocation enabled regardless of the relief thresholds.
     Disabled,
 }
 
@@ -205,9 +209,9 @@ impl Percentage {
     }
 }
 
-/// Memory-pressure relief settings for the buddy backend.
+/// Memory-pressure relief settings for the segmented-bitmap backend.
 ///
-/// When enabled, buddy caching is disabled at the disable threshold and is
+/// When enabled, segmented-bitmap allocation is disabled at the disable threshold and is
 /// re-enabled after pressure falls to the enable threshold. If the configured
 /// enable threshold exceeds the disable threshold, initialization lowers it to
 /// the disable threshold.
@@ -215,9 +219,9 @@ impl Percentage {
 pub struct ReliefSettings {
     /// Whether memory-pressure relief is active.
     pub state: ReliefState,
-    /// Pressure percentage at which buddy caching is disabled.
+    /// Pressure percentage at which segmented-bitmap allocation is disabled.
     pub segmented_bitmap_disable_percentage: Percentage,
-    /// Pressure percentage at or below which buddy caching may be re-enabled.
+    /// Pressure percentage at or below which segmented-bitmap allocation may be re-enabled.
     pub segmented_bitmap_enable_percentage: Percentage,
 }
 
@@ -230,7 +234,7 @@ impl ReliefSettings {
         segmented_bitmap_enable_percentage: Percentage::new(80),
     };
 
-    /// Creates buddy memory-pressure relief settings.
+    /// Creates segmented-bitmap memory-pressure relief settings.
     pub const fn new(
         state: ReliefState,
         segmented_bitmap_disable_percentage: Percentage,
@@ -253,11 +257,11 @@ pub struct Tuning {
     pub refill_init_batch: u8,
     /// Maximum number of small-cache refill retries.
     pub max_refill_retries: u8,
-    /// Target maximum size of each buddy cache region.
+    /// Initial segmented-bitmap region size; later growth uses 64 MiB regions.
     pub max_per_segmented_bitmap_cache: PerCacheLimit,
     /// Background trimming policy.
     pub trim: TrimSettings,
-    /// Buddy memory-pressure relief policy.
+    /// Segmented-bitmap memory-pressure relief policy.
     pub relief: ReliefSettings,
     /// Minimum slab page-backend arena data size.
     ///
@@ -302,7 +306,7 @@ impl Tuning {
         }
     }
 
-    /// Replaces the buddy per-cache size limit.
+    /// Replaces the initial segmented-bitmap region size.
     #[must_use]
     pub const fn with_max_per_segmented_bitmap_cache(
         self,
@@ -320,7 +324,7 @@ impl Tuning {
         Self { trim, ..self }
     }
 
-    /// Replaces the buddy memory-pressure relief settings.
+    /// Replaces the segmented-bitmap memory-pressure relief settings.
     #[must_use]
     pub const fn with_relief(self, relief: ReliefSettings) -> Self {
         Self { relief, ..self }
@@ -437,12 +441,12 @@ impl SecurityCritical {
 /// ```rust
 /// use rsmalloc::v2::{
 ///     alloc::RSMalloc,
-///     config::{BuddyTHP, Config, THP, THPSettings, Tuning},
+///     config::{Config, SegmentedBitmapTHP, THP, THPSettings, Tuning},
 /// };
 ///
 /// const CONFIG: Config = Config::new(
 ///     Tuning::DEFAULT
-///         .with_thp(THPSettings::new(THP::Enabled, BuddyTHP::Force))
+///         .with_thp(THPSettings::new(THP::Enabled, SegmentedBitmapTHP::Force))
 ///         .with_max_refill_retries(4),
 /// );
 ///

@@ -530,13 +530,14 @@ struct TrimStats {
     ages: u64,
     samples: u64,
 }
+
 impl TrimStats {
     fn finish(&self, previous: u32) {
         if self.samples != 0 {
-            let average = (self.ages / self.samples).clamp(10, 600);
+            let average = (self.ages / self.samples).clamp(10, 85);
             let blended = (EMA_ALPHA * average as f32 + (1.0 - EMA_ALPHA) * previous as f32)
                 .round()
-                .clamp(15.0, 120.0) as u32;
+                .clamp(10.0, 85.0) as u32;
             SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES.store(blended, Ordering::Relaxed);
         }
         #[cfg(feature = "debug")]
@@ -554,7 +555,14 @@ fn trim_segment(
     stats: &mut TrimStats,
     mut advise: impl FnMut(usize, usize) -> bool,
 ) {
-    let mut pending = Segment::dirty_free(segment.snapshot());
+    let snapshot = segment.snapshot();
+    let allocated = snapshot as u16;
+    let trimmed_or_used = (snapshot >> 32) as u16;
+    let never_allocated = !allocated & !trimmed_or_used;
+    stats.ages += never_allocated.count_ones() as u64 * 85;
+    stats.samples += never_allocated.count_ones() as u64;
+
+    let mut pending = Segment::dirty_free(snapshot);
     let initial_bytes = stats.bytes;
     while pending != 0 {
         let slot = pending.trailing_zeros() as usize;

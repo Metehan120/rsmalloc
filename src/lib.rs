@@ -19,17 +19,17 @@
 //! use rsmalloc::v2::{
 //!     alloc::RSMalloc,
 //!     config::{
-//!         BuddyTHP, Config, PerCacheLimit, Percentage, ReliefSettings, ReliefState, THP,
-//!         THPSettings, Tuning,
+//!         Config, PerCacheLimit, Percentage, ReliefSettings, ReliefState,
+//!         SegmentedBitmapTHP, THP, THPSettings, Tuning,
 //!     },
 //! };
 //!
 //! const CONFIG: Config = Config::new(
 //!     Tuning::DEFAULT
-//!         .with_thp(THPSettings::new(THP::Enabled, BuddyTHP::Force))
+//!         .with_thp(THPSettings::new(THP::Enabled, SegmentedBitmapTHP::Force))
 //!         .with_refill_init_batch(16)
 //!         .with_max_refill_retries(4)
-//!         .with_max_per_buddy_cache(PerCacheLimit::Bytes(512 * 1024 * 1024))
+//!         .with_max_per_segmented_bitmap_cache(PerCacheLimit::Bytes(512 * 1024 * 1024))
 //!         .with_relief(ReliefSettings::new(
 //!             ReliefState::Enabled,
 //!             Percentage::new(85),
@@ -40,6 +40,17 @@
 //! #[global_allocator]
 //! static GLOBAL: RSMalloc = RSMalloc::new(CONFIG);
 //! ```
+//!
+//! # Native allocation API
+//!
+//! Enable the `native-allocation-api` feature for [`v2::allocation_api`]. It
+//! provides fallible, byte-count allocation without retaining a `Layout` and
+//! works on stable Rust. [`v2::allocation_api::AllocationSize`] holds the
+//! requested byte count; [`v2::allocation_api::AllocationAPI`] provides
+//! allocation, zeroing, alignment, usable-size queries, reallocation, and
+//! deallocation. The caller owns the returned allocation until it is freed
+//! or successfully reallocated. See the module documentation and README for
+//! examples and the zero-size rules.
 //!
 //! rsmalloc also supports `LD_PRELOAD`-style use for C applications. See the
 //! README for preload build and runtime details.
@@ -114,7 +125,7 @@ use crate::internals::once::Once;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Flags {
+enum Flags {
     NotAllocated = 1,
     Allocated = 2,
     Reclaimed = 3,

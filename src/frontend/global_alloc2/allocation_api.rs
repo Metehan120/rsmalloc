@@ -4,10 +4,43 @@
 //! carry their own metadata, deallocation does not require the original layout,
 //! and reallocation preserves the existing alignment. This interface is
 //! independent of Rust's `GlobalAlloc` and unstable `Allocator` traits.
+//!
+//! Enable the `native-allocation-api` Cargo feature to use this module. A
+//! [`AllocationSize`] is a byte count, not a Rust `Layout`: it carries no
+//! alignment or element type. Use [`AllocationAPI::allocate_aligned`] when the
+//! result will be used as a type with alignment greater than the allocator's
+//! default.
+//!
+//! Successful allocations remain live until they are passed to
+//! [`AllocationAPI::deallocate`] or successfully reallocated. The caller must
+//! keep track of the returned pointer; dropping a raw pointer does not free
+//! its allocation. Do not mix this interface's pointers with a different
+//! allocator's deallocation functions.
+//!
+//! ```rust
+//! use rsmalloc::v2::{
+//!     alloc::RSMalloc,
+//!     allocation_api::{AllocationAPI, AllocationError, AllocationSize},
+//! };
+//!
+//! static ALLOCATOR: RSMalloc = RSMalloc::new_default();
+//!
+//! fn example() -> Result<(), AllocationError> {
+//!     let pointer = ALLOCATOR.allocate(AllocationSize::from_bytes(128))?;
+//!     // Use the first 128 bytes through `pointer.as_ptr()` here.
+//!     unsafe { ALLOCATOR.deallocate(pointer.as_ptr()) };
+//!     Ok(())
+//! }
+//! ```
 
 use std::{error::Error, fmt, io, num::NonZero, ptr::NonNull};
 
 /// Error returned by a fallible [`AllocationAPI`] operation.
+///
+/// The set of errors depends on the operation. For example, size-token
+/// multiplication reports [`Self::SizeOverflow`], invalid aligned requests
+/// report [`Self::InvalidAlignment`], and a failed
+/// [`AllocationAPI::usable_size`] query can report [`Self::NotOwned`].
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AllocationError {
@@ -51,6 +84,9 @@ impl Error for AllocationError {}
 ///
 /// This type intentionally contains no alignment. Use
 /// [`AllocationAPI::allocate_aligned`] when a specific alignment is required.
+/// `array_bytes::<T>(count)` checks multiplication, but it still does not
+/// make the returned allocation suitable for storing `T` without an
+/// appropriate alignment request.
 #[repr(transparent)]
 #[must_use]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -123,13 +159,29 @@ impl AllocationSizeAPI for AllocationSize {
 
 /// General-purpose, metadata-owning allocation interface.
 ///
+/// Allocation returns a [`NonNull<u8>`] and must be paired with this
+/// allocator's [`Self::deallocate`] or a successful reallocation. Unlike
+/// [`std::alloc::GlobalAlloc`], deallocation does not take a `Layout`.
+/// [`Self::usable_size`] can report more bytes than originally requested, but
+/// extra capacity is not automatically initialized.
+///
 /// Allocation methods may reject zero-sized requests with an error. If a
 /// zero-sized allocation succeeds, it must return a non-null pointer that can
 /// later be passed to [`AllocationAPI::deallocate`]. Reallocation of a non-null
 /// pointer to zero instead frees the old allocation and returns `Ok(null_mut())`.
 ///
-/// All methods returning [`AllocationError::NotSupported`] leave existing
-/// allocations untouched.
+/// A successful reallocation invalidates the old pointer even when its
+/// numeric address is unchanged. For a nonzero resize, an error leaves the
+/// original allocation live; callers must retain that pointer to free or
+/// retry it. All methods returning [`AllocationError::NotSupported`] leave
+/// existing allocations untouched.
+///
+/// # Current alpha limitation
+///
+/// RSMalloc's `reallocate(null_mut(), zero_size)` and
+/// `aligned_reallocate(null_mut(), zero_size, alignment)` attempt an allocation,
+/// but currently can return `Ok(null_mut())` if that allocation fails. In this
+/// one case, `Ok(null_mut())` does not identify an allocation to deallocate.
 ///
 /// # Safety
 ///
@@ -144,12 +196,18 @@ pub unsafe trait AllocationAPI {
     type Size: AllocationSizeAPI<Out = Self::Size> + Copy;
 
     /// Allocates a block containing at least `size.bytes()` accessible bytes.
+    ///
+    /// The bytes are uninitialized. The returned pointer must eventually be
+    /// deallocated through [`Self::deallocate`] or successfully reallocated.
+    /// A zero-byte request may succeed with a deallocatable non-null pointer
+    /// or return an error, according to the implementation.
     fn allocate(&self, size: Self::Size) -> Result<NonNull<u8>, AllocationError>;
 
     /// Allocates a block with an explicit alignment.
     ///
     /// `alignment` is a nonzero byte count and must be a supported power of two.
-    /// The contents are uninitialized.
+    /// The contents are uninitialized. The returned pointer satisfies at
+    /// least the requested alignment. Its byte count still comes from `size`.
     fn allocate_aligned(
         &self,
         size: Self::Size,
@@ -159,7 +217,9 @@ pub unsafe trait AllocationAPI {
     /// Allocates a block whose requested bytes are initialized to zero.
     ///
     /// Any additional usable capacity reported by [`AllocationAPI::usable_size`]
-    /// is not guaranteed to be initialized.
+    /// is not guaranteed to be initialized. This operation uses the allocator's
+    /// default alignment; use [`Self::allocate_aligned`] when a stronger
+    /// alignment is required.
     fn allocate_zeroed(&self, size: Self::Size) -> Result<NonNull<u8>, AllocationError>;
 
     /// Allocates `nmem.bytes()` elements of `zero_size.bytes()` bytes each.
@@ -179,6 +239,10 @@ pub unsafe trait AllocationAPI {
 
     /// Returns the usable payload size of a live allocation.
     ///
+    /// The result can exceed the requested size. It describes accessible
+    /// capacity, not which bytes contain initialized values. An aligned
+    /// allocation's result excludes any offset before the returned pointer.
+    ///
     /// Implementations that cannot provide this information return
     /// [`AllocationError::NotSupported`].
     ///
@@ -193,7 +257,8 @@ pub unsafe trait AllocationAPI {
     /// Deallocates a live allocation without requiring its original size.
     ///
     /// A null `pointer` is accepted and does nothing. Otherwise, on success,
-    /// `pointer` is invalidated and must not be used again.
+    /// `pointer` is invalidated and must not be used again. The original size
+    /// and alignment are not needed.
     ///
     /// # Safety
     ///
@@ -214,7 +279,10 @@ pub unsafe trait AllocationAPI {
     /// A zero-sized `new_size` with a non-null `pointer` frees it and returns
     /// `Ok(null_mut())`. A null `pointer` requests allocation, including when
     /// `new_size` is zero. For a nonzero `new_size`, `Ok` contains a non-null
-    /// pointer.
+    /// pointer. The return type is a raw pointer because a successful
+    /// non-null-to-zero resize deliberately returns null.
+    /// See the trait-level current alpha limitation for a null input and zero
+    /// size.
     ///
     /// # Safety
     ///
@@ -243,6 +311,8 @@ pub unsafe trait AllocationAPI {
     /// [`AllocationAPI::reallocate`]. A null `pointer` requests allocation even
     /// when `new_size` is zero. For a nonzero `new_size`, `Ok` contains a
     /// non-null pointer.
+    /// See the trait-level current alpha limitation for a null input and zero
+    /// size.
     ///
     /// # Safety
     ///

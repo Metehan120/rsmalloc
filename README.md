@@ -1,7 +1,7 @@
 
 # RSMalloc
 
-An RSEQ-based memory allocator for Rust, focused on low-overhead concurrent allocation for real applications rather than benchmark-only patterns. The small-allocation fast path uses Linux Restartable Sequences (RSEQ), so cache ownership follows the CPU, not the thread. Larger allocations go through a separate NUMA-aware buddy-cached path.
+An RSEQ-based memory allocator for Rust, focused on low-overhead concurrent allocation for real applications rather than benchmark-only patterns. The small-allocation fast path uses Linux Restartable Sequences (RSEQ), so cache ownership follows the CPU, not the thread. Larger allocations use a NUMA-aware segmented-bitmap cache or direct mappings.
 
 **Status: `0.3.0-alpha`. Alpha-quality software — not production-ready.** See [Status & Limitations](#status--limitations) below.
 
@@ -36,12 +36,12 @@ Preload builds provide the standard C ABI: `malloc`, `calloc`, `realloc`, `reall
 ## Design Approach
 
 - **CPU-local caching via RSEQ.** The small-allocation fast path mutates per-CPU freelists without normal lock overhead as long as the thread stays on the same CPU through the critical section; on migration the operation retries or falls back to a transfer cache.
-- **NUMA topology is used where available**, as a placement preference rather than a guarantee. Transfer-cache stealing, refill arenas, the buddy backend, and pending-metadata reuse try the current node first before scanning remote nodes. This is preferred placement (`mbind`), not enforced physical placement, and the public capability surface currently reports NUMA support as partial.
+- **NUMA topology is used where available**, as a placement preference rather than a guarantee. Transfer-cache stealing, refill arenas, the segmented-bitmap backend, and pending-metadata reuse try the current node first before scanning remote nodes. This is preferred placement (`mbind`), not enforced physical placement, and the public capability surface currently reports NUMA support as partial.
 - **Adaptive refill sizing.** A small integer predictor grows/shrinks per-class refill batches based on observed demand instead of a static batch size.
-- **Background and manual trimming.** Cold small-allocation and buddy-cached pages are returned to the kernel via `madvise`, with per-size-class eligibility tracked by an EMA of observed block lifetimes.
+- **Background and manual trimming.** Cold small-allocation and segmented-bitmap cached pages are returned to the kernel via `madvise`, with per-size-class eligibility tracked by an EMA of observed block lifetimes.
 - In early, workload-specific measurements it has performed competitively against mimalloc/glibc on some real applications — see [benchmarks/real_workloads.md](benchmarks/real_workloads.md). This is not a general performance guarantee; results vary by workload (see the Blender numbers there for a mixed case).
 
-None of this has been evaluated at production scale or across a wide range of workloads yet. For the full internals (allocation/free lifecycle, slab cache layout, refill path, buddy backend, ownership tracking) see [ARCHITECTURE.md](ARCHITECTURE.md).
+None of this has been evaluated at production scale or across a wide range of workloads yet. For the full internals (allocation/free lifecycle, slab cache layout, refill path, segmented-bitmap backend, ownership tracking) see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Status & Limitations
 
@@ -83,7 +83,7 @@ const CONFIG: Config = Config::new(
 static GLOBAL: RSMalloc = RSMalloc::new(CONFIG);
 ```
 
-Defaults: randomized magic values enabled, abort on foreign pointers, general THP enabled (buddy THP forcing off), a 64 MiB buddy per-cache target, a 256 MiB minimum slab arena, 10 MiB small and 512 MiB big background-trim thresholds, memory-pressure relief disabled, and the allocator-default refill prediction.
+Defaults: randomized magic values enabled, abort on foreign pointers, general THP enabled (segmented-bitmap THP forcing off), a 64 MiB initial segmented-bitmap region, a 256 MiB minimum slab arena, 10 MiB small and 512 MiB big background-trim thresholds, memory-pressure relief disabled, and the allocator-default refill prediction.
 
 Security-sensitive configuration is hidden unless the `expose-security-critical-settings` feature is enabled. Keeping fixed magic values additionally requires the explicit unsafe `MagicSafetyDisable::acknowledge_safety_risk()` token.
 
@@ -106,7 +106,11 @@ The macro is available in Rust allocator builds, not `preload` builds. It uses v
 
 ### Native allocation interface
 
-The native allocation interface is optional and disabled by default. Enable the `native-allocation-api` Cargo feature (for example, `rsmalloc = { version = "0.3.0-alpha", features = ["native-allocation-api"] }`). It does not require the nightly-only `allocator-api` feature. For allocator-specific use that does not depend on Rust's `GlobalAlloc` or unstable `Allocator` API, import `AllocationAPI` and construct byte-count requests with `AllocationSize`:
+The native allocation interface is optional and disabled by default. Enable the `native-allocation-api` Cargo feature (for example, `rsmalloc = { version = "0.3.0-alpha", features = ["native-allocation-api"] }`). It works on stable Rust and is independent of the nightly-only `allocator-api` feature.
+
+`AllocationAPI` is for callers that want allocator-owned metadata without retaining a Rust `Layout`. `AllocationSize` records bytes only: `array_bytes::<T>(count)` checks multiplication, but does not request `T`'s alignment. Use `allocate_aligned` for typed storage whose alignment matters. A returned pointer stays allocated until you deallocate it or successfully reallocate it; dropping the raw pointer does nothing.
+
+This example requests a typed alignment, handles a failed resize without losing the original allocation, and frees the final pointer:
 
 ```rust
 use std::{mem::align_of, num::NonZero};
@@ -125,11 +129,17 @@ fn main() -> Result<(), AllocationError> {
     // Request more space and a stronger alignment without retaining a Layout.
     // A successful reallocation invalidates the old pointer, even if unchanged.
     let pointer = unsafe {
-        ALLOCATOR.aligned_reallocate(
+        match ALLOCATOR.aligned_reallocate(
             pointer.as_ptr(),
             AllocationSize::from_bytes(2048),
             NonZero::new(64).unwrap(),
-        )?
+        ) {
+            Ok(next) => next,
+            Err(error) => {
+                ALLOCATOR.deallocate(pointer.as_ptr());
+                return Err(error);
+            }
+        }
     };
     assert_eq!((pointer as usize) % 64, 0);
     unsafe { ALLOCATOR.deallocate(pointer) };
@@ -137,7 +147,22 @@ fn main() -> Result<(), AllocationError> {
 }
 ```
 
-The aligned methods accept `NonZero<usize>` alignments; the allocator still requires a supported power of two. Use `AllocationAPI::reallocate` to preserve an allocation's existing alignment, or `AllocationAPI::aligned_reallocate` to request a new alignment. Both take and return raw pointers: a null input requests a new allocation (even for size zero), while a zero-sized request with a non-null input frees the old block and returns `Ok(null_mut())`. For nonzero sizes, success returns a non-null pointer; errors leave a non-null original allocation live. `deallocate` also takes a raw pointer and treats null as a no-op. The current method name is spelled `aligned_reallocate` in the API. `RSMalloc::raw()` exposes the lower-level malloc-style pointer interface through `v2::alloc::RawInterface`. Its operations are unsafe and are intended for callers that explicitly need raw-pointer semantics. Manual trimming and the safe `rs_usable_size` helper are available through `v2::alloc::RSMallocCoreAPI`.
+The main operations are:
+
+| Operation | Result and ownership |
+|---|---|
+| `allocate`, `allocate_aligned` | Return uninitialized storage as `NonNull<u8>`; alignment must be a supported power of two. |
+| `allocate_zeroed`, `allocate_zeroed_nmem` | Zero the requested bytes, not necessarily any extra usable capacity. The `nmem` form checks multiplication and currently reports either overflow or allocation failure as `SomethingWentWrong`. |
+| `usable_size` | Reports usable payload bytes for a live pointer. Extra capacity may exist but is not automatically initialized. |
+| `deallocate` | Frees a live pointer without its original size or alignment; null is a no-op. |
+| `reallocate` | Preserves the existing alignment. A successful resize invalidates the old pointer even if the address stays the same. |
+| `aligned_reallocate` | Requests a result with at least the supplied alignment; it may move solely to satisfy that alignment. |
+
+Both resize methods accept a null input as an allocation request, including for size zero. A zero-sized request with a **non-null** input frees the old allocation and returns `Ok(null_mut())`. For nonzero sizes, `Ok` contains a non-null pointer; on `Err`, the original non-null allocation remains live and must still be freed or retried. The aligned methods take `NonZero<usize>`, but still require a supported power of two. `usable_size`, `deallocate`, and both resize methods require a live pointer from an equivalent rsmalloc instance when the pointer is non-null. Do not pass a pointer owned by another allocator.
+
+Current alpha limitation: for a **null** input and zero size, either resize method attempts an allocation but can return `Ok(null_mut())` if that allocation fails. In that case there is no allocation to free.
+
+For lower-level malloc-style operations, `RSMalloc::raw()` exposes `v2::alloc::RawInterface`. Manual trimming and the `rs_usable_size` helper are available through `v2::alloc::RSMallocCoreAPI`. These interfaces are separate from Rust's `GlobalAlloc` and `Allocator` contracts.
 
 ### Runtime environment variables (preload builds)
 
@@ -146,14 +171,14 @@ The aligned methods accept `NonZero<usize>` alignments; the allocator still requ
 | `RS_ARENA_SIZE` | `268435456` (256 MiB) | Minimum slab page-backend arena size in bytes. |
 | `RS_PREDICTOR_INIT_BATCH` | `128` | Initial per-class refill predictor batch. |
 | `RS_MAX_REFILL_RETRIES` | `3` | Max refill retries. |
-| `RS_BUDDY_PER_CACHE_SIZE` | `268435456` | Initial buddy region size; clamped to at least this, rounded to a power of two. |
-| `RS_BUDDY_ATTEMPT_HUGEPAGE` | `0` | Set `1` to request THP for buddy regions. |
+| `RS_SEGMENTED_BITMAP_PER_CACHE_SIZE` | `67108864` (64 MiB) | Initial segmented-bitmap region size; clamped to at least 64 MiB and rounded to a power of two. Later growth adds 64 MiB regions. |
+| `RS_SEGMENTED_BITMAP_ATTEMPT_HUGEPAGE` | `0` | Set `1` to request THP for segmented-bitmap regions. |
 | `RS_DISABLE_TRIM_THREAD` | `0` | Set nonzero to disable the background trim worker (manual `malloc_trim` still works). |
 | `RS_TRIMMER_THRESHOLD` | `10485760` | Minimum cached small-allocation VA (bytes) before the background trim worker starts. |
 | `RS_BIG_TRIMMER_THRESHOLD` | `536870912` | Minimum cached big-allocation VA (bytes) before the background trim worker starts. |
 | `RS_ENABLE_RELIEF` | disabled | Set `0` to enable system-memory-pressure relief (yes, `0` enables it in the current alpha). |
-| `RS_BUDDY_RELIEF_DISABLE_PERCENTAGE` | `85` | System memory-usage % at/above which the buddy backend is disabled. |
-| `RS_BUDDY_RELIEF_ENABLE_PERCENTAGE` | `80` | System memory-usage % at/below which the buddy backend may re-enable. |
+| `RS_SEGMENTED_BITMAP_RELIEF_DISABLE_PERCENTAGE` | `85` | System memory-usage % at/above which segmented-bitmap allocation is disabled. |
+| `RS_SEGMENTED_BITMAP_RELIEF_ENABLE_PERCENTAGE` | `80` | System memory-usage % at/below which segmented-bitmap allocation may re-enable. |
 | `RS_DISABLE_THP` | `0` | Set `1` to disable transparent huge page attempts. |
 | `RS_DISABLE_RANDOMIZING` | `0` | Set `1` to keep fixed built-in magic values instead of randomizing at bootstrap. |
 
@@ -198,7 +223,7 @@ Each tier below enables the previous one plus more. Higher tiers add real overhe
 
 ## Architecture
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full walkthrough. Short version: `abi` (C ABI), `global_alloc` (Rust `GlobalAlloc`), `inner` (shared alloc/free/realloc/calloc/align ops), `rseq_core` (`SLAB_CACHE`, transfer caches, RSEQ asm, refill), `big_allocations` (`BUDDY_BACKEND`), `internals` (`RADIX` ownership map, `BIG_META_MAP`, NUMA, locks), `backend` (slab page arenas), `core_prim` (bootstrap, predictors, fork handling).
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full walkthrough. Short version: `abi` (C ABI), `global_alloc` (Rust `GlobalAlloc`), `inner` (shared alloc/free/realloc/calloc/align ops), `rseq_core` (`SLAB_CACHE`, transfer caches, RSEQ asm, refill), `big_allocations` (`SEGMENTED_BITMAP_BACKEND` and direct mappings), `internals` (`RADIX` ownership map, `BIG_META_MAP`, NUMA, locks), `backend` (slab page arenas), `core_prim` (bootstrap, predictors, fork handling).
 
 ## Contributing
 

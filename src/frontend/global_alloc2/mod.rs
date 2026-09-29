@@ -3,4 +3,5 @@ pub mod alloc;
 pub mod allocation_api;
 pub mod config;
 mod debug;
+pub mod helpers;
 mod raw;

@@ -169,7 +169,7 @@ pub static GLOBAL_SPIN_WAITS: AtomicUsize = AtomicUsize::new(0);
 pub static TIME_STAMP: OnceLock<Instant> = OnceLock::new();
 pub static CURRENT_STAMP: AtomicU32 = AtomicU32::new(0);
 pub static AVERAGE_BLOCK_TIMES: AtomicU32 = AtomicU32::new(10);
-pub static SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES: AtomicU32 = AtomicU32::new(100);
+pub static SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES: AtomicU32 = AtomicU32::new(55);
 pub static GLOBAL_TRIM_LOCK: SpinLock<()> = SpinLock::new(());
 pub static mut NCPU: usize = 0;
 

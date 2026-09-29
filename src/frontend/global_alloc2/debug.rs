@@ -1,10 +1,10 @@
+use crate::v2::alloc::RSMalloc;
 #[cfg(any(feature = "debug", doc))]
 use crate::{Header, core_prim::wrappers::UnsafePointer, inner::alloc::rs_alloc};
-use crate::{
-    big_allocations::segmented_bitmap::{
-        BIG_SEGMENTED_BITMAP_MAX_ORDER, BIG_SEGMENTED_BITMAP_MIN_ORDER,
-    },
-    v2::alloc::RSMalloc,
+
+#[cfg(any(feature = "debug", doc))]
+use crate::big_allocations::segmented_bitmap::{
+    BIG_SEGMENTED_BITMAP_MAX_ORDER, BIG_SEGMENTED_BITMAP_MIN_ORDER,
 };
 
 impl RSMalloc {
@@ -313,7 +313,8 @@ impl RSMalloc {
     }
 }
 
-pub const RSMALLOC_SEGMENTED_BITMAP_NUM_ORDERS: usize =
+#[cfg(any(feature = "debug", doc))]
+const RSMALLOC_SEGMENTED_BITMAP_NUM_ORDERS: usize =
     BIG_SEGMENTED_BITMAP_MAX_ORDER - BIG_SEGMENTED_BITMAP_MIN_ORDER + 1;
 
 #[cfg(any(feature = "debug", doc))]

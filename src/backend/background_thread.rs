@@ -8,7 +8,10 @@ use crate::{
     big_allocations::segmented_bitmap::{
         SEGMENTED_BITMAP_BACKEND, SEGMENTED_BITMAP_TOTAL_CACHED_VA,
     },
-    global_vals::{BIG_TRIM_THRESHOLD, SMALL_TRIM_THRESHOLD, TOTAL_CACHED_VA},
+    global_vals::{
+        BIG_TRIM_THRESHOLD, SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES, SMALL_TRIM_THRESHOLD,
+        TOTAL_CACHED_VA,
+    },
     rseq_core::slab_cache::SLAB_CACHE,
 };
 
@@ -150,7 +153,8 @@ pub unsafe fn relief_paths() {
 
 #[inline(never)]
 pub unsafe fn background_reclaimer_main() -> ! {
-    let mut latest_stamp = 0;
+    let mut latest_slab_stamp = 0;
+    let mut latest_segmented_bitmap_stamp = 0;
     let mut total_elapsed = 0;
 
     loop {
@@ -167,14 +171,19 @@ pub unsafe fn background_reclaimer_main() -> ! {
         let stamp = (get_clock().elapsed().as_millis() / 100) as u32;
         CURRENT_STAMP.store(stamp, Relaxed);
 
-        if stamp.saturating_sub(latest_stamp) > AVERAGE_BLOCK_TIMES.load(Relaxed).max(30)
+        if stamp.saturating_sub(latest_segmented_bitmap_stamp)
+            > SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES.load(Relaxed)
             && !DISABLE_TRIM_THREAD
         {
-            use crate::big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND;
-            latest_stamp = stamp;
-
-            SLAB_CACHE.trim_small(0);
+            latest_segmented_bitmap_stamp = stamp;
             SEGMENTED_BITMAP_BACKEND.trim_old(0);
+        }
+
+        if stamp.saturating_sub(latest_slab_stamp) > AVERAGE_BLOCK_TIMES.load(Relaxed).max(30)
+            && !DISABLE_TRIM_THREAD
+        {
+            latest_slab_stamp = stamp;
+            SLAB_CACHE.trim_small(0);
         }
     }
 }

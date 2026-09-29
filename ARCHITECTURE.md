@@ -18,6 +18,8 @@ The central ownership rule for small objects is:
 
 Threads therefore do not own small-allocation heaps. RSEQ makes the local CPU cache cheap to access, transfer caches redistribute excess blocks, and the page allocator supplies backing memory when reuse cannot satisfy demand.
 
+RSMalloc is designed to avoid relying on aggressive trimming: adaptive refill sizing and cross-CPU reuse keep cached memory available where demand exists, while age-aware reclamation targets cold pages rather than repeatedly discarding and refaulting hot memory. This is a design goal, not a guarantee of low retention for every workload.
+
 ## System Overview
 
 ```mermaid

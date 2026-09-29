@@ -40,7 +40,7 @@ flowchart TD
     MMAP --> RADIX
 
     INNER --> BIGMAP["Exact large-allocation metadata map"]
-    LOCAL --> TRIM["Age-aware slab trimming"]
+    LOCAL --> TRIM["Slab and segmented-bitmap trimming"]
     SEGMENTED --> TRIM
 ```
 
@@ -50,7 +50,7 @@ The page allocator is the shared reservation layer. It backs slab refill spans, 
 
 | Area | Responsibility |
 | --- | --- |
-| `src/frontend/` | Rust global allocator APIs, the v2 native API/configuration surface, stats, and the preload C ABI. |
+| `src/frontend/` | Rust global allocator APIs, the v2 native API/configuration and helpers, stats, and the preload C ABI. |
 | `src/inner/` | Shared allocation, free, calloc, aligned allocation, realloc, and preload fallback behavior. |
 | `src/rseq_core/` | RSEQ TLS access, per-CPU slab caches, assembly critical sections, transfer caches, pending refill metadata, and bulk initialization. |
 | `src/backend/page_allocator.rs` | NUMA-aware arena reservation and atomic bump allocation. |
@@ -404,7 +404,7 @@ Header magic distinguishes live slab allocations, freed slab blocks, and large a
 
 ## Trimming, Lifetime Adaptation, and Relief
 
-The background thread advances `CURRENT_STAMP` in 100 ms units and periodically considers reclaiming cached pages.
+The background thread advances `CURRENT_STAMP` in 100 ms units. It keeps separate last-run stamps for slab and segmented-bitmap trimming: the slab pass is scheduled after more than `max(AVERAGE_BLOCK_TIMES, 30)` stamps, while the segmented-bitmap pass uses its own `SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES` interval. Both are best-effort and subject to their respective cache thresholds and the global trim lock.
 
 ### Slab trimming
 
@@ -421,7 +421,13 @@ An EMA-like per-class lifetime estimate controls age eligibility. Reclaimed bloc
 
 ### Segmented-bitmap trimming
 
-Free bitmap slots retain dirty and historical-use state plus per-slot free timestamps. The trimmer atomically claims eligible free ranges before advising their pages away, then records whether the range is now trimmed. Allocation classification distinguishes never-allocated, reused, and reclaimed blocks so calloc can make a correct zeroing decision.
+Free bitmap slots retain dirty and historical-use state plus per-slot free timestamps. A background pass considers dirty free slots only after their age exceeds the segmented-bitmap lifetime estimate; it atomically claims eligible ranges before advising their pages away, then records whether the range is now trimmed. Allocation classification distinguishes never-allocated, reused, and reclaimed blocks so calloc can make a correct zeroing decision.
+
+The estimate starts at 55 stamps (5.5 seconds) and blends observed ages with an EMA, clamped to 10–85 stamps (1–8.5 seconds). Each never-allocated slot contributes an 85-stamp sample during a scan, so untouched capacity does not pull the estimate downward. This estimate also sets the interval between background segmented-bitmap trim passes; it is not a deadline for reclaiming an individual block.
+
+### Explicit trimming
+
+The v2 `RSMallocCoreAPI::trim` path scans slab caches first and then the segmented-bitmap backend for any remaining byte target. `SimpleTrimSize::All` requests an unbounded pass over both. The raw `AdvancedTrimSize::All` path scans both in the opposite order, and its variants can target either backend individually. Explicit segmented-bitmap trim calls bypass the age threshold, but reclamation remains best-effort; slab scans can return early below the configured cached-VA thresholds.
 
 ### Pressure relief
 

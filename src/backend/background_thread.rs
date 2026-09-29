@@ -5,8 +5,10 @@ use syscalls::{Sysno, syscall};
 
 use crate::{
     AVERAGE_BLOCK_TIMES, CURRENT_STAMP, DISABLE_TRIM_THREAD,
-    big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND,
-    global_vals::{SMALL_TRIM_THRESHOLD, TOTAL_CACHED_VA},
+    big_allocations::segmented_bitmap::{
+        SEGMENTED_BITMAP_BACKEND, SEGMENTED_BITMAP_TOTAL_CACHED_VA,
+    },
+    global_vals::{BIG_TRIM_THRESHOLD, SMALL_TRIM_THRESHOLD, TOTAL_CACHED_VA},
     rseq_core::slab_cache::SLAB_CACHE,
 };
 
@@ -71,7 +73,8 @@ pub unsafe fn spawn(entry: unsafe fn() -> !) -> bool {
 pub unsafe fn maybe_start_background_reclaimer() {
     use std::sync::atomic::Ordering;
 
-    if TOTAL_CACHED_VA.load(Ordering::Relaxed) < SMALL_TRIM_THRESHOLD
+    if (TOTAL_CACHED_VA.load(Ordering::Relaxed) < SMALL_TRIM_THRESHOLD
+        && SEGMENTED_BITMAP_TOTAL_CACHED_VA.load(Ordering::Relaxed) < BIG_TRIM_THRESHOLD)
         || RECLAIM_GUARD.load(Ordering::Relaxed) == true
     {
         return;

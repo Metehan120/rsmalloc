@@ -71,6 +71,79 @@ impl THPSettings {
     }
 }
 
+/// A configuration size expressed in bytes or binary units.
+///
+/// Used for trim thresholds, initial segmented-bitmap region sizing, and
+/// minimum slab arena sizing. KiB, MiB, and GiB mean powers of 1024, not 1000.
+/// Constructors preserve the supplied unit; conversion to bytes happens when
+/// the setting is validated or applied.
+///
+/// The caller must ensure that the resulting byte count fits in `usize`.
+/// Unit conversion uses ordinary multiplication and does not check overflow.
+/// Individual settings may impose additional constraints, such as
+/// [`ArenaSize`]'s 512 KiB granularity.
+///
+/// ```rust
+/// use rsmalloc::v2::config::{ArenaSize, PerCacheLimit, Size};
+///
+/// let initial_region = PerCacheLimit::Custom(Size::mib(64));
+/// let arena = ArenaSize::new(Size::mib(256));
+/// assert!(arena.is_some());
+/// ```
+#[derive(Clone, Copy, Debug)]
+pub enum Size {
+    /// A byte count.
+    Bytes(usize),
+    /// A kibibyte count: each KiB is 1024 bytes.
+    KiB(usize),
+    /// A mebibyte count: each MiB is 1024 KiB.
+    MiB(usize),
+    /// A gibibyte count: each GiB is 1024 MiB.
+    GiB(usize),
+}
+
+impl Size {
+    /// Default small-allocation threshold for waking the background trimmer: 10 MiB.
+    pub const SMALL_TRIM_DEFAULT: Self = Self::Bytes(DEFAULT_SMALL_TRIM_THRESHOLD);
+    /// Default big-allocation threshold for waking the background trimmer: 512 MiB.
+    pub const BIG_TRIM_DEFAULT: Self = Self::Bytes(DEFAULT_BIG_TRIM_THRESHOLD);
+
+    /// Creates a size expressed in bytes.
+    pub const fn bytes(value: usize) -> Self {
+        Self::Bytes(value)
+    }
+
+    /// Creates a size expressed in KiB (1024 bytes each).
+    ///
+    /// The caller must ensure that `value * 1024` fits in `usize`.
+    pub const fn kib(value: usize) -> Self {
+        Self::KiB(value)
+    }
+
+    /// Creates a size expressed in MiB (1024 KiB each).
+    ///
+    /// The caller must ensure that `value * 1024 * 1024` fits in `usize`.
+    pub const fn mib(value: usize) -> Self {
+        Self::MiB(value)
+    }
+
+    /// Creates a size expressed in GiB (1024 MiB each).
+    ///
+    /// The caller must ensure that `value * 1024 * 1024 * 1024` fits in `usize`.
+    pub const fn gib(value: usize) -> Self {
+        Self::GiB(value)
+    }
+
+    const fn get(self) -> usize {
+        match self {
+            Self::Bytes(value) => value,
+            Self::KiB(value) => value * 1024,
+            Self::MiB(value) => value * 1024 * 1024,
+            Self::GiB(value) => value * 1024 * 1024 * 1024,
+        }
+    }
+}
+
 /// Initial segmented-bitmap region size.
 ///
 /// The backend rounds this to at least 64 MiB and a power of two. Later
@@ -78,7 +151,7 @@ impl THPSettings {
 #[derive(Clone, Copy, Debug)]
 pub enum PerCacheLimit {
     /// Requested initial region bytes. The backend normalizes the value.
-    Bytes(usize),
+    Custom(Size),
     /// Use rsmalloc's 64 MiB default.
     Default,
 }
@@ -86,7 +159,7 @@ pub enum PerCacheLimit {
 impl PerCacheLimit {
     const fn bytes(self) -> usize {
         match self {
-            Self::Bytes(bytes) => bytes,
+            Self::Custom(size) => size.get(),
             Self::Default => DEFAULT_SEGMENTED_BITMAP_CACHE,
         }
     }
@@ -98,35 +171,24 @@ impl PerCacheLimit {
 /// ownership granularity. An arena may be larger when an individual backend
 /// request exceeds this configured minimum.
 #[derive(Clone, Copy, Debug)]
-pub struct ArenaBytes(usize);
+pub struct ArenaSize(Size);
 
-impl ArenaBytes {
+impl ArenaSize {
     /// The default minimum arena size: 256 MiB.
-    pub const DEFAULT: Self = Self(1024 * 1024 * 256);
+    pub const DEFAULT: Self = Self(Size::MiB(256));
 
     /// Creates an arena-size setting when `size` is a multiple of 512 KiB.
     ///
     /// Returns [`None`] when the requested size does not satisfy the radix
     /// ownership alignment requirement.
     #[must_use]
-    pub fn new(size: usize) -> Option<ArenaBytes> {
-        if !size.is_multiple_of(CHUNK_SIZE) {
+    pub fn new(size: Size) -> Option<ArenaSize> {
+        if !size.get().is_multiple_of(CHUNK_SIZE) {
             return None;
         }
 
-        Some(ArenaBytes(size))
+        Some(ArenaSize(size))
     }
-}
-
-/// A byte count used by configuration fields.
-#[derive(Clone, Copy, Debug)]
-pub struct Bytes(pub usize);
-
-impl Bytes {
-    /// Default small-allocation threshold for waking the background trimmer: 10 MiB.
-    pub const SMALL_TRIM_DEFAULT: Self = Self(DEFAULT_SMALL_TRIM_THRESHOLD);
-    /// Default big-allocation threshold for waking the background trimmer: 512 MiB.
-    pub const BIG_TRIM_DEFAULT: Self = Self(DEFAULT_BIG_TRIM_THRESHOLD);
 }
 
 /// Background trimming-worker state.
@@ -150,9 +212,9 @@ pub struct TrimSettings {
     /// Whether the background trimming worker runs.
     pub background_worker: TrimThread,
     /// Cached small-allocation bytes required to trigger background trimming.
-    pub small_threshold: Bytes,
+    pub small_threshold: Size,
     /// Cached big-allocation bytes required to trigger background trimming.
-    pub big_threshold: Bytes,
+    pub big_threshold: Size,
 }
 
 impl TrimSettings {
@@ -160,15 +222,15 @@ impl TrimSettings {
     /// 512 MiB big-allocation thresholds.
     pub const DEFAULT: Self = Self {
         background_worker: TrimThread::Enabled,
-        small_threshold: Bytes::SMALL_TRIM_DEFAULT,
-        big_threshold: Bytes::BIG_TRIM_DEFAULT,
+        small_threshold: Size::SMALL_TRIM_DEFAULT,
+        big_threshold: Size::BIG_TRIM_DEFAULT,
     };
 
     /// Creates background trimming settings.
     pub const fn new(
         background_worker: TrimThread,
-        small_threshold: Bytes,
-        big_threshold: Bytes,
+        small_threshold: Size,
+        big_threshold: Size,
     ) -> Self {
         Self {
             background_worker,
@@ -267,7 +329,7 @@ pub struct Tuning {
     ///
     /// Initialization enforces an absolute minimum of 512 KiB. The default is
     /// 256 MiB.
-    pub arena_min_size: ArenaBytes,
+    pub arena_min_size: ArenaSize,
 }
 
 impl Tuning {
@@ -279,7 +341,7 @@ impl Tuning {
         max_per_segmented_bitmap_cache: PerCacheLimit::Default,
         trim: TrimSettings::DEFAULT,
         relief: ReliefSettings::DEFAULT,
-        arena_min_size: ArenaBytes::DEFAULT,
+        arena_min_size: ArenaSize::DEFAULT,
     };
 
     /// Replaces the transparent huge-page settings.
@@ -332,7 +394,7 @@ impl Tuning {
 
     /// Replaces the minimum slab arena size.
     #[must_use]
-    pub const fn with_arena_min_size(self, arena_min_size: ArenaBytes) -> Self {
+    pub const fn with_arena_min_size(self, arena_min_size: ArenaSize) -> Self {
         Self {
             arena_min_size,
             ..self
@@ -516,7 +578,7 @@ impl Config {
             SegmentedBitmapTHP::Disabled
         };
         let cache = match legacy.max_per_segmented_bitmap_cache {
-            old::PerCacheLimit::Bytes(bytes) => PerCacheLimit::Bytes(bytes),
+            old::PerCacheLimit::Bytes(bytes) => PerCacheLimit::Custom(Size::bytes(bytes)),
             old::PerCacheLimit::Default => PerCacheLimit::Default,
         };
         let trim_worker = if matches!(
@@ -540,15 +602,15 @@ impl Config {
             max_per_segmented_bitmap_cache: cache,
             trim: TrimSettings::new(
                 trim_worker,
-                Bytes(legacy.trim_thread.threshold.0),
-                Bytes::BIG_TRIM_DEFAULT,
+                Size::Bytes(legacy.trim_thread.threshold.0),
+                Size::BIG_TRIM_DEFAULT,
             ),
             relief: ReliefSettings::new(
                 relief_state,
                 Percentage::new(legacy.relief.segmented_bitmap_disable_percentage.0),
                 Percentage::new(legacy.relief.segmented_bitmap_enable_percentage.0),
             ),
-            arena_min_size: ArenaBytes(arena_size),
+            arena_min_size: ArenaSize(Size::bytes(arena_size)),
         })
     }
 
@@ -586,14 +648,14 @@ impl Config {
         let arena_size = self.tuning.arena_min_size.0;
 
         BootstrapConfig::new(
-            arena_size,
+            arena_size.get(),
             self.tuning.max_refill_retries as usize,
             self.tuning.refill_init_batch as usize,
             self.tuning.max_per_segmented_bitmap_cache.bytes(),
             self.tuning.thp.segmented_bitmap_use_thp.enabled(),
             self.tuning.trim.background_worker.disabled(),
-            self.tuning.trim.small_threshold.0,
-            self.tuning.trim.big_threshold.0,
+            self.tuning.trim.small_threshold.get(),
+            self.tuning.trim.big_threshold.get(),
             self.tuning.relief.state.disabled(),
             disable_percentage,
             enable_percentage,

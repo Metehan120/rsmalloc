@@ -2,7 +2,11 @@
 
 ## v0.3.0-alpha
 
-v0.3.0-alpha is an architectural cleanup and scalability pass over `0.2.0-alpha`, targeting weaknesses in alpha-2: fork-safety gaps in the newer page-backend/pending-queue locks, incomplete debug-stats coverage relative to the exit-time text report, and a module layout that mixed public-surface code in with internals. It also introduces a new Rust API, replaces the buddy backend with an experimental segmented-bitmap design, makes the page-backend allocation fast path lock-free, adds opt-in guard-page hardening, and closes out correctness bugs found while chasing benchmark numbers.
+v0.3.0-alpha (alpha-3) is RSMalloc's biggest update yet, reworking how it exposes configuration, manages refill memory, and caches large allocations. The default Rust global allocator and C preload builds now support stable Rust: partially consumed refill spans move from thread-local storage into per-CPU slots, removing allocator-owned TLS and thread-exit cleanup. The new `rsmalloc::v2` API separates ordinary tuning from security-sensitive settings and offers an optional stable native allocation interface without requiring callers to retain a Rust `Layout`.
+
+Internally, an experimental segmented-bitmap backend replaces the buddy cache for 4–64 MiB allocations, using atomic slot claims instead of tree traversal or per-order free lists. Page-arena reservations now use a lock-free bump fast path, pending refill metadata uses sharded ABA-tagged atomic stacks, and exact large-allocation metadata is split across independent hash-table shards. These changes reduce reliance on shared locks while preserving NUMA-local reuse. Slab and large-allocation trimming also get separate background schedules and revised large-block lifetime estimation.
+
+Alpha-3 also strengthens transfer-cache ABA protection, adds opt-in guard pages, addresses fork and background-worker signal-handling gaps, and expands structured diagnostics. Public frontend code is separated from allocator internals, with clearer API and architecture documentation. This is still an experimental alpha release: the new backend and public API may evolve, and the changes are not a blanket performance or production-readiness guarantee.
 
 ### Stable Rust and lock-free refill metadata
 

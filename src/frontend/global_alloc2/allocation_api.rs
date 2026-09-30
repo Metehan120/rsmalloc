@@ -176,12 +176,9 @@ impl AllocationSizeAPI for AllocationSize {
 /// retry it. All methods returning [`AllocationError::NotSupported`] leave
 /// existing allocations untouched.
 ///
-/// # Current alpha limitation
-///
-/// RSMalloc's `reallocate(null_mut(), zero_size)` and
-/// `aligned_reallocate(null_mut(), zero_size, alignment)` attempt an allocation,
-/// but currently can return `Ok(null_mut())` if that allocation fails. In this
-/// one case, `Ok(null_mut())` does not identify an allocation to deallocate.
+/// RSMalloc rejects a null-pointer, zero-size reallocation request with
+/// [`AllocationError::NotSupported`]. `Ok(null_mut())` is returned only when
+/// a non-null allocation is freed by resizing it to zero.
 ///
 /// # Safety
 ///
@@ -190,7 +187,8 @@ impl AllocationSizeAPI for AllocationSize {
 /// them. Safe allocation methods must never expose overlapping storage, and
 /// every reallocation error must leave the original allocation live and
 /// unmodified. Deallocating a null pointer must be a no-op; reallocating a null
-/// pointer must behave as allocation.
+/// pointer must behave as allocation for supported requests. Implementations
+/// may reject a null-pointer, zero-size resize with an error.
 pub unsafe trait AllocationAPI {
     /// Size token accepted by this allocator.
     type Size: AllocationSizeAPI<Out = Self::Size> + Copy;
@@ -277,12 +275,11 @@ pub unsafe trait AllocationAPI {
     /// and unmodified.
     ///
     /// A zero-sized `new_size` with a non-null `pointer` frees it and returns
-    /// `Ok(null_mut())`. A null `pointer` requests allocation, including when
-    /// `new_size` is zero. For a nonzero `new_size`, `Ok` contains a non-null
-    /// pointer. The return type is a raw pointer because a successful
+    /// `Ok(null_mut())`. A null `pointer` requests allocation for a nonzero
+    /// `new_size`; RSMalloc returns [`AllocationError::NotSupported`] when both
+    /// the pointer and size are zero. For a nonzero `new_size`, `Ok` contains a
+    /// non-null pointer. The return type is a raw pointer because a successful
     /// non-null-to-zero resize deliberately returns null.
-    /// See the trait-level current alpha limitation for a null input and zero
-    /// size.
     ///
     /// # Safety
     ///
@@ -308,11 +305,10 @@ pub unsafe trait AllocationAPI {
     /// of the old and new requested sizes. For a nonzero `new_size`, errors leave
     /// the original allocation live and unmodified. A zero-sized `new_size`
     /// with a non-null `pointer` frees it and returns `Ok(null_mut())`, as with
-    /// [`AllocationAPI::reallocate`]. A null `pointer` requests allocation even
-    /// when `new_size` is zero. For a nonzero `new_size`, `Ok` contains a
-    /// non-null pointer.
-    /// See the trait-level current alpha limitation for a null input and zero
-    /// size.
+    /// [`AllocationAPI::reallocate`]. A null `pointer` requests allocation for
+    /// a nonzero `new_size`; with a valid alignment, RSMalloc returns
+    /// [`AllocationError::NotSupported`] when both the pointer and size are
+    /// zero. For a nonzero `new_size`, `Ok` contains a non-null pointer.
     ///
     /// # Safety
     ///

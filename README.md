@@ -159,9 +159,8 @@ The main operations are:
 | `reallocate` | Preserves the existing alignment. A successful resize invalidates the old pointer even if the address stays the same. |
 | `aligned_reallocate` | Requests a result with at least the supplied alignment; it may move solely to satisfy that alignment. |
 
-Both resize methods accept a null input as an allocation request, including for size zero. A zero-sized request with a **non-null** input frees the old allocation and returns `Ok(null_mut())`. For nonzero sizes, `Ok` contains a non-null pointer; on `Err`, the original non-null allocation remains live and must still be freed or retried. The aligned methods take `NonZero<usize>`, but still require a supported power of two. `usable_size`, `deallocate`, and both resize methods require a live pointer from an equivalent rsmalloc instance when the pointer is non-null. Do not pass a pointer owned by another allocator.
+Both resize methods accept a null input as an allocation request for a nonzero size. A **null** input with zero size returns `Err(AllocationError::NotSupported)` after alignment validation, if applicable. A zero-sized request with a **non-null** input frees the old allocation and returns `Ok(null_mut())`. For nonzero sizes, `Ok` contains a non-null pointer; on `Err`, the original non-null allocation remains live and must still be freed or retried. The aligned methods take `NonZero<usize>`, but still require a supported power of two. `usable_size`, `deallocate`, and both resize methods require a live pointer from an equivalent rsmalloc instance when the pointer is non-null. Do not pass a pointer owned by another allocator.
 
-Current alpha limitation: for a **null** input and zero size, either resize method attempts an allocation but can return `Ok(null_mut())` if that allocation fails. In that case there is no allocation to free.
 
 For lower-level malloc-style operations, `RSMalloc::raw()` exposes `v2::alloc::RawInterface`. Manual trimming and the `rs_usable_size` helper are available through `v2::alloc::RSMallocCoreAPI`. These interfaces are separate from Rust's `GlobalAlloc` and `Allocator` contracts.
 

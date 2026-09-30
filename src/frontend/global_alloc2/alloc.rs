@@ -303,6 +303,9 @@ unsafe impl AllocationAPI for RSMalloc {
         new_size: Self::Size,
     ) -> Result<*mut u8, AllocationError> {
         self.init();
+        if new_size.bytes() == 0 && pointer.is_null() {
+            return Err(AllocationError::NotSupported);
+        }
 
         let size = new_size.bytes();
         let pointer = rs_realloc(UnsafePointer::new(pointer).cast(), size, None);
@@ -321,6 +324,9 @@ unsafe impl AllocationAPI for RSMalloc {
         self.init();
         if !new_alignment.is_power_of_two() {
             return Err(AllocationError::InvalidAlignment);
+        }
+        if new_size.bytes() == 0 && pointer.is_null() {
+            return Err(AllocationError::NotSupported);
         }
 
         let size = new_size.bytes();

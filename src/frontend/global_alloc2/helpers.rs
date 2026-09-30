@@ -38,3 +38,13 @@ impl Alignment {
         Err(HelperErrors::NotALignOfTwo { alignment })
     }
 }
+
+pub const fn need_align_of<T>(multiple_of: usize) -> Result<bool, HelperErrors> {
+    if !multiple_of.is_power_of_two() {
+        return Err(HelperErrors::NotALignOfTwo {
+            alignment: multiple_of,
+        });
+    }
+
+    Ok(align_of::<T>() > multiple_of)
+}

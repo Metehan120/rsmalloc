@@ -8,9 +8,13 @@ An RSEQ-based memory allocator for Rust, focused on low-overhead concurrent allo
 
 > **Known issue:** Linux kernel `7.0.10` appears to trigger `SIGBUS` in some workloads when using rsmalloc. If you hit unexplained `SIGBUS` crashes, try a different kernel version before assuming allocator corruption.
 
-> **Alpha-3 announcement:** RSMalloc `0.3.0-alpha` will make the default Rust `GlobalAlloc` and C `LD_PRELOAD` configurations usable with stable Rust. The allocator's remaining nightly-only TLS dependency has been removed in the development branch. The optional `allocator-api` feature will continue to require nightly until Rust stabilizes `std::alloc::Allocator`.
-
-> **Second Alpha-3 announcement**: The Allocator API has entered the final stage of stabilization and is currently targeted for Rust 1.100. If Rust 1.100 is released before or alongside Alpha-3, I am considering enabling Allocator API support by default.
+> **Coming in Alpha-3 — RSMalloc's biggest update yet:** `0.3.0-alpha` will bring a redesigned Rust API and substantial changes to refill memory, large allocations, and allocator synchronization. The default Rust `GlobalAlloc` and C `LD_PRELOAD` builds will support stable Rust: partially consumed refill spans now live in per-CPU slots rather than allocator-owned TLS, removing the nightly-only TLS dependency and thread-exit cleanup. The optional `allocator-api` feature will remain nightly-only until Rust stabilizes `std::alloc::Allocator`.
+>
+> The new `rsmalloc::v2` API will separate ordinary tuning from security-sensitive settings and provide an optional native allocation interface with typed errors, checked allocation sizes, aligned allocation/reallocation, and manual trimming. Native allocations retain their metadata internally, so callers do not need to keep a Rust `Layout`. The transition schedule is outlined below; the preload C ABI is unaffected.
+>
+> Internally, an experimental segmented-bitmap backend will replace the buddy cache for 4–64 MiB allocations, claiming reusable blocks through atomic bitmap updates. Page-arena reservations will gain an atomic bump fast path, pending refill metadata will use sharded ABA-tagged atomic stacks, and exact large-allocation metadata will move from a single-lock tree to independently locked hash-table shards. These changes reduce reliance on shared locks while preserving NUMA-local reuse.
+>
+> Alpha-3 will also introduce independent slab and large-allocation trim schedules, revised large-block lifetime estimation, wider transfer-cache ABA protection, opt-in guard pages, fork and background-worker signal-handling fixes, and expanded diagnostics. RSMalloc is designed to avoid relying on aggressive trimming through adaptive refill sizing, cross-CPU reuse, and age-aware reclamation. This remains an experimental alpha release, not a promise of universal performance gains or production readiness.
 
 ## Alpha 3.0: Rust API transition
 

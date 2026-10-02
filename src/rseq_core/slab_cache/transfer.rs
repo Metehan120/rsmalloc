@@ -255,6 +255,8 @@ impl SlabCache {
             if list.trim_lock.get_lock() {
                 if !force {
                     return None;
+                } else if !pack.current_header.is_null() {
+                    continue 'retry;
                 }
 
                 loop {

@@ -121,7 +121,7 @@ impl SlabCache {
                         total += 1;
                     }
 
-                    if total_push == ITERATIONS[class] + 1 && is_push {
+                    if total_push == ITERATIONS[class] + ITERATIONS[class] / 2 && is_push {
                         self.transfer_push_batch(
                             class,
                             push_list,
@@ -150,8 +150,6 @@ impl SlabCache {
                         inner,
                     );
                 }
-
-                main_list.trim_lock.unlock();
 
                 crate::global_vals::record_transfer_pop!(class, total_popped);
                 if total > 0 {
@@ -191,6 +189,8 @@ impl SlabCache {
                     }
                     trim_list = next;
                 }
+
+                main_list.trim_lock.unlock();
             }
         }
 

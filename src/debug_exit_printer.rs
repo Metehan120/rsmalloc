@@ -355,7 +355,11 @@ pub(crate) unsafe fn print_report() {
     }
 
     section(&mut report, "trim and relief");
-    item(&mut report, "trim calls", TOTAL_TRIM_CALLS.load(Relaxed));
+    item(
+        &mut report,
+        "trim calls (s+l)",
+        TOTAL_TRIM_CALLS.load(Relaxed),
+    );
     byte_item(&mut report, "trimmed", TOTAL_TRIMMED_VA.load(Relaxed));
 
     #[cfg(feature = "debug-exact")]

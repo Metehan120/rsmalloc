@@ -182,7 +182,7 @@ impl ArenaSize {
     /// Returns [`None`] when the requested size does not satisfy the radix
     /// ownership alignment requirement.
     #[must_use]
-    pub fn new(size: Size) -> Option<ArenaSize> {
+    pub const fn new(size: Size) -> Option<ArenaSize> {
         if !size.get().is_multiple_of(CHUNK_SIZE) {
             return None;
         }

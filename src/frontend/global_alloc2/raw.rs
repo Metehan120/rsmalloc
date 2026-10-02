@@ -33,18 +33,18 @@ pub trait RawInterface {
     unsafe fn rs_trim(&self, trim_size: Self::TrimIn) -> Self::TrimOut;
 }
 
-pub struct RSMallocRaw {
-    global: &'static RSMalloc,
+pub struct RSMallocRaw<'a> {
+    global: &'a RSMalloc,
 }
 
-impl RSMalloc {
-    pub const fn raw(&'static self) -> RSMallocRaw {
+impl<'a> RSMalloc {
+    pub const fn raw(&'a self) -> RSMallocRaw<'a> {
         RSMallocRaw::from_global(self)
     }
 }
 
-impl RSMallocRaw {
-    pub const fn from_global(global: &'static RSMalloc) -> RSMallocRaw {
+impl<'a> RSMallocRaw<'a> {
+    pub const fn from_global(global: &'a RSMalloc) -> RSMallocRaw<'a> {
         RSMallocRaw { global }
     }
 }
@@ -63,7 +63,7 @@ pub struct TrimReport {
     pub slab_bytes: usize,
 }
 
-impl RawInterface for RSMallocRaw {
+impl<'a> RawInterface for RSMallocRaw<'a> {
     type TrimIn = AdvancedTrimSize;
     type TrimOut = TrimReport;
 

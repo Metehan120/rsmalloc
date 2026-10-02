@@ -40,7 +40,7 @@ Preload builds provide the standard C ABI: `malloc`, `calloc`, `realloc`, `reall
 - **Adaptive refill sizing.** A small integer predictor grows/shrinks per-class refill batches based on observed demand instead of a static batch size.
 - **Designed to avoid relying on aggressive trimming.** Adaptive refill sizing, cross-CPU reuse, and age-aware reclamation aim to keep reusable memory productive without repeatedly discarding and refaulting hot pages.
 - **Background and manual trimming.** Cold small-allocation and segmented-bitmap cached pages are returned to the kernel via `madvise`, with per-size-class eligibility tracked by an EMA of observed block lifetimes.
-- In early, workload-specific measurements it has performed competitively against mimalloc/glibc on some real applications — see [benchmarks/real_workloads.md](benchmarks/real_workloads.md). This is not a general performance guarantee; results vary by workload (see the Blender numbers there for a mixed case).
+
 
 None of this has been evaluated at production scale or across a wide range of workloads yet. For the full internals (allocation/free lifecycle, slab cache layout, refill path, segmented-bitmap backend, ownership tracking) see [ARCHITECTURE.md](ARCHITECTURE.md).
 

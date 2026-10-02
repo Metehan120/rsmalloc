@@ -151,6 +151,8 @@ impl SlabCache {
                     );
                 }
 
+                main_list.trim_lock.unlock();
+
                 crate::global_vals::record_transfer_pop!(class, total_popped);
                 if total > 0 {
                     let new_avg = (avg / total).clamp(1, 100);
@@ -189,8 +191,6 @@ impl SlabCache {
                     }
                     trim_list = next;
                 }
-
-                main_list.trim_lock.unlock();
             }
         }
 

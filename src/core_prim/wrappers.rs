@@ -100,12 +100,14 @@ impl<T> SafePointer<T> {
 
 impl<T> Deref for SafePointer<T> {
     type Target = T;
+    #[inline(always)]
     fn deref(&self) -> &T {
         unsafe { &*self.0 }
     }
 }
 
 impl<T> DerefMut for SafePointer<T> {
+    #[inline(always)]
     fn deref_mut(&mut self) -> &mut T {
         unsafe { &mut *self.0 }
     }
@@ -113,7 +115,7 @@ impl<T> DerefMut for SafePointer<T> {
 
 impl<T> Index<usize> for SafePointer<T> {
     type Output = T;
-
+    #[inline(always)]
     fn index(&self, index: usize) -> &Self::Output {
         unsafe { &*self.0.add(index) }
     }

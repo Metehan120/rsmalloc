@@ -26,7 +26,7 @@ use crate::{
     CURRENT_STAMP, Flags, GLOBAL_TRIM_LOCK, SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES,
     SEGMENTED_BITMAP_INIT, add_segmented_bitmap_cached_va,
     backend::page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR},
-    core_prim::predictor::EMA_ALPHA,
+    core_prim::{predictor::EMA_ALPHA, wrappers::SafePointer},
     global_vals::{BIG_TRIM_THRESHOLD, SMALL_TRIM_THRESHOLD, TOTAL_CACHED_VA},
     inner::alloc::MAX_REFILL_RETRIES,
     internals::{
@@ -88,7 +88,7 @@ struct HintLane {
 impl HintLane {
     fn new() -> Self {
         Self {
-            orders: std::array::from_fn(|_| AtomicPtr::new(null_mut())),
+            orders: [const { AtomicPtr::new(null_mut()) }; SEGMENTED_BITMAP_NUM_ORDERS],
         }
     }
 }
@@ -97,7 +97,7 @@ impl HintLane {
 struct Node {
     head: AtomicPtr<Region>,
     growth: SpinLock<()>,
-    lanes: *mut HintLane,
+    lanes: SafePointer<HintLane>,
 }
 
 impl Node {
@@ -105,13 +105,13 @@ impl Node {
         Self {
             head: AtomicPtr::new(null_mut()),
             growth: SpinLock::new(()),
-            lanes,
+            lanes: SafePointer::from(lanes),
         }
     }
 
     #[inline(always)]
     unsafe fn alloc(&self, order: usize, lane: usize) -> Option<Allocation> {
-        let hint = &(*self.lanes.add(lane)).orders[order];
+        let hint = &self.lanes[lane].orders[order];
         let preferred = hint.load(Ordering::Acquire);
         if !preferred.is_null()
             && let Some((addr, flags)) = (*preferred).alloc(order)
@@ -187,10 +187,10 @@ impl Region {
 
 #[repr(C, align(64))]
 struct State {
-    nodes: *mut Node,
+    nodes: SafePointer<Node>,
     node_count: usize,
     lane_count: usize,
-    active_ids: *const u16,
+    active_ids: SafePointer<u16>,
     active_count: usize,
     thp: bool,
     is_numa: bool,
@@ -198,7 +198,7 @@ struct State {
 
 impl State {
     unsafe fn node(&self, id: usize) -> &Node {
-        &*self.nodes.add(id)
+        &self.nodes[id]
     }
 
     unsafe fn regions(&self) -> impl Iterator<Item = &Region> {
@@ -284,10 +284,10 @@ impl SegmentedBitmapAllocator {
                 nodes.add(id).write(Node::new(node_lanes));
             }
             state.write(State {
-                nodes,
+                nodes: SafePointer::from(nodes),
                 node_count: count,
                 lane_count,
-                active_ids: numa.node_ids,
+                active_ids: SafePointer::from(numa.node_ids),
                 active_count: numa.nnodes,
                 thp,
                 is_numa: inner.is_numa,
@@ -311,14 +311,17 @@ impl SegmentedBitmapAllocator {
         if size > SEGMENT_BYTES {
             return None;
         }
+
         let order = size.max(SLOT_BYTES).next_power_of_two().trailing_zeros() as usize
             - BIG_SEGMENTED_BITMAP_MIN_ORDER;
+
         let state = self.state.load(Ordering::Acquire).as_ref()?;
         let id = if (node_id as usize) < state.node_count {
             node_id as usize
         } else {
             0
         };
+
         let lane = Self::lane_for_cpu(cpu_id, state.lane_count);
         let node = state.node(id);
         node.alloc(order, lane)
@@ -344,7 +347,7 @@ impl SegmentedBitmapAllocator {
                 let segment = (*region).segments();
                 let (addr, flags) = (*segment).alloc(order).unwrap();
                 node.publish(region);
-                (*node.lanes.add(lane)).orders[order].store(segment, Ordering::Release);
+                node.lanes[lane].orders[order].store(segment, Ordering::Release);
                 return Some((
                     addr,
                     order + BIG_SEGMENTED_BITMAP_MIN_ORDER,
@@ -355,7 +358,7 @@ impl SegmentedBitmapAllocator {
         }
 
         for index in 0..state.active_count {
-            let remote = *state.active_ids.add(index) as usize;
+            let remote = state.active_ids[index] as usize;
             if remote != id
                 && remote < state.node_count
                 && let Some(block) = state.node(remote).alloc(order, lane)

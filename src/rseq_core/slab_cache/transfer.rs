@@ -103,6 +103,19 @@ impl SlabCache {
         None
     }
 
+    #[inline(never)]
+    pub unsafe fn transfer_push_batch_noninline(
+        &self,
+        class: usize,
+        start: *mut Header,
+        tail: *mut Header,
+        batch_size: usize,
+        cpu_id: usize,
+        inner: &SlabCacheInner,
+    ) {
+        self.transfer_push_batch(class, start, tail, batch_size, cpu_id, inner);
+    }
+
     #[inline(always)]
     pub unsafe fn transfer_push_batch(
         &self,
@@ -147,6 +160,17 @@ impl SlabCache {
 
             spin_loop();
         }
+    }
+
+    #[inline(never)]
+    pub unsafe fn transfer_push_single_noninline(
+        &self,
+        class: usize,
+        header: *mut Header,
+        cpu_id: usize,
+        inner: &SlabCacheInner,
+    ) {
+        self.transfer_push_single(class, header, cpu_id, inner);
     }
 
     pub unsafe fn transfer_push_single(
@@ -335,6 +359,8 @@ impl SlabCache {
                     end: tail,
                     total: count,
                     available,
+                    #[cfg(feature = "predictor-debug")]
+                    batch_size: count,
                 });
             }
 

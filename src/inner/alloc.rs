@@ -146,8 +146,6 @@ macro_rules! refill {
         let batch = SLAB_CACHE
             .transfer_predictor($cpu_id, $class)
             .batch(PREDICTOR_INIT_BATCH, ITERATIONS[$class]);
-        #[cfg(feature = "predictor-debug")]
-        eprintln!("Predictor Block Batching: {} (class {})", batch, $class);
         batch
     }};
 }
@@ -157,8 +155,6 @@ macro_rules! bulk_refill {
         let batch = SLAB_CACHE
             .bulk_fill_predictor($cpu_id, $class)
             .batch(BULK_FILL_PREDICTOR_INIT_BATCH, ITERATIONS[$class]);
-        #[cfg(feature = "predictor-debug")]
-        eprintln!("Predictor Bulk Fill: {} (class {})", batch, $class);
         batch
     }};
 }
@@ -168,6 +164,10 @@ pub unsafe fn refill(class: usize, cpu_id: usize, fill_demand: usize) -> UnsafeP
     let bulk_batch = bulk_refill!(class, cpu_id);
 
     if let Ok((start, tail, count)) = bulk_fill(class, cpu_id, bulk_batch) {
+        #[cfg(feature = "predictor-debug")]
+        eprintln!(
+            "refill (mmap):class: {class}, \n cpu_id: {cpu_id}, \n expected_size: {bulk_batch}, \n observed_size: {count}"
+        );
         let observed = if count == bulk_batch && bulk_batch < ITERATIONS[class] {
             bulk_batch.saturating_add((bulk_batch / 4).max(1))
         } else {
@@ -217,6 +217,11 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
 
     let transfer_result = SLAB_CACHE.try_pop(class, cache_batch, cpu_id);
     if let Some(transfer_cache) = transfer_result {
+        #[cfg(feature = "predictor-debug")]
+        eprintln!(
+            "refill (transfer):class: {class}, \n cpu_id: {cpu_id}, \n expected_size: {cache_batch}, \n observed_size: {}, \n available_total: {}",
+            transfer_cache.batch_size, transfer_cache.available
+        );
         SLAB_CACHE
             .transfer_predictor(cpu_id, class)
             .update_transfer(

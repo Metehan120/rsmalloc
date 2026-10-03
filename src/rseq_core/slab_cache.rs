@@ -318,33 +318,36 @@ impl GenericCache for SlabCache {
         let inner = self.get_inner();
         let rseq = get_rseq();
 
-        let current_cpu = read_volatile(&rseq.cpu_id) as usize;
-        let list = &inner.cache[current_cpu].cache[class];
-        let usage_ptr = &list.usage;
+        let mut current_cpu = 0;
+        for _ in 0..3 {
+            current_cpu = read_volatile(&rseq.cpu_id) as usize;
+            let list = &inner.cache[current_cpu].cache[class];
+            let usage_ptr = &list.usage;
 
-        if usage_ptr.load(Ordering::Relaxed) >= CACHE_HIGH_BLOCKS[class] {
-            self.transfer_push_batch(class, header, tail, batch_size, current_cpu, inner);
-            return;
+            if (usage_ptr.load(Ordering::Relaxed) + batch_size) >= CACHE_HIGH_BLOCKS[class] {
+                self.transfer_push_batch(class, header, tail, batch_size, current_cpu, inner);
+                return;
+            }
+
+            let list_ptr = addr_of!(list.list) as *mut *mut Header;
+            if likely(
+                RseqCore
+                    .push_tailed(
+                        list_ptr,
+                        rseq,
+                        current_cpu,
+                        header,
+                        tail,
+                        usage_ptr.as_ptr(),
+                        batch_size,
+                    )
+                    .is_success(),
+            ) {
+                return;
+            }
         }
 
-        let list_ptr = addr_of!(list.list) as *mut *mut Header;
-        if likely(
-            RseqCore
-                .push_tailed(
-                    list_ptr,
-                    rseq,
-                    current_cpu,
-                    header,
-                    tail,
-                    usage_ptr.as_ptr(),
-                    batch_size,
-                )
-                .is_success(),
-        ) {
-            return;
-        }
-
-        self.transfer_push_batch(class, header, tail, batch_size, current_cpu, inner);
+        self.transfer_push_batch_noninline(class, header, tail, batch_size, current_cpu, inner);
 
         #[cfg(feature = "debug")]
         ABORTS.fetch_add(1, Relaxed);
@@ -376,7 +379,7 @@ impl GenericCache for SlabCache {
             }
 
             if loop_count > 3 {
-                self.transfer_push_single(class, header, current_cpu, inner);
+                self.transfer_push_single_noninline(class, header, current_cpu, inner);
                 return;
             }
 
@@ -414,6 +417,8 @@ pub struct TransferReturn {
     pub total: usize,
     /// Selected-list inventory sampled by the pop's counter update.
     pub available: usize,
+    #[cfg(feature = "predictor-debug")]
+    pub batch_size: usize,
 }
 
 impl SlabCache {

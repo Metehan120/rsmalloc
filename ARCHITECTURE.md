@@ -102,13 +102,12 @@ flowchart TD
     SAME --> REMOTE{"Found?"}
     REMOTE -- No and NUMA --> OTHER["Scan other NUMA ranges"]
     OTHER --> RESULT{"Found?"}
-    REMOTE -- Yes --> FEEDBACK["Update transfer predictor"]
+    REMOTE -- Yes --> FEEDBACK["Update transfer predictor from supplying-list inventory"]
     RESULT -- Yes --> FEEDBACK
     LOCALHIT -- Yes --> FEEDBACK
     FEEDBACK --> ONE["Return one; RSEQ-push remainder locally"]
     ONE --> STAMP
-    RESULT -- No --> NULLFEEDBACK["Bounded null-result feedback"]
-    NULLFEEDBACK --> BF["Read per-CPU bulk-fill predictor"]
+    RESULT -- No --> BF["Read per-CPU bulk-fill predictor"]
     BF --> INIT["Initialize a batch from pending/fresh span"]
     INIT --> BFEDBACK["Update bulk-fill predictor"]
     BFEDBACK --> ONE
@@ -163,9 +162,15 @@ Single-block push retries a bounded number of RSEQ aborts before using the trans
 A transfer slot exists for every `(CPU, size class)` pair:
 
 ```rust
+pub struct SizeList {
+    normal_blocks: AtomicUsize,
+    trimmed_blocks: AtomicUsize,
+}
+
 pub struct TransferCache {
     pub list: AtomicU128,
     pub trimmed: AtomicU128,
+    pub size: SizeList,
     pub trim_lock: SpinLock<()>,
 }
 ```
@@ -192,6 +197,8 @@ Every successful update advances the generation. The full pointer remains intact
 
 A pop walks at most the requested number of intrusive nodes, then atomically replaces the head with the first unclaimed node. The normal list is checked before the trimmed list. If the selected list empties, its availability hint is cleared and both heads are rechecked to repair the important concurrent-push false-negative race.
 
+Successful pushes add to the selected list's block counter after the head CAS. A successful pop subtracts its actual node count from that same counter with a relaxed `fetch_sub`; the previous counter value becomes `TransferReturn::available`. This samples pre-subtraction inventory without an extra counter load. The head and counter stay paired when falling back from the normal list to the trimmed list. List publication uses the head's acquire/release operations; the counters supply advisory batching feedback, not ownership of nodes.
+
 ### Spatial adaptation: transfer hints
 
 Per-class bitmaps record CPUs whose transfer slot is probably nonempty. They are **advisory**:
@@ -216,6 +223,8 @@ This makes the transfer system adaptive in two dimensions: hints predict **where
 
 `trim_lock` protects the detach/classify/republish interval used by slab trimming. Ordinary allocation-side probes do not block on an active trim pass; they treat that slot as temporarily unavailable and continue searching. The forced fallback pass waits for republished state so a temporarily detached list cannot hide reusable memory indefinitely.
 
+The trimmer samples and subtracts only `normal_blocks` when it successfully detaches the normal head; the existing trimmed list and its count are left intact. Young/ineligible blocks return to the normal list in batches of `ITERATIONS[class] + ITERATIONS[class] / 2`, with a final partial batch if needed. The lock is released after classification and normal-list republication, before payload-page reclamation; reclaimed blocks are then published separately to the trimmed list.
+
 ## Per-CPU Refill Prediction
 
 Each `MainCache` has separate predictors for transfer reuse and bulk initialization. Predictors are indexed by CPU and size class because they model the cache being accessed, not the identity of the calling thread.
@@ -229,7 +238,23 @@ low byte:  consecutive low-observation count
 
 Zeroed mapped storage means “use the configured initial batch.” Selection is a relaxed load. Feedback uses a single relaxed `compare_exchange_weak`; a failed update is dropped because prediction is advisory and retrying would add contention without affecting correctness.
 
-The update policy is asymmetric:
+### Inventory-aware transfer batching
+
+A successful transfer feeds `TransferReturn::available` to the requesting CPU's predictor, using the supplying list's inventory even for cross-CPU or remote-NUMA steals. The target is one quarter of that sample, clamped to `1..=ITERATIONS[class]`. The predictor moves toward it asymmetrically:
+
+```text
+target = clamp(available / 4, 1, class maximum)
+if target > batch:
+    batch += max((target - batch) / 2, 1)
+else if target < batch:
+    batch -= max((batch - target) / 4, 1)
+```
+
+Faster growth reduces underprediction when inventory supports larger transfers; slower shrinkage avoids reacting equally sharply to reduced supply. The low-observation byte is reset to zero for transfer updates. Samples above `isize::MAX` are ignored. A transfer miss leaves this predictor unchanged and proceeds to bulk fill; a full transfer no longer supplies a synthetic growth signal. The target guides future requests, while the actual linked list determines how many nodes a pop can return.
+
+### Demand-based bulk batching
+
+The bulk predictor retains its separate observation-based policy:
 
 ```text
 if observed > batch:
@@ -240,9 +265,7 @@ else:
     clear the low-observation streak
 ```
 
-A completely satisfied request is fed back as the requested amount plus 25%, while class headroom remains. This lets sustained demand grow beyond an initially conservative batch.
-
-A null transfer result is different from a measured demand of zero: it proves temporary supply was absent but says little about what the application would consume. The null path therefore reports half of the attempted batch through an out-of-line update, avoiding aggressive collapse or code growth in `fill`.
+A completely satisfied bulk request is fed back as the requested amount plus 25%, while class headroom remains. This lets sustained demand grow beyond an initially conservative batch.
 
 Bulk-fill feedback also accounts for the transfer-cache demand that led to the refill. Half of that immediate demand, with a minimum penalty of one, is saturating-subtracted from the initialized count before the result is clamped to one and fed to the bulk predictor. This estimates reusable refill headroom rather than treating blocks consumed by the current miss as evidence that the next speculative bulk batch should be equally large.
 

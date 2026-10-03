@@ -36,7 +36,8 @@ Preload builds provide the standard C ABI: `malloc`, `calloc`, `realloc`, `reall
 
 - **CPU-local caching via RSEQ.** The small-allocation fast path mutates per-CPU freelists without normal lock overhead as long as the thread stays on the same CPU through the critical section; on migration the operation retries or falls back to a transfer cache.
 - **NUMA topology is used where available**, as a placement preference rather than a guarantee. Transfer-cache stealing, refill arenas, the segmented-bitmap backend, and pending-metadata reuse try the current node first before scanning remote nodes. This is preferred placement (`mbind`), not enforced physical placement, and the public capability surface currently reports NUMA support as partial.
-- **Adaptive refill sizing.** A small integer predictor grows/shrinks per-class refill batches based on observed demand instead of a static batch size.
+- **Inventory-aware transfer batching.** Separate per-CPU/per-class counters track normal and trimmed transfer blocks. Successful transfers feed the supplying list's inventory to the requesting CPU's predictor, including cross-CPU steals, without an extra counter load. Batch targets use one quarter of sampled inventory within per-class limits, growing faster than they shrink to reduce underprediction.
+- **Independent bulk-refill sizing.** A separate per-CPU/per-class predictor sizes lazy initialization from refill spans using observed demand, keeping fresh-memory policy separate from reuse of already initialized blocks.
 - **Designed to avoid relying on aggressive trimming.** Adaptive refill sizing, cross-CPU reuse, and age-aware reclamation aim to keep reusable memory productive without repeatedly discarding and refaulting hot pages.
 - **Background and manual trimming.** Cold small-allocation and segmented-bitmap cached pages are returned to the kernel via `madvise`, with per-size-class eligibility tracked by an EMA of observed block lifetimes.
 

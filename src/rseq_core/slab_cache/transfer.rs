@@ -1,4 +1,11 @@
-use std::{hint::spin_loop, ptr::eq, sync::atomic::Ordering};
+use std::{
+    hint::spin_loop,
+    ptr::eq,
+    sync::atomic::{
+        AtomicUsize,
+        Ordering::{self, Relaxed},
+    },
+};
 
 use portable_atomic::AtomicU128;
 
@@ -102,7 +109,7 @@ impl SlabCache {
         class: usize,
         start: *mut Header,
         tail: *mut Header,
-        #[cfg(feature = "debug-exact")] batch_size: usize,
+        batch_size: usize,
         cpu_id: usize,
         inner: &SlabCacheInner,
     ) {
@@ -127,6 +134,7 @@ impl SlabCache {
                 )
                 .is_ok()
             {
+                list.size.normal_blocks.fetch_add(batch_size, Relaxed);
                 if pack.current_header.is_null() {
                     self.mark_class_nonempty(inner, class, cpu_id);
                 }
@@ -151,7 +159,14 @@ impl SlabCache {
         let list = &inner.cache[cpu_id].mail[class];
         let list_ptr = &list.list;
 
-        self.transfer_push_single_to(list_ptr, class, header, cpu_id, inner);
+        self.transfer_push_single_to(
+            list_ptr,
+            &list.size.normal_blocks,
+            class,
+            header,
+            cpu_id,
+            inner,
+        );
     }
 
     pub unsafe fn transfer_push_single_trimmed(
@@ -164,13 +179,21 @@ impl SlabCache {
         let list = &inner.cache[cpu_id].mail[class];
         let list_ptr = &list.trimmed;
 
-        self.transfer_push_single_to(list_ptr, class, header, cpu_id, inner);
+        self.transfer_push_single_to(
+            list_ptr,
+            &list.size.trimmed_blocks,
+            class,
+            header,
+            cpu_id,
+            inner,
+        );
     }
 
     #[inline(always)]
     pub unsafe fn transfer_push_single_to(
         &self,
         list_ptr: &AtomicU128,
+        size_ptr: &AtomicUsize,
         class: usize,
         header: *mut Header,
         cpu_id: usize,
@@ -193,6 +216,7 @@ impl SlabCache {
                 )
                 .is_ok()
             {
+                size_ptr.fetch_add(1, Relaxed);
                 if pack.current_header.is_null() {
                     self.mark_class_nonempty(inner, class, cpu_id);
                 }
@@ -246,7 +270,7 @@ impl SlabCache {
         let list = &inner.cache[cpu_id].mail[class];
         let normal_ptr = &list.list;
         let trimmed_ptr = &list.trimmed;
-        let mut list_ptr = normal_ptr;
+        let (mut list_ptr, mut size_ptr) = (normal_ptr, &list.size.normal_blocks);
 
         'retry: loop {
             let mut old = list_ptr.load(Ordering::Acquire);
@@ -274,7 +298,7 @@ impl SlabCache {
 
             if pack.current_header.is_null() {
                 if eq(list_ptr, normal_ptr) {
-                    list_ptr = &trimmed_ptr;
+                    (list_ptr, size_ptr) = (trimmed_ptr, &list.size.trimmed_blocks);
                     continue;
                 }
                 self.clear_hint(normal_ptr, trimmed_ptr, inner, class, cpu_id);
@@ -299,6 +323,7 @@ impl SlabCache {
                 )
                 .is_ok()
             {
+                let available = size_ptr.fetch_sub(count, Relaxed);
                 if !next.is_null() {
                     HardwareFeature.prefetch(SafeToPrefetch::new(next), PrefetchHint::PreferL1)
                 } else {
@@ -309,6 +334,7 @@ impl SlabCache {
                     start: pack.current_header,
                     end: tail,
                     total: count,
+                    available,
                 });
             }
 

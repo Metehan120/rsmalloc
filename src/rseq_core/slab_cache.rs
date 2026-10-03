@@ -43,6 +43,11 @@ pub mod reclaim;
 mod rseq_asm;
 pub mod transfer;
 
+pub struct SizeList {
+    normal_blocks: AtomicUsize,
+    trimmed_blocks: AtomicUsize,
+}
+
 pub struct RseqCache {
     list: UnsafePointer<Header>,
     usage: AtomicUsize,
@@ -52,6 +57,7 @@ pub struct RseqCache {
 pub struct TransferCache {
     pub list: AtomicU128,
     pub trimmed: AtomicU128,
+    pub size: SizeList,
     pub trim_lock: SpinLock<()>,
 }
 
@@ -317,15 +323,7 @@ impl GenericCache for SlabCache {
         let usage_ptr = &list.usage;
 
         if usage_ptr.load(Ordering::Relaxed) >= CACHE_HIGH_BLOCKS[class] {
-            self.transfer_push_batch(
-                class,
-                header,
-                tail,
-                #[cfg(feature = "debug-exact")]
-                batch_size,
-                current_cpu,
-                inner,
-            );
+            self.transfer_push_batch(class, header, tail, batch_size, current_cpu, inner);
             return;
         }
 
@@ -346,15 +344,7 @@ impl GenericCache for SlabCache {
             return;
         }
 
-        self.transfer_push_batch(
-            class,
-            header,
-            tail,
-            #[cfg(feature = "debug-exact")]
-            batch_size,
-            current_cpu,
-            inner,
-        );
+        self.transfer_push_batch(class, header, tail, batch_size, current_cpu, inner);
 
         #[cfg(feature = "debug")]
         ABORTS.fetch_add(1, Relaxed);
@@ -422,6 +412,8 @@ pub struct TransferReturn {
     pub start: *mut Header,
     pub end: *mut Header,
     pub total: usize,
+    /// Selected-list inventory sampled by the pop's counter update.
+    pub available: usize,
 }
 
 impl SlabCache {

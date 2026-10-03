@@ -1,6 +1,5 @@
+use crate::utility::{NUM_SIZE_CLASSES, unlikely};
 use std::sync::atomic::{AtomicUsize, Ordering};
-
-use crate::utility::NUM_SIZE_CLASSES;
 
 pub const DEFAULT_BATCH: usize = 128;
 pub static mut PREDICTOR_INIT_BATCH: usize = DEFAULT_BATCH;
@@ -18,7 +17,7 @@ impl AdaptiveBatching {
 
     #[inline(always)]
     fn decode(state: usize, init_batch: usize) -> (usize, u8) {
-        if state == 0 {
+        if unlikely(state == 0) {
             (init_batch.max(1), 0)
         } else {
             (state >> 8, state as u8)
@@ -51,9 +50,31 @@ impl AdaptiveBatching {
         }
     }
 
-    #[inline(never)]
-    pub fn update_refill_noninline(&self, init_batch: usize, demand: usize, max: usize) {
-        self.update_refill(init_batch, demand, max);
+    #[inline(always)]
+    pub fn update_transfer(&self, init_batch: usize, available: usize, max: usize) {
+        if unlikely(available > isize::MAX as usize) {
+            return;
+        }
+
+        let old = self.state.load(Ordering::Relaxed);
+        let (batch, _) = Self::decode(old, init_batch);
+        let max = max.max(1);
+        let batch = batch.clamp(1, max);
+        let target = (available >> 2).clamp(1, max);
+        let next = if target > batch {
+            batch + ((target - batch) >> 1).max(1)
+        } else if target < batch {
+            batch - ((batch - target) >> 2).max(1)
+        } else {
+            batch
+        };
+
+        let new = Self::encode(next, 0);
+        if new != old {
+            let _ =
+                self.state
+                    .compare_exchange_weak(old, new, Ordering::Relaxed, Ordering::Relaxed);
+        }
     }
 
     #[inline(always)]

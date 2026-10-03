@@ -217,16 +217,13 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
 
     let transfer_result = SLAB_CACHE.try_pop(class, cache_batch, cpu_id);
     if let Some(transfer_cache) = transfer_result {
-        let observed = if transfer_cache.total == cache_batch && cache_batch < ITERATIONS[class] {
-            cache_batch.saturating_add((cache_batch / 4).max(1))
-        } else {
-            transfer_cache.total
-        };
-        SLAB_CACHE.transfer_predictor(cpu_id, class).update_refill(
-            PREDICTOR_INIT_BATCH,
-            observed,
-            ITERATIONS[class],
-        );
+        SLAB_CACHE
+            .transfer_predictor(cpu_id, class)
+            .update_transfer(
+                PREDICTOR_INIT_BATCH,
+                transfer_cache.available,
+                ITERATIONS[class],
+            );
 
         let one = take_one_from_batch(
             class,
@@ -243,14 +240,6 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
 
         return one;
     }
-
-    SLAB_CACHE
-        .transfer_predictor(cpu_id, class)
-        .update_refill_noninline(
-            PREDICTOR_INIT_BATCH,
-            (cache_batch >> 1).max(1),
-            ITERATIONS[class],
-        );
 
     refill(class, cpu_id, cache_batch)
 }

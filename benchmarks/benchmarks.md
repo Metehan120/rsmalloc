@@ -16,7 +16,7 @@ The current release-candidate snapshot includes:
 
 - RSMalloc `0.3.0-alpha`
 - glibc `2.44`
-- tcmalloc, latest CachyOS build at collection time
+- tcmalloc, latest "4.6.5" CachyOS build at collection time
 - mimalloc `3.5`
 - jemalloc `5.3.1`
 

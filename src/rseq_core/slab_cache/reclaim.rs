@@ -60,13 +60,20 @@ impl SlabCache {
                             break null_mut();
                         }
 
+                        let current_size = main_list.size.normal_blocks.load(Relaxed);
                         match main_list.list.compare_exchange(
                             list,
                             Tagging.tag_ptr(null_mut(), pack.old_packed),
                             Acquire,
                             Relaxed,
                         ) {
-                            Ok(_) => break pack.current_header,
+                            Ok(_) => {
+                                main_list
+                                    .size
+                                    .normal_blocks
+                                    .fetch_sub(current_size, Relaxed);
+                                break pack.current_header;
+                            }
                             Err(new) => list = new,
                         }
                     }
@@ -126,7 +133,6 @@ impl SlabCache {
                             class,
                             push_list,
                             push_list_start,
-                            #[cfg(feature = "debug-exact")]
                             total_push,
                             cpu,
                             inner,
@@ -144,7 +150,6 @@ impl SlabCache {
                         class,
                         push_list,
                         push_list_start,
-                        #[cfg(feature = "debug-exact")]
                         total_push,
                         cpu,
                         inner,

@@ -1,5 +1,4 @@
-
-# RSMalloc
+# <img src="img/logo.png" alt="" width="48" height="48" align="absmiddle"> RSMalloc
 
 An RSEQ-based memory allocator for Rust, focused on low-overhead concurrent allocation for real applications rather than benchmark-only patterns. The small-allocation fast path uses Linux Restartable Sequences (RSEQ), so cache ownership follows the CPU, not the thread. Larger allocations use a NUMA-aware segmented-bitmap cache or direct mappings.
 

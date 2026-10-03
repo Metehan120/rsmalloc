@@ -220,7 +220,7 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
         #[cfg(feature = "predictor-debug")]
         eprintln!(
             "refill (transfer):class: {class}, \n cpu_id: {cpu_id}, \n expected_size: {cache_batch}, \n observed_size: {}, \n available_total: {}",
-            transfer_cache.batch_size, transfer_cache.available
+            transfer_cache.total, transfer_cache.available
         );
         SLAB_CACHE
             .transfer_predictor(cpu_id, class)

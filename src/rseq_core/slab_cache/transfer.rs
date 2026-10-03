@@ -359,8 +359,6 @@ impl SlabCache {
                     end: tail,
                     total: count,
                     available,
-                    #[cfg(feature = "predictor-debug")]
-                    batch_size: count,
                 });
             }
 

@@ -14,6 +14,8 @@ An RSEQ-based memory allocator for Rust, focused on low-overhead concurrent allo
 >
 > Internally, an experimental segmented-bitmap backend will replace the buddy cache for 4–64 MiB allocations, claiming reusable blocks through atomic bitmap updates. Page-arena reservations will gain an atomic bump fast path, pending refill metadata will use sharded ABA-tagged atomic stacks, and exact large-allocation metadata will move from a single-lock tree to independently locked hash-table shards. These changes reduce reliance on shared locks while preserving NUMA-local reuse.
 >
+> Transfer batching will become inventory-aware: separate counters will track normal and trimmed blocks, letting each successful transfer guide batch sizing using the supplying list's block count rather than just the number returned. Batches will grow faster than they shrink, reducing underprediction while keeping requests bounded by available inventory and per-class limits. Cross-CPU steals will feed the same policy without an extra counter load.
+>
 > Alpha-3 will also introduce independent slab and large-allocation trim schedules, revised large-block lifetime estimation, wider transfer-cache ABA protection, opt-in guard pages, fork and background-worker signal-handling fixes, and expanded diagnostics. RSMalloc is designed to avoid relying on aggressive trimming through adaptive refill sizing, cross-CPU reuse, and age-aware reclamation. This remains an experimental alpha release, not a promise of universal performance gains or production readiness.
 
 ## Alpha 3.0: Rust API transition

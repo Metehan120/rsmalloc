@@ -240,17 +240,17 @@ Zeroed mapped storage means “use the configured initial batch.” Selection is
 
 ### Inventory-aware transfer batching
 
-A successful transfer feeds `TransferReturn::available` to the requesting CPU's predictor, using the supplying list's inventory even for cross-CPU or remote-NUMA steals. The target is one quarter of that sample, clamped to `1..=ITERATIONS[class]`. The predictor moves toward it asymmetrically:
+A successful transfer feeds `TransferReturn::available` to the requesting CPU's predictor, using the supplying list's inventory even for cross-CPU or remote-NUMA steals. The target is one quarter of that sample, clamped to `1..=ITERATIONS[class]`. The predictor moves toward it at the same rate in both directions:
 
 ```text
 target = clamp(available / 4, 1, class maximum)
 if target > batch:
-    batch += max((target - batch) / 2, 1)
+    batch += max((target - batch) / 4, 1)
 else if target < batch:
     batch -= max((batch - target) / 4, 1)
 ```
 
-Faster growth reduces underprediction when inventory supports larger transfers; slower shrinkage avoids reacting equally sharply to reduced supply. The low-observation byte is reset to zero for transfer updates. Samples above `isize::MAX` are ignored. A transfer miss leaves this predictor unchanged and proceeds to bulk fill; a full transfer no longer supplies a synthetic growth signal. The target guides future requests, while the actual linked list determines how many nodes a pop can return.
+Growth and shrinkage each close one quarter of the gap, with a minimum step of one block, smoothing inventory changes without immediately jumping to the target. The low-observation byte is reset to zero for transfer updates. Samples above `isize::MAX` are ignored. A transfer miss leaves this predictor unchanged and proceeds to bulk fill; a full transfer no longer supplies a synthetic growth signal. The target guides future requests, while the actual linked list determines how many nodes a pop can return.
 
 ### Demand-based bulk batching
 

@@ -62,7 +62,7 @@ impl AdaptiveBatching {
         let batch = batch.clamp(1, max);
         let target = (available >> 2).clamp(1, max);
         let next = if target > batch {
-            batch + ((target - batch) >> 1).max(1)
+            batch + ((target - batch) >> 2).max(1)
         } else if target < batch {
             batch - ((batch - target) >> 2).max(1)
         } else {

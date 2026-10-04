@@ -4,9 +4,13 @@ use std::{os::raw::c_void, ptr::read_unaligned, sync::atomic::Ordering};
 
 use crate::{
     ALIGN_TAG, BIG_MAGIC, CURRENT_STAMP, FREED_MAGIC, Header, MAGIC, OFFSET_SIZE, RSMallocError,
-    TAG_SIZE, big_allocations::big_allocation::big_free, core_prim::wrappers::UnsafePointer,
-    internals::radix_tree::RADIX, rseq_core::slab_cache::SLAB_CACHE, traits::GenericCache,
-    utility::unlikely,
+    TAG_SIZE,
+    big_allocations::big_allocation::big_free,
+    core_prim::wrappers::UnsafePointer,
+    internals::radix_tree::RADIX,
+    rseq_core::slab_cache::SLAB_CACHE,
+    traits::GenericCache,
+    utility::{likely, unlikely},
 };
 
 #[cfg(feature = "zero-small-on-free")]
@@ -36,7 +40,7 @@ pub unsafe fn find_original_ptr(ptr: UnsafePointer<Header>) -> UnsafePointer<Hea
         // Do not dereference the recovered aligned allocation base until ownership is
         // verified the offset preceding an arbitrary pointer is untrusted and may
         // contain forged allocator metadata
-        if !RADIX.is_owned(presumed_original_ptr as usize) {
+        if unlikely(!RADIX.is_owned(presumed_original_ptr as usize)) {
             RSMallocError::Corruption { ptr: presumed_original_ptr as *mut u8, reason: "CRITICAL: possible aligned-path metadata injection: recovered pointer is not owned by rsmalloc" }.log_and_abort();
         }
 
@@ -92,7 +96,7 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
         return;
     }
 
-    if header.magic == BIG_MAGIC {
+    if likely(header.magic == BIG_MAGIC) {
         big_free(searched.cast_usize());
         return;
     }

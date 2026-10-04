@@ -219,7 +219,7 @@ impl Radix {
             return false;
         }
         let l3 = (*l2.add(i2)).load(Acquire) as *mut AtomicU64;
-        if l3.is_null() {
+        if unlikely(l3.is_null()) {
             return false;
         }
 

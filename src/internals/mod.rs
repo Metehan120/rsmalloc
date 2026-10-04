@@ -1,3 +1,4 @@
+pub mod atomics;
 pub mod big_meta_map;
 pub mod binder;
 #[cfg(feature = "preload")]

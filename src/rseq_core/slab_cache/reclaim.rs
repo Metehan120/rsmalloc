@@ -17,7 +17,7 @@ use crate::{
         AVERAGE_BLOCK_TIMES, BIG_TRIM_THRESHOLD, CURRENT_STAMP, GLOBAL_TRIM_LOCK, NCPU,
         SMALL_TRIM_THRESHOLD, TOTAL_CACHED_VA,
     },
-    internals::lock::LockGuard,
+    internals::{atomics::AtomicOrdering, lock::LockGuard},
     rseq_core::{aba::Tagging, slab_cache::SlabCache},
     traits::Lock,
     utility::{ITERATIONS, NUM_SIZE_CLASSES, SIZE_CLASSES, get_size_4096_class},
@@ -60,7 +60,10 @@ impl SlabCache {
                             break null_mut();
                         }
 
-                        let current_size = main_list.size.normal_blocks.load(Relaxed);
+                        let current_size = main_list
+                            .size
+                            .normal_blocks
+                            .load(AtomicOrdering::TransferFetchLoad);
                         match main_list.list.compare_exchange(
                             list,
                             Tagging.tag_ptr(null_mut(), pack.old_packed),
@@ -71,7 +74,7 @@ impl SlabCache {
                                 main_list
                                     .size
                                     .normal_blocks
-                                    .fetch_sub(current_size, Relaxed);
+                                    .fetch_sub(current_size, AtomicOrdering::TransferFetchOp);
                                 break pack.current_header;
                             }
                             Err(new) => list = new,

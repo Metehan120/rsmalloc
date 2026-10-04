@@ -1,10 +1,7 @@
 use std::{
     hint::spin_loop,
     ptr::eq,
-    sync::atomic::{
-        AtomicUsize,
-        Ordering::{self, Relaxed},
-    },
+    sync::atomic::Ordering::{self},
 };
 
 use portable_atomic::AtomicU128;
@@ -12,6 +9,7 @@ use portable_atomic::AtomicU128;
 use crate::{
     Header,
     core_prim::hw::{HardwareFeature, PrefetchHint, SafeToPrefetch},
+    internals::atomics::{AtomicOrdering, AtomicUsize},
     rseq_core::{
         aba::Tagging,
         slab_cache::{SlabCache, SlabCacheInner, TransferReturn},
@@ -147,7 +145,9 @@ impl SlabCache {
                 )
                 .is_ok()
             {
-                list.size.normal_blocks.fetch_add(batch_size, Relaxed);
+                list.size
+                    .normal_blocks
+                    .fetch_add(batch_size, AtomicOrdering::TransferFetchOp);
                 if pack.current_header.is_null() {
                     self.mark_class_nonempty(inner, class, cpu_id);
                 }
@@ -240,7 +240,7 @@ impl SlabCache {
                 )
                 .is_ok()
             {
-                size_ptr.fetch_add(1, Relaxed);
+                size_ptr.fetch_add(1, AtomicOrdering::TransferFetchOp);
                 if pack.current_header.is_null() {
                     self.mark_class_nonempty(inner, class, cpu_id);
                 }
@@ -347,7 +347,7 @@ impl SlabCache {
                 )
                 .is_ok()
             {
-                let available = size_ptr.fetch_sub(count, Relaxed);
+                let available = size_ptr.fetch_sub(count, AtomicOrdering::TransferFetchOp);
                 if !next.is_null() {
                     HardwareFeature.prefetch(SafeToPrefetch::new(next), PrefetchHint::PreferL1)
                 } else {

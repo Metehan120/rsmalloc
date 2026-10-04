@@ -5,7 +5,7 @@ use std::{
     cell::UnsafeCell,
     ptr::{addr_of, null_mut, read_volatile},
     sync::atomic::{
-        AtomicPtr, AtomicU64, AtomicUsize,
+        AtomicPtr, AtomicU64,
         Ordering::{self},
     },
 };
@@ -23,6 +23,7 @@ use crate::{
         wrappers::{SafePointer, UnsafePointer},
     },
     internals::{
+        atomics::{AtomicOrdering, AtomicUsize},
         binder::NumaBind,
         lock::SpinLock,
         numa_parser::{NumaTopology, parse_numa_topology},
@@ -324,7 +325,7 @@ impl GenericCache for SlabCache {
             let list = &inner.cache[current_cpu].cache[class];
             let usage_ptr = &list.usage;
 
-            if (usage_ptr.load(Ordering::Relaxed) + batch_size) > CACHE_HIGH_BLOCKS[class] {
+            if (usage_ptr.load(AtomicOrdering::Relaxed) + batch_size) > CACHE_HIGH_BLOCKS[class] {
                 self.transfer_push_batch(class, header, tail, batch_size, current_cpu, inner);
                 return;
             }
@@ -364,7 +365,7 @@ impl GenericCache for SlabCache {
             let list = &inner.cache[current_cpu].cache[class];
             let usage_ptr = &list.usage;
 
-            if usage_ptr.load(Ordering::Relaxed) >= CACHE_HIGH_BLOCKS[class] {
+            if usage_ptr.load(AtomicOrdering::Relaxed) >= CACHE_HIGH_BLOCKS[class] {
                 self.transfer_push_single(class, header, current_cpu, inner);
                 return;
             }

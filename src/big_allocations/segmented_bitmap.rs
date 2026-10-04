@@ -25,7 +25,10 @@
 use crate::{
     CURRENT_STAMP, Flags, GLOBAL_TRIM_LOCK, SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES,
     SEGMENTED_BITMAP_INIT, add_segmented_bitmap_cached_va,
-    backend::page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR},
+    backend::{
+        background_thread::maybe_start_background_reclaimer,
+        page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR},
+    },
     core_prim::{predictor::EMA_ALPHA, wrappers::SafePointer},
     global_vals::{BIG_TRIM_THRESHOLD, SMALL_TRIM_THRESHOLD, TOTAL_CACHED_VA},
     inner::alloc::MAX_REFILL_RETRIES,
@@ -524,6 +527,9 @@ unsafe fn create_region(bytes: usize, node: u16, state: &State) -> Option<*mut R
     RADIX.set(data as usize, bytes, true);
     add_segmented_bitmap_cached_va(bytes);
     add_segmented_bitmap_cached_va(metadata_bytes);
+
+    maybe_start_background_reclaimer();
+
     Some(region)
 }
 

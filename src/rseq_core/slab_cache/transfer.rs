@@ -359,6 +359,8 @@ impl SlabCache {
                     end: tail,
                     total: count,
                     available,
+                    #[cfg(feature = "predictor-debug")]
+                    cpu_id,
                 });
             }
 

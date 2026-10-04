@@ -417,6 +417,8 @@ pub struct TransferReturn {
     pub total: usize,
     /// Selected-list inventory sampled by the pop's counter update.
     pub available: usize,
+    #[cfg(feature = "predictor-debug")]
+    pub cpu_id: usize,
 }
 
 impl SlabCache {

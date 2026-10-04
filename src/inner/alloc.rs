@@ -166,7 +166,7 @@ pub unsafe fn refill(class: usize, cpu_id: usize, fill_demand: usize) -> UnsafeP
     if let Ok((start, tail, count)) = bulk_fill(class, cpu_id, bulk_batch) {
         #[cfg(feature = "predictor-debug")]
         eprintln!(
-            "refill (mmap):class: {class}, \n cpu_id: {cpu_id}, \n expected_size: {bulk_batch}, \n observed_size: {count}"
+            "refill (mmap):\n class: {class}, \n cpu_id: {cpu_id}, \n expected_size: {bulk_batch}, \n observed_size: {count}"
         );
         let observed = if count == bulk_batch && bulk_batch < ITERATIONS[class] {
             bulk_batch.saturating_add((bulk_batch / 4).max(1))
@@ -219,8 +219,8 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
     if let Some(transfer_cache) = transfer_result {
         #[cfg(feature = "predictor-debug")]
         eprintln!(
-            "refill (transfer):class: {class}, \n cpu_id: {cpu_id}, \n expected_size: {cache_batch}, \n observed_size: {}, \n available_total: {}",
-            transfer_cache.total, transfer_cache.available
+            "refill (transfer):\n class: {class}, \n caller cpu_id: {cpu_id}, \n returned cpu_id: {}, \n expected_size: {cache_batch}, \n observed_size: {}, \n available_total: {}",
+            transfer_cache.cpu_id, transfer_cache.total, transfer_cache.available
         );
         SLAB_CACHE
             .transfer_predictor(cpu_id, class)

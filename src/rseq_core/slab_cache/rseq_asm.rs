@@ -97,7 +97,6 @@ impl RseqCoreTrait for RseqCore {
         usage_ptr: *mut usize,
     ) -> RseqResult {
         let res: usize;
-        let cs = get_cs_ptr(rseq);
         let cpu_id_start = addr_of!(rseq.cpu_id_start);
 
         asm!(
@@ -111,7 +110,7 @@ impl RseqCoreTrait for RseqCore {
             ".popsection",
 
             "lea {tmp}, [rip + 4b]",
-            "mov [{cs_ptr}], {tmp}",
+            "mov [{rseq} + {cs_offset}], {tmp}",
 
             "1:",
             // Test cpu_id_start against cpu_id before entering critical section.
@@ -136,7 +135,8 @@ impl RseqCoreTrait for RseqCore {
 
             "5:",
 
-            cs_ptr = in(reg) cs,
+            rseq = in(reg) rseq,
+            cs_offset = const std::mem::offset_of!(rseq, rseq_cs),
             tmp = out(reg) _,
             list = in(reg) list_ptr,
             header = in(reg) header,

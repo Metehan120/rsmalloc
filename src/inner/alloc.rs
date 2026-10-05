@@ -284,7 +284,7 @@ unsafe fn rs_alloc_inner<const FLAG: bool>(size: usize, aligned: bool) -> Unsafe
     if let Some(class) = class {
         let cache = SLAB_CACHE.pop(class);
 
-        let cache = if unlikely(cache.is_null()) {
+        let cache = if cache.is_null() {
             let class = fill(class);
 
             if unlikely(class.is_null()) {

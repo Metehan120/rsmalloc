@@ -322,7 +322,7 @@ impl GenericCache for SlabCache {
         let mut current_cpu = 0;
         for _ in 0..3 {
             current_cpu = read_volatile(&rseq.cpu_id) as usize;
-            let list = &inner.cache[current_cpu].cache[class];
+            let list = &inner.cache[current_cpu].cache.get_unchecked(class);
             let usage_ptr = &list.usage;
 
             if (usage_ptr.load(AtomicOrdering::Relaxed) + batch_size) > CACHE_HIGH_BLOCKS[class] {
@@ -362,7 +362,7 @@ impl GenericCache for SlabCache {
 
         loop {
             let current_cpu = read_volatile(&rseq.cpu_id) as usize;
-            let list = &inner.cache[current_cpu].cache[class];
+            let list = &inner.cache[current_cpu].cache.get_unchecked(class);
             let usage_ptr = &list.usage;
 
             if usage_ptr.load(AtomicOrdering::Relaxed) >= CACHE_HIGH_BLOCKS[class] {
@@ -398,10 +398,8 @@ impl GenericCache for SlabCache {
 
         loop {
             let current_cpu = read_volatile(&rseq.cpu_id) as usize;
-            let list = &inner.cache[current_cpu].cache[class];
-            let list_ptr = addr_of!(list.list) as *mut *mut Header;
-            let usage_ptr = &list.usage;
-            let result = RseqCore.pop(list_ptr, rseq, current_cpu, usage_ptr.as_ptr());
+            let list = inner.cache[current_cpu].cache.get_unchecked(class);
+            let result = RseqCore.pop(addr_of!(*list), rseq, current_cpu);
 
             if result.is_failed() {
                 continue;

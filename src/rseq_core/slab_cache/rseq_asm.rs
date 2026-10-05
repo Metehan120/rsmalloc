@@ -11,6 +11,7 @@ use rsmalloc_macro::stable_api_surface;
 use crate::{
     Header, RseqResult,
     rseq_core::rseq_offsets::{get_cs_ptr, rseq},
+    rseq_core::slab_cache::RseqCache,
     traits::RseqCoreTrait,
 };
 
@@ -151,13 +152,8 @@ impl RseqCoreTrait for RseqCore {
 
     #[stable_api_surface]
     #[inline(always)]
-    unsafe fn pop(
-        &self,
-        list_ptr: *mut *mut Header,
-        rseq: &rseq,
-        cpu_id: usize,
-        usage_ptr: *mut usize,
-    ) -> RseqResult {
+    unsafe fn pop(&self, cache_ptr: *const RseqCache, rseq: &rseq, cpu_id: usize) -> RseqResult {
+        let list_ptr = addr_of!((*cache_ptr).list) as *mut *mut Header;
         let res: *mut Header;
 
         asm!(
@@ -183,7 +179,7 @@ impl RseqCoreTrait for RseqCore {
             "mov [{list}], {next}",
 
             "2:",
-            "lock dec qword ptr [{usage}]",
+            "lock dec qword ptr [{list} + {usage_offset}]",
             "jmp 5f",
 
             "6:",
@@ -205,7 +201,8 @@ impl RseqCoreTrait for RseqCore {
             res = out(reg) res,
             next = out(reg) _,
             cpu_id = in(reg) cpu_id,
-            usage = in(reg) usage_ptr,
+            usage_offset = const (std::mem::offset_of!(RseqCache, usage) as isize
+                - std::mem::offset_of!(RseqCache, list) as isize),
             options(nostack),
         );
 

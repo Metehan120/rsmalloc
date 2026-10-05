@@ -35,10 +35,9 @@ pub trait RseqCoreTrait {
     ) -> RseqResult;
     unsafe fn pop(
         &self,
-        list_ptr: *mut *mut Header,
+        cache_ptr: *const crate::rseq_core::slab_cache::RseqCache,
         rseq: &rseq,
         cpu_id: usize,
-        usage_ptr: *mut usize,
     ) -> RseqResult;
 }
 

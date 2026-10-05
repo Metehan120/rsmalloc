@@ -2,7 +2,7 @@
 
 # Unreleased version of rsmalloc, benchmarks are have not yet settled.
 rsmalloc alpha-3:
-# Column-wise medians across 10 runs; rbstressN, z3, and the independent rptest result are unchanged.
+# Column-wise medians across 10 runs; rbstressN, and z3, result are unchanged, will be runned under repeated run medians later.
 cfrac           sys     3.0300   7136     3.020    0.000  0           258
 espresso        sys     2.9500   9128     2.930    0.010  0           259.5
 barnes          sys     1.7000   72212    1.690    0.000  0           681

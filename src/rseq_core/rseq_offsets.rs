@@ -31,7 +31,7 @@ pub unsafe fn get_rseq() -> &'static rseq {
     #[cfg(target_arch = "x86_64")]
     asm!(
         "mov {tp}, fs:[0]",
-        "add {tp}, {offset}",
+        "lea {tp}, [{tp} + {offset}]",
         tp = out(reg) rseq_ptr,
         offset = in(reg) __rseq_offset,
         options(pure, nomem, nostack, preserves_flags)

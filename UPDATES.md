@@ -154,6 +154,14 @@ Alpha-3 also strengthens transfer-cache ABA protection, adds opt-in guard pages,
 - Adjusted the separate bulk-fill predictor's feedback after a transfer miss: `refill` discounts the number of blocks observed from a successful bulk fill by at least one and otherwise by half of the missed transfer batch (clamped to a minimum observation of one). A full bulk batch still supplies the existing bounded growth signal, but the transfer miss no longer looks like unqualified bulk demand.
 - Moved partially consumed bulk-fill metadata from thread-local `ThreadBulk` storage into per-CPU/per-class atomic slots in `MainCache`, eliminating the remaining Rust TLS and thread-destructor dependency while retaining the NUMA-aware pending queue as the collision/overflow path.
 
+### Instruction and codegen optimization
+
+- Changed x86-64 RSEQ pointer construction from `add` to `lea`, preserving flags as declared by the inline-assembly contract without increasing the instruction count.
+- Made RSEQ pop take a `RseqCache` pointer and address its usage counter relative to the list head. The displacement is derived with `offset_of!`, removing a separate address calculation and assembly input register while retaining the locked decrement after the head-store commit point.
+- Folded single-node RSEQ push's descriptor publication into a store at `offset_of!(rseq, rseq_cs)` from the RSEQ base, eliminating the separate descriptor-field address calculation. CPU validation, commit/abort handling, and atomic usage accounting remain unchanged.
+- Replaced selected slab/transfer-cache class indexing with unchecked indexing under the existing valid-size-class invariant. Removing the slab pop bounds check also allowed LLVM to fold LUT indexing into the load and simplify CPU-field addressing in the inspected release build.
+- Transfer-cache single/batch pushes and batch pops now reuse the head/tag returned by a failed CAS instead of issuing a separate acquire head load on each CAS retry. Push retains release publication, and failed CAS operations use acquire ordering to preserve the previous acquire reload semantics. Pop retraverses the observed list to recompute batch boundaries; ABA tags, per-list accounting, and retry backoff remain in place.
+
 ### Small branch/overhead cleanups
 
 - Removed a now-redundant bounds check in `Radix::get` (`radix_tree.rs`) — `chunk_idx` is already guaranteed in range by its callers.

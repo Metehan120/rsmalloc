@@ -127,32 +127,32 @@ impl SlabCache {
         #[cfg(feature = "transfer-debug-exact")]
         crate::TOTAL_TRANSFER_PUSH_CALLS.fetch_add(1, Ordering::Relaxed);
 
-        let list = &inner.cache[cpu_id].mail[class];
+        let list = &inner.cache[cpu_id].mail.get_unchecked(class);
         let list_ptr = &list.list;
 
+        let mut old = list_ptr.load(Ordering::Acquire);
         loop {
-            let old = list_ptr.load(Ordering::Acquire);
             let pack = Tagging.untag_ptr(old);
 
             (*tail).next = pack.current_header;
 
-            if list_ptr
-                .compare_exchange(
-                    old,
-                    Tagging.tag_ptr(start, pack.old_packed),
-                    Ordering::Release,
-                    Ordering::Relaxed,
-                )
-                .is_ok()
-            {
-                list.size
-                    .normal_blocks
-                    .fetch_add(batch_size, AtomicOrdering::TransferFetchOp);
-                if pack.current_header.is_null() {
-                    self.mark_class_nonempty(inner, class, cpu_id);
+            match list_ptr.compare_exchange(
+                old,
+                Tagging.tag_ptr(start, pack.old_packed),
+                Ordering::Release,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    list.size
+                        .normal_blocks
+                        .fetch_add(batch_size, AtomicOrdering::TransferFetchOp);
+                    if pack.current_header.is_null() {
+                        self.mark_class_nonempty(inner, class, cpu_id);
+                    }
+                    crate::global_vals::record_transfer_push!(class, batch_size);
+                    return;
                 }
-                crate::global_vals::record_transfer_push!(class, batch_size);
-                return;
+                Err(new_head) => old = new_head,
             }
 
             #[cfg(feature = "transfer-debug")]
@@ -180,7 +180,7 @@ impl SlabCache {
         cpu_id: usize,
         inner: &SlabCacheInner,
     ) {
-        let list = &inner.cache[cpu_id].mail[class];
+        let list = &inner.cache[cpu_id].mail.get_unchecked(class);
         let list_ptr = &list.list;
 
         self.transfer_push_single_to(
@@ -200,7 +200,7 @@ impl SlabCache {
         cpu_id: usize,
         inner: &SlabCacheInner,
     ) {
-        let list = &inner.cache[cpu_id].mail[class];
+        let list = &inner.cache[cpu_id].mail.get_unchecked(class);
         let list_ptr = &list.trimmed;
 
         self.transfer_push_single_to(
@@ -226,26 +226,26 @@ impl SlabCache {
         #[cfg(feature = "transfer-debug-exact")]
         crate::TOTAL_TRANSFER_PUSH_CALLS.fetch_add(1, Ordering::Relaxed);
 
+        let mut old = list_ptr.load(Ordering::Acquire);
         loop {
-            let old = list_ptr.load(Ordering::Acquire);
             let pack = Tagging.untag_ptr(old);
 
             (*header).next = pack.current_header;
-            if list_ptr
-                .compare_exchange(
-                    old,
-                    Tagging.tag_ptr(header, pack.old_packed),
-                    Ordering::Release,
-                    Ordering::Relaxed,
-                )
-                .is_ok()
-            {
-                size_ptr.fetch_add(1, AtomicOrdering::TransferFetchOp);
-                if pack.current_header.is_null() {
-                    self.mark_class_nonempty(inner, class, cpu_id);
+            match list_ptr.compare_exchange(
+                old,
+                Tagging.tag_ptr(header, pack.old_packed),
+                Ordering::Release,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    size_ptr.fetch_add(1, AtomicOrdering::TransferFetchOp);
+                    if pack.current_header.is_null() {
+                        self.mark_class_nonempty(inner, class, cpu_id);
+                    }
+                    crate::global_vals::record_transfer_push!(class, 1);
+                    return;
                 }
-                crate::global_vals::record_transfer_push!(class, 1);
-                return;
+                Err(new_head) => old = new_head,
             }
 
             #[cfg(feature = "transfer-debug")]
@@ -291,13 +291,13 @@ impl SlabCache {
         crate::TOTAL_TRANSFER_POP_CALLS.fetch_add(1, Ordering::Relaxed);
 
         let inner = self.get_inner();
-        let list = &inner.cache[cpu_id].mail[class];
+        let list = &inner.cache[cpu_id].mail.get_unchecked(class);
         let normal_ptr = &list.list;
         let trimmed_ptr = &list.trimmed;
         let (mut list_ptr, mut size_ptr) = (normal_ptr, &list.size.normal_blocks);
 
+        let mut old = list_ptr.load(Ordering::Acquire);
         'retry: loop {
-            let mut old = list_ptr.load(Ordering::Acquire);
             let mut pack = Tagging.untag_ptr(old);
 
             if list.trim_lock.get_lock() {
@@ -338,30 +338,30 @@ impl SlabCache {
                 count += 1;
             }
 
-            if list_ptr
-                .compare_exchange(
-                    old,
-                    Tagging.tag_ptr(next, pack.old_packed),
-                    Ordering::Acquire,
-                    Ordering::Relaxed,
-                )
-                .is_ok()
-            {
-                let available = size_ptr.fetch_sub(count, AtomicOrdering::TransferFetchOp);
-                if !next.is_null() {
-                    HardwareFeature.prefetch(SafeToPrefetch::new(next), PrefetchHint::PreferL1)
-                } else {
-                    self.clear_hint(normal_ptr, trimmed_ptr, inner, class, cpu_id);
+            match list_ptr.compare_exchange(
+                old,
+                Tagging.tag_ptr(next, pack.old_packed),
+                Ordering::Acquire,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    let available = size_ptr.fetch_sub(count, AtomicOrdering::TransferFetchOp);
+                    if !next.is_null() {
+                        HardwareFeature.prefetch(SafeToPrefetch::new(next), PrefetchHint::PreferL1)
+                    } else {
+                        self.clear_hint(normal_ptr, trimmed_ptr, inner, class, cpu_id);
+                    }
+                    crate::global_vals::record_transfer_pop!(class, count);
+                    return Some(TransferReturn {
+                        start: pack.current_header,
+                        end: tail,
+                        total: count,
+                        available,
+                        #[cfg(feature = "predictor-debug")]
+                        cpu_id,
+                    });
                 }
-                crate::global_vals::record_transfer_pop!(class, count);
-                return Some(TransferReturn {
-                    start: pack.current_header,
-                    end: tail,
-                    total: count,
-                    available,
-                    #[cfg(feature = "predictor-debug")]
-                    cpu_id,
-                });
+                Err(new_head) => old = new_head,
             }
 
             #[cfg(feature = "transfer-debug")]

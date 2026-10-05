@@ -378,9 +378,11 @@ The radix answers the coarse question “can this address belong to RSMalloc?”
 flowchart TD
     PTR["free(ptr)"] --> NULL{"Null?"}
     NULL -- Yes --> DONE[Return]
-    NULL -- No --> OWN{"RADIX owns address?"}
+    NULL -- No --> FIRST{"validate-foreign-first-on-free enabled?"}
+    FIRST -- Yes --> OWN{"RADIX owns address?"}
     OWN -- No --> FOREIGN["Preload fallback or configured foreign-pointer policy"]
     OWN -- Yes --> ALIGN["Recover original aligned pointer if tagged"]
+    FIRST -- No --> ALIGN
     ALIGN --> MAGIC{"Header magic"}
     MAGIC -- Small --> AGE["Stamp lifetime and freed magic"]
     AGE --> PUSH["RSEQ push or transfer overflow"]
@@ -388,10 +390,18 @@ flowchart TD
     META --> KIND{"Segmented bitmap?"}
     KIND -- Yes --> BFREE["Clear bitmap occupancy and timestamp slots"]
     KIND -- No --> UNMAP["Clear radix ownership and munmap"]
-    MAGIC -- Invalid --> ABORT["Double-free/corruption policy"]
+    MAGIC -- Invalid --> LATE{"Ownership already checked?"}
+    LATE -- Yes --> ABORT["Double-free/corruption policy"]
+    LATE -- No --> CHECK{"RADIX owns original address?"}
+    CHECK -- Yes --> ABORT
+    CHECK -- No --> FOREIGN
 ```
 
-Ownership is checked before allocator metadata is trusted. Aligned allocations store a tag and original pointer before the adjusted payload; the recovered base is checked against the radix before dereference.
+By default, free uses metadata-first classification: after the null check it reads the alignment tag and header magic, and successful small or large frees skip the upfront ownership-radix lookup. Non-null inputs are assumed to be live allocations returned by RSMalloc. If neither live magic matches, the original address is checked against the radix before preload fallback, the configured Rust foreign-pointer policy, or double-free/corruption handling.
+
+The opt-in `validate-foreign-first-on-free` Cargo feature moves that ownership check ahead of the tag and header reads. Addresses rejected by the radix reach preload fallback or the configured Rust policy without reading presumed RSMalloc metadata. Without the feature, foreign-pointer handling is best-effort: preceding memory may be unreadable, or unrelated bytes may match allocator tags/magic before the late check is reached. Magic is not proof of ownership. The radix is coarse, so enabling the feature still does not make arbitrary interior or invalid pointers valid deallocation inputs.
+
+Aligned allocations store a tag and original pointer before the adjusted payload. In both modes, a recovered aligned base is checked against the radix before its header is dereferenced; this does not validate the initial tag read in metadata-first mode.
 
 Small frees stamp `life_time`, change magic to the freed value, and enter the current CPU's cache. This CPU may differ from the allocation CPU by design.
 
@@ -423,7 +433,7 @@ L1 pointer table -> L2 pointer table -> L3 atomic bitmap leaf
 
 A 512-byte L3 bitmap covers 2 GiB. Intermediate tables are allocated lazily under one metadata-allocation lock and published with release ordering. Ownership bits are atomic.
 
-The 512 KiB granularity deliberately trades exactness for compact metadata and fast rejection. It is not sufficient to identify allocation boundaries; headers, aligned tags, and `BIG_MAP` provide exact classification after coarse ownership succeeds.
+The 512 KiB granularity deliberately trades exactness for compact metadata and fast rejection. It is not sufficient to identify allocation boundaries; headers, aligned tags, and `BIG_MAP` provide allocation classification. Free checks coarse ownership first only with `validate-foreign-first-on-free`; the default successful path assumes ownership and classifies metadata directly.
 
 Header magic distinguishes live slab allocations, freed slab blocks, and large allocations. Optional hardening can also validate ownership for blocks popped from internal freelists and zero selected small payloads on free.
 

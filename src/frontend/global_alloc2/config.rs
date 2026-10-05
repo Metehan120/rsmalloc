@@ -446,7 +446,11 @@ impl MagicSafetyDisable {
 }
 
 #[cfg(any(feature = "expose-security-critical-settings", doc))]
-/// Policy for pointers that are not owned by rsmalloc.
+/// Policy for pointers detected as not owned by rsmalloc.
+///
+/// Free reads metadata first unless `validate-foreign-first-on-free` is enabled.
+/// Without that feature, this policy is best-effort and may not be reached before
+/// a fault or misclassification. Coarse validation does not permit invalid frees.
 #[derive(Clone, Copy, Debug)]
 pub enum ForeignPointerPolicy {
     /// Abort instead of silently accepting an invalid deallocation request.

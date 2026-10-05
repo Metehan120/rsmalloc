@@ -27,6 +27,8 @@ allocator-api = []
 native-allocation-api = []
 preload = []
 check-owned-on-alloc = []
+# Opt-in ownership validation before free's metadata reads; otherwise foreign handling is best-effort.
+validate-foreign-first-on-free = []
 
 # Debug options
 debug-print = ["debug"]

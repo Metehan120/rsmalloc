@@ -56,6 +56,12 @@ Alpha-3 also strengthens transfer-cache ABA protection, adds opt-in guard pages,
 - Increased radix ownership chunks from 4 KiB to 512 KiB, reducing ownership-bitmap metadata by 128x; each 512-byte bitmap leaf now covers 2 GiB. A later simplification removed the separate one-bit L0 allocation entirely and widened L1 to 13 bits, retaining coverage of the low 56-bit user-address range with one fewer dependent lookup on ownership checks.
 - Rounded page-backend arenas and direct large-allocation mappings to the 512 KiB ownership granule. Direct allocation, free, and realloc paths now derive the same checked mapping length, and the Rust `ArenaBytes` configuration accepts only 512 KiB multiples.
 
+### Metadata-first free and optional ownership validation
+
+- Changed the default free path to classify alignment tags and header magic before checking radix ownership. Successful small and large frees skip the upfront lookup and assume non-null inputs are live RSMalloc allocations.
+- Added the opt-in `validate-foreign-first-on-free` Cargo feature to restore ownership validation before metadata reads. Without it, the remaining late foreign-pointer check/fallback is best-effort: a foreign pointer can fault or be misclassified before reaching that check. The feature is disabled by default and is not part of `semi-hardened`.
+- Retained radix validation of recovered aligned-allocation bases before dereferencing their headers in both modes. Coarse ownership validation does not establish allocation boundaries or make invalid frees safe.
+
 ### Guard pages
 
 - Added `guard-pages-thp` and `guard-pages-ignore-thp` Cargo features to `src/backend/page_allocator.rs`, the bump allocator backing every small-class refill. A `PROT_NONE` guard page is placed at the last 4KB of each fixed-size aligned block — 2MB intervals for `guard-pages-thp` (matched to the THP unit, so only the specific 2MB block hosting a guard loses THP eligibility), 64KB for `guard-pages-ignore-thp` (denser coverage, always fragments page tables).

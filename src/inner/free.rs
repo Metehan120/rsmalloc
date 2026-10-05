@@ -41,7 +41,10 @@ pub unsafe fn find_original_ptr(ptr: UnsafePointer<Header>) -> UnsafePointer<Hea
         // verified the offset preceding an arbitrary pointer is untrusted and may
         // contain forged allocator metadata
         if unlikely(!RADIX.is_owned(presumed_original_ptr as usize)) {
-            RSMallocError::Corruption { ptr: presumed_original_ptr as *mut u8, reason: "CRITICAL: possible aligned-path metadata injection: recovered pointer is not owned by rsmalloc" }.log_and_abort();
+            corruption_abort(
+                presumed_original_ptr as *mut u8,
+                "CRITICAL: possible aligned-path metadata injection: recovered pointer is not owned by rsmalloc",
+            );
         }
 
         header_search_ptr = UnsafePointer::new(presumed_original_ptr as *mut Header);
@@ -62,9 +65,7 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
     #[cfg(feature = "debug-full-critic")]
     RS_FREE_CALLS_DEBUG.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-    // Classify ownership before reading allocator metadata unowned pointers within
-    // the supported user-address range follow the configured foreign-pointer
-    // policy; addresses outside that range are rejected as invalid
+    #[cfg(feature = "validate-foreign-first-on-free")]
     if !RADIX.is_owned(ptr.cast_usize()) {
         #[cfg(feature = "preload")]
         crate::inner::fallback::free_fallback(ptr.cast_as_ptr() as *mut _);
@@ -101,20 +102,53 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
         return;
     }
 
+    #[cfg(not(feature = "validate-foreign-first-on-free"))]
+    if !RADIX.is_owned(ptr.cast_usize()) {
+        #[cfg(feature = "preload")]
+        crate::inner::fallback::free_fallback(ptr.cast_as_ptr() as *mut _);
+
+        #[cfg(not(feature = "preload"))]
+        {
+            if crate::FOREIGN_POINTER_ABORT {
+                RSMallocError::ForeignPointer {
+                    ptr: ptr.cast_as_ptr(),
+                }
+                .log_and_abort();
+            }
+        }
+
+        return;
+    }
+
     // if it is double free, abort just to keep heap intact
     // if it is not double free, we have a memory corruption or a security violation
     if !cfg!(feature = "disable-magic-security-checks") {
-        if header.magic == FREED_MAGIC {
-            RSMallocError::DoubleFree {
-                ptr: header.cast_as_ptr(),
-            }
-            .log_and_abort()
-        }
-
-        RSMallocError::Corruption {
-            ptr: header.cast_as_ptr(),
-            reason: "magic mismatch",
-        }
-        .log_and_abort()
+        abort_paths(header.cast_as_ptr(), header.magic);
     }
+}
+
+#[inline(never)]
+pub fn corruption_abort(ptr: *mut u8, reason: &'static str) {
+    RSMallocError::Corruption {
+        ptr: ptr.cast(),
+        reason,
+    }
+    .log_and_abort()
+}
+
+#[inline(never)]
+pub unsafe fn abort_paths(
+    ptr: *mut u8,
+    #[cfg(not(feature = "extended-header"))] magic: u16,
+    #[cfg(feature = "extended-header")] magic: u64,
+) {
+    if magic == FREED_MAGIC {
+        RSMallocError::DoubleFree { ptr: ptr.cast() }.log_and_abort()
+    }
+
+    RSMallocError::Corruption {
+        ptr: ptr.cast(),
+        reason: "magic mismatch",
+    }
+    .log_and_abort()
 }

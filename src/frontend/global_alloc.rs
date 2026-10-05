@@ -186,7 +186,12 @@ impl ForeignPointerSettings {
     }
 }
 
-/// Policy for handling foreign pointers in Rust global-allocator mode.
+/// Policy for handling foreign pointers detected in Rust global-allocator mode.
+///
+/// Free reads metadata before detecting foreign pointers unless the
+/// `validate-foreign-first-on-free` feature is enabled. Without it, this policy
+/// is best-effort and may not be reached before a fault or misclassification.
+/// Coarse ownership checks do not make invalid deallocation inputs valid.
 #[derive(Clone, Copy, Debug)]
 pub enum ForeignPointerPolicy {
     /// Ignore unknown pointers and return without freeing them.

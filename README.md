@@ -193,6 +193,7 @@ For lower-level malloc-style operations, `RSMalloc::raw()` exposes `v2::alloc::R
 | `page-backend-no-huge-page` | No-huge-page advice for slab arenas — cuts RSS on THP-aggressive systems (e.g. CachyOS), costs TLB pressure. |
 | `page-backend-huge-page` | Huge-page advice for slab arenas (ignored if the above is also set). |
 | `check-owned-on-alloc` | Semi-hardening: verifies popped allocations are still `RADIX`-owned before returning them. Adds a lookup to the alloc path. |
+| `validate-foreign-first-on-free` | Opt-in: checks radix ownership before reading presumed allocation metadata on free. Rejected addresses reach preload fallback or the configured Rust foreign-pointer policy without those reads; adds a lookup to successful frees. |
 | `zero-small-on-free` | Zeroes 16–64B allocations (cryptographic-key sized) on free; cheap enough for security without a big performance penalty. |
 | `guard-pages-thp` | Lazily places a `PROT_NONE` guard page at the last 4KB of every **2MB-aligned** page-allocator block, materialized only as the bump pointer reaches it. Catches some OOB bugs; size classes up to 1MB are guaranteed never to straddle a guard (denied outright if they would), while larger requests only get a guard consumed at their leading edge, not dense coverage through their body. |
 | `guard-pages-ignore-thp` | Shrinks `guard-pages-thp`'s interval from 2MB to 64KB for denser coverage; fragments page tables more often. |
@@ -203,6 +204,12 @@ For lower-level malloc-style operations, `RSMalloc::raw()` exposes `v2::alloc::R
 | `print-cpu-on-double-free` | Includes the current RSEQ CPU id in fatal double-free/corruption reports. |
 | `abort-on-rseq-failure` | Aborts if RSEQ reports an impossible CPU id (`u32::MAX`), signaling a kernel/hardware failure, instead of leaving it unchecked. |
 | `explicit-zero` | Zeroes `calloc` memory with `explicit_bzero` instead of a plain byte-fill, so the zeroing can't be optimized away. |
+
+### Free ownership assumptions
+
+By default, non-null free inputs are assumed to be live RSMalloc allocations. Free reads the alignment tag and header magic first; successful small and large frees do not perform an upfront ownership lookup. A radix check and foreign-pointer policy/fallback remain on the unrecognized-magic path, but handling foreign pointers is best-effort: metadata reads can fault or unrelated bytes can match allocator tags/magic before that check.
+
+Enable `validate-foreign-first-on-free` to reject non-owned addresses before those metadata reads. The radix tracks coarse 512 KiB regions, not allocation boundaries, so the feature does not make arbitrary or interior pointers safe to free. Recovered aligned-allocation bases are checked before their headers are read in either mode. The feature is disabled by default and is not included in `semi-hardened`.
 
 ### Debug/diagnostic tiers
 

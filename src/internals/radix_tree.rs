@@ -18,12 +18,14 @@ use std::{
     },
 };
 
-pub const CHUNK_SIZE: usize = 512 * 1024;
+pub const CHUNK_SIZE: usize = 4096;
 
-const L1_BITS: usize = 13;
+const L0_BITS: usize = 8;
+const L1_BITS: usize = 12;
 const L2_BITS: usize = 12;
 const L3_BITS: usize = 12;
 
+const L0_SIZE: usize = 1 << L0_BITS;
 const L1_SIZE: usize = 1 << L1_BITS;
 const L2_SIZE: usize = 1 << L2_BITS;
 const L3_SIZE: usize = 1 << L3_BITS;
@@ -31,10 +33,10 @@ const L3_WORD_BITS: usize = u64::BITS as usize;
 const L3_BITMAP_WORDS: usize = (L3_SIZE + L3_WORD_BITS - 1) / L3_WORD_BITS;
 
 const MAX_ADDR: usize = 1usize << 56;
-const RADIX_MAX_CHUNKS: usize = 1 << (L1_BITS + L2_BITS + L3_BITS);
+const RADIX_MAX_CHUNKS: usize = 1 << (L0_BITS + L1_BITS + L2_BITS + L3_BITS);
 
 pub struct Radix {
-    pub l1: UnsafePointer<AtomicUsize>,
+    pub l0: UnsafePointer<AtomicUsize>,
     alloc_lock: SpinLock<()>,
 }
 
@@ -65,19 +67,20 @@ impl Radix {
     }
 
     pub unsafe fn new() -> Self {
-        let ptr = Self::map_memory(L1_SIZE * size_of::<AtomicUsize>()) as *mut AtomicUsize;
+        let ptr = Self::map_memory(L0_SIZE * size_of::<AtomicUsize>()) as *mut AtomicUsize;
         Self {
             alloc_lock: SpinLock::new(()),
-            l1: UnsafePointer::new(ptr),
+            l0: UnsafePointer::new(ptr),
         }
     }
 
     #[inline(always)]
-    fn split(idx: usize) -> (usize, usize, usize) {
+    fn split(idx: usize) -> (usize, usize, usize, usize) {
+        let l0 = (idx >> (L1_BITS + L2_BITS + L3_BITS)) & (L0_SIZE - 1);
         let l1 = (idx >> (L2_BITS + L3_BITS)) & (L1_SIZE - 1);
         let l2 = (idx >> L3_BITS) & (L2_SIZE - 1);
         let l3 = idx & (L3_SIZE - 1);
-        (l1, l2, l3)
+        (l0, l1, l2, l3)
     }
 
     #[inline(always)]
@@ -136,9 +139,10 @@ impl Radix {
         if unlikely(chunk_idx >= RADIX_MAX_CHUNKS) {
             return;
         }
-        let (i1, i2, i3) = Self::split(chunk_idx);
+        let (i0, i1, i2, i3) = Self::split(chunk_idx);
         let lock = &self.alloc_lock;
-        let l2 = Self::get_or_alloc(self.l1.as_ptr(), i1, L2_SIZE, lock);
+        let l1 = Self::get_or_alloc(self.l0.as_ptr(), i0, L1_SIZE, lock);
+        let l2 = Self::get_or_alloc(l1, i1, L2_SIZE, lock);
         let l3 = Self::get_or_alloc_l3(l2, i2, lock);
 
         let word_idx = i3 / L3_WORD_BITS;
@@ -159,9 +163,10 @@ impl Radix {
     unsafe fn set_range(&self, start_idx: usize, end_idx: usize, val: bool) {
         let mut chunk_idx = start_idx;
         loop {
-            let (i1, i2, i3) = Self::split(chunk_idx);
+            let (i0, i1, i2, i3) = Self::split(chunk_idx);
             let lock = &self.alloc_lock;
-            let l2 = Self::get_or_alloc(self.l1.as_ptr(), i1, L2_SIZE, lock);
+            let l1 = Self::get_or_alloc(self.l0.as_ptr(), i0, L1_SIZE, lock);
+            let l2 = Self::get_or_alloc(l1, i1, L2_SIZE, lock);
             let l3 = Self::get_or_alloc_l3(l2, i2, lock);
 
             let chunks_left_in_leaf = L3_SIZE - i3;
@@ -212,9 +217,16 @@ impl Radix {
 
     #[inline(always)]
     pub unsafe fn get(&self, chunk_idx: usize) -> bool {
-        let (i1, i2, i3) = Self::split(chunk_idx);
+        if unlikely(chunk_idx >= RADIX_MAX_CHUNKS) {
+            return false;
+        }
+        let (i0, i1, i2, i3) = Self::split(chunk_idx);
 
-        let l2 = (*self.l1.as_ptr().add(i1)).load(Acquire) as *mut AtomicUsize;
+        let l1 = (*self.l0.as_ptr().add(i0)).load(Acquire) as *mut AtomicUsize;
+        if l1.is_null() {
+            return false;
+        }
+        let l2 = (*l1.add(i1)).load(Acquire) as *mut AtomicUsize;
         if l2.is_null() {
             return false;
         }
@@ -250,7 +262,7 @@ impl RadixTree {
     pub const unsafe fn new_const() -> Self {
         Self {
             nodes: Radix {
-                l1: UnsafePointer::new(null_mut()),
+                l0: UnsafePointer::new(null_mut()),
                 alloc_lock: SpinLock::new(()),
             },
         }
@@ -307,7 +319,7 @@ impl RadixTree {
 
     #[inline(always)]
     pub unsafe fn is_owned(&self, addr: usize) -> bool {
-        if unlikely(self.nodes.l1.is_null()) {
+        if unlikely(self.nodes.l0.is_null()) {
             return false;
         }
 
@@ -323,7 +335,7 @@ impl RadixTree {
 
     #[cfg(feature = "debug")]
     pub unsafe fn report(&self) -> RadixReport {
-        if self.nodes.l1.is_null() {
+        if self.nodes.l0.is_null() {
             return RadixReport {
                 l1_nodes: 0,
                 l2_nodes: 0,
@@ -333,32 +345,41 @@ impl RadixTree {
             };
         }
 
-        let l1_nodes = 1usize;
+        let mut l1_nodes = 0usize;
         let mut l2_nodes = 0usize;
         let mut leaves = 0usize;
         let mut owned_chunks = 0usize;
 
-        for i1 in 0..L1_SIZE {
-            let l2 = (*self.nodes.l1.as_ptr().add(i1)).load(Acquire) as *mut AtomicUsize;
-            if l2.is_null() {
+        for i0 in 0..L0_SIZE {
+            let l1 = (*self.nodes.l0.as_ptr().add(i0)).load(Acquire) as *mut AtomicUsize;
+            if l1.is_null() {
                 continue;
             }
-            l2_nodes += 1;
+            l1_nodes += 1;
 
-            for i2 in 0..L2_SIZE {
-                let l3 = (*l2.add(i2)).load(Acquire) as *mut AtomicU64;
-                if l3.is_null() {
+            for i1 in 0..L1_SIZE {
+                let l2 = (*l1.add(i1)).load(Acquire) as *mut AtomicUsize;
+                if l2.is_null() {
                     continue;
                 }
-                leaves += 1;
+                l2_nodes += 1;
 
-                for word in 0..L3_BITMAP_WORDS {
-                    owned_chunks += (*l3.add(word)).load(Acquire).count_ones() as usize;
+                for i2 in 0..L2_SIZE {
+                    let l3 = (*l2.add(i2)).load(Acquire) as *mut AtomicU64;
+                    if l3.is_null() {
+                        continue;
+                    }
+                    leaves += 1;
+
+                    for word in 0..L3_BITMAP_WORDS {
+                        owned_chunks += (*l3.add(word)).load(Acquire).count_ones() as usize;
+                    }
                 }
             }
         }
 
-        let metadata_bytes = (L1_SIZE * size_of::<AtomicUsize>())
+        let metadata_bytes = (L0_SIZE * size_of::<AtomicUsize>())
+            + (l1_nodes * L1_SIZE * size_of::<AtomicUsize>())
             + (l2_nodes * L2_SIZE * size_of::<AtomicUsize>())
             + (leaves * L3_BITMAP_WORDS * size_of::<AtomicU64>());
 
@@ -381,7 +402,9 @@ pub static mut RADIX: RadixTree = unsafe { RadixTree::new_const() };
 
 #[cfg(test)]
 mod tests {
-    use super::{CHUNK_SIZE, L3_SIZE, RadixTree};
+    use super::{
+        CHUNK_SIZE, L1_BITS, L2_BITS, L3_BITS, L3_SIZE, MAX_ADDR, RADIX_MAX_CHUNKS, RadixTree,
+    };
 
     unsafe fn new_tree() -> RadixTree {
         unsafe { RadixTree::new() }
@@ -453,6 +476,133 @@ mod tests {
             for chunk in start_chunk..start_chunk + 4 {
                 assert!(tree.is_owned(chunk * CHUNK_SIZE));
             }
+        }
+    }
+
+    #[test]
+    fn adjacent_pages_do_not_share_ownership() {
+        unsafe {
+            assert_eq!(CHUNK_SIZE, 4096);
+            let tree = new_tree();
+            let slab_base = 8 * 512 * 1024 + 0x54000;
+            let direct_size = 512 * 1024;
+            let direct_base = slab_base - direct_size;
+
+            tree.set(slab_base, 2 * CHUNK_SIZE, true);
+            tree.set(direct_base, direct_size, true);
+            tree.set(direct_base, direct_size, false);
+
+            assert!(!tree.is_owned(slab_base - 1));
+            assert!(tree.is_owned(slab_base + 0x40));
+            assert!(tree.is_owned(slab_base + CHUNK_SIZE));
+            assert!(!tree.is_owned(slab_base + 2 * CHUNK_SIZE));
+        }
+    }
+
+    #[test]
+    fn set_and_clear_range_cross_every_radix_level() {
+        unsafe {
+            for boundary in [
+                L3_SIZE,
+                1usize << (L2_BITS + L3_BITS),
+                1usize << (L1_BITS + L2_BITS + L3_BITS),
+            ] {
+                let tree = new_tree();
+                let start = boundary - 2;
+                tree.set(start * CHUNK_SIZE, 5 * CHUNK_SIZE, true);
+                for chunk in start..start + 5 {
+                    assert!(tree.is_owned(chunk * CHUNK_SIZE));
+                }
+                assert!(!tree.is_owned((start - 1) * CHUNK_SIZE));
+                assert!(!tree.is_owned((start + 5) * CHUNK_SIZE));
+
+                tree.set((boundary - 1) * CHUNK_SIZE, 3 * CHUNK_SIZE, false);
+                assert!(tree.is_owned(start * CHUNK_SIZE));
+                for chunk in boundary - 1..boundary + 2 {
+                    assert!(!tree.is_owned(chunk * CHUNK_SIZE));
+                }
+                assert!(tree.is_owned((start + 4) * CHUNK_SIZE));
+            }
+        }
+    }
+
+    #[test]
+    fn highest_user_pages_do_not_alias_low_addresses() {
+        unsafe {
+            let tree = new_tree();
+            tree.set(0, CHUNK_SIZE, true);
+            tree.set(MAX_ADDR - 2 * CHUNK_SIZE, 2 * CHUNK_SIZE, true);
+            assert!(tree.is_owned(MAX_ADDR - 1));
+            assert!(tree.is_owned(MAX_ADDR - 2 * CHUNK_SIZE));
+            assert!(!tree.is_owned(MAX_ADDR - 3 * CHUNK_SIZE));
+
+            tree.set(MAX_ADDR - 2 * CHUNK_SIZE, 2 * CHUNK_SIZE, false);
+            assert!(!tree.is_owned(MAX_ADDR - 1));
+            assert!(tree.is_owned(0));
+            assert!(!tree.nodes.get(RADIX_MAX_CHUNKS));
+            tree.nodes.set(RADIX_MAX_CHUNKS, false);
+            assert!(tree.is_owned(0));
+        }
+    }
+
+    #[test]
+    fn concurrent_registration_preserves_disjoint_page_bits() {
+        unsafe {
+            let tree = new_tree();
+            std::thread::scope(|scope| {
+                for lane in 0..8 {
+                    let tree = &tree;
+                    scope.spawn(move || {
+                        for index in 0..64 {
+                            let chunk = lane + index * 8;
+                            tree.set(chunk * CHUNK_SIZE, CHUNK_SIZE, true);
+                            tree.set(chunk * CHUNK_SIZE, CHUNK_SIZE, true);
+                            if index % 3 == 0 {
+                                tree.set(chunk * CHUNK_SIZE, CHUNK_SIZE, false);
+                            }
+                        }
+                    });
+                }
+            });
+            for lane in 0..8 {
+                for index in 0..64 {
+                    assert_eq!(
+                        tree.is_owned((lane + index * 8) * CHUNK_SIZE),
+                        index % 3 != 0
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "debug")]
+    #[test]
+    fn report_counts_all_four_levels() {
+        use super::{L0_SIZE, L1_SIZE, L2_SIZE, L3_BITMAP_WORDS};
+        use std::sync::atomic::{AtomicU64, AtomicUsize};
+
+        unsafe {
+            let tree = new_tree();
+            let empty = tree.report();
+            assert_eq!(empty.l1_nodes, 0);
+            assert_eq!(empty.metadata_bytes, L0_SIZE * size_of::<AtomicUsize>());
+
+            tree.set(0, CHUNK_SIZE, true);
+            tree.set(
+                (1usize << (L1_BITS + L2_BITS + L3_BITS)) * CHUNK_SIZE,
+                CHUNK_SIZE,
+                true,
+            );
+            let report = tree.report();
+            assert_eq!(report.l1_nodes, 2);
+            assert_eq!(report.l2_nodes, 2);
+            assert_eq!(report.leaves, 2);
+            assert_eq!(report.owned_chunks, 2);
+            assert_eq!(
+                report.metadata_bytes,
+                (L0_SIZE + 2 * L1_SIZE + 2 * L2_SIZE) * size_of::<AtomicUsize>()
+                    + 2 * L3_BITMAP_WORDS * size_of::<AtomicU64>(),
+            );
         }
     }
 

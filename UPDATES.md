@@ -51,10 +51,10 @@ Alpha-3 also strengthens transfer-cache ABA protection, adds opt-in guard pages,
 - Reworked each NUMA node's current page arena around an atomic arena pointer and an atomic bump offset. Ordinary page-backed allocations now reserve space with a CAS loop without taking the node lock; the lock is restricted to exhausted-arena removal, searches through older arenas, and mapping/publishing a new arena.
 - Moved NUMA selection and the bounded refill retry policy into `PageAllocator::alloc`, giving those consumers one shared reservation policy. Requests now use checked page alignment and fall back to direct mappings when they are too large for the configured arena or the arena path cannot satisfy them.
 
-### Radix ownership granularity
+### Radix tree optimizations
 
-- Increased radix ownership chunks from 4 KiB to 512 KiB, reducing ownership-bitmap metadata by 128x; each 512-byte bitmap leaf now covers 2 GiB. A later simplification removed the separate one-bit L0 allocation entirely and widened L1 to 13 bits, retaining coverage of the low 56-bit user-address range with one fewer dependent lookup on ownership checks.
-- Rounded page-backend arenas and direct large-allocation mappings to the 512 KiB ownership granule. Direct allocation, free, and realloc paths now derive the same checked mapping length, and the Rust `ArenaBytes` configuration accepts only 512 KiB multiples.
+- Allocate radix metadata from page-backend arenas when available, falling back to direct mappings. Lazy node allocation is serialized under a metadata-allocation lock to avoid duplicate allocations, while readers use acquire loads without taking the lock.
+- Skip redundant ownership ORs when a relaxed bitmap load finds the requested bits already set. Range updates batch masks by bitmap word and leaf, with a single-page fast path for ranges contained within one ownership chunk.
 
 ### Metadata-first free and optional ownership validation
 

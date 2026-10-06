@@ -4,10 +4,10 @@
 //! settings that weaken allocator safety. The latter are unavailable unless
 //! the `expose-security-critical-settings` Cargo feature is enabled.
 
-use crate::{
-    backend::bootstrap::BootstrapConfig, core_prim::predictor::DEFAULT_BATCH,
-    internals::radix_tree::CHUNK_SIZE,
-};
+use crate::{backend::bootstrap::BootstrapConfig, core_prim::predictor::DEFAULT_BATCH};
+
+// V2 arena configuration policy is independent of radix ownership granularity.
+const ARENA_ALIGNMENT: usize = 512 * 1024;
 
 const DEFAULT_SEGMENTED_BITMAP_CACHE: usize = 64 * 1024 * 1024;
 const DEFAULT_SMALL_TRIM_THRESHOLD: usize = 10 * 1024 * 1024;
@@ -167,9 +167,9 @@ impl PerCacheLimit {
 
 /// Minimum size requested for a slab page-backend arena.
 ///
-/// Arena sizes must be multiples of 512 KiB, matching the allocator's radix
-/// ownership granularity. An arena may be larger when an individual backend
-/// request exceeds this configured minimum.
+/// Arena sizes must be multiples of 512 KiB as a v2 configuration policy,
+/// independent of the radix's 4 KiB ownership granularity. An arena may be
+/// larger when an individual backend request exceeds this configured minimum.
 #[derive(Clone, Copy, Debug)]
 pub struct ArenaSize(Size);
 
@@ -179,11 +179,12 @@ impl ArenaSize {
 
     /// Creates an arena-size setting when `size` is a multiple of 512 KiB.
     ///
-    /// Returns [`None`] when the requested size does not satisfy the radix
-    /// ownership alignment requirement.
+    /// Returns [`None`] when the requested size does not satisfy the v2 arena
+    /// configuration alignment policy. Zero is accepted; initialization enforces
+    /// the 512 KiB minimum.
     #[must_use]
     pub const fn new(size: Size) -> Option<ArenaSize> {
-        if !size.get().is_multiple_of(CHUNK_SIZE) {
+        if !size.get().is_multiple_of(ARENA_ALIGNMENT) {
             return None;
         }
 
@@ -559,12 +560,12 @@ impl Config {
             panic!("ignoring foreign pointers requires explicit v2 security configuration");
         }
 
-        let arena_size = if legacy.arena_min_size.0 < CHUNK_SIZE {
-            CHUNK_SIZE
+        let arena_size = if legacy.arena_min_size.0 < ARENA_ALIGNMENT {
+            ARENA_ALIGNMENT
         } else {
             legacy.arena_min_size.0
         };
-        if arena_size % CHUNK_SIZE != 0 {
+        if arena_size % ARENA_ALIGNMENT != 0 {
             panic!("legacy arena size must be a multiple of 512 KiB for v2");
         }
 
@@ -685,9 +686,10 @@ impl Default for Tuning {
 /// Temporarily converts a legacy `RSMallocConfig` into a v2 `Config`.
 ///
 /// This works in const contexts, including a `#[global_allocator]` static.
-/// Fixed magic, ignored foreign pointers, and arena sizes not divisible by
-/// 512 KiB are rejected instead of silently changing their behavior. Migrate
-/// these settings explicitly using the v2 API when needed.
+/// Legacy arena sizes below 512 KiB are raised to that minimum. Fixed magic,
+/// ignored foreign pointers, and larger arena sizes not divisible by 512 KiB
+/// are rejected instead of silently changing their behavior. Migrate these
+/// settings explicitly using the v2 API when needed.
 ///
 /// ```ignore
 /// use rsmalloc::{legacy_config_to_v2, RSMallocConfig};
@@ -702,4 +704,66 @@ macro_rules! legacy_config_to_v2 {
     ($config:expr) => {
         $crate::v2::config::Config::from_legacy_compat($config)
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arena_policy_is_independent_of_4k_radix_chunks() {
+        assert_eq!(crate::internals::radix_tree::CHUNK_SIZE, 4096);
+        assert_eq!(ARENA_ALIGNMENT, 512 * 1024);
+        for bytes in [0, 512 * 1024, 1024 * 1024, 256 * 1024 * 1024] {
+            assert_eq!(ArenaSize::new(Size::bytes(bytes)).unwrap().0.get(), bytes);
+        }
+        for bytes in [1, 4096, 512 * 1024 - 1, 512 * 1024 + 4096] {
+            assert!(ArenaSize::new(Size::bytes(bytes)).is_none());
+        }
+        assert_eq!(ArenaSize::DEFAULT.0.get(), 256 * 1024 * 1024);
+    }
+
+    #[test]
+    fn arena_configuration_is_valid_in_const_contexts() {
+        const ARENA: ArenaSize = match ArenaSize::new(Size::kib(512)) {
+            Some(arena) => arena,
+            None => panic!("512 KiB must be a valid arena size"),
+        };
+        const CONFIG: Config = Config::new(Tuning::DEFAULT.with_arena_min_size(ARENA));
+        const RADIX_SIZED_ARENA: Option<ArenaSize> = ArenaSize::new(Size::bytes(4096));
+
+        assert_eq!(CONFIG.tuning.arena_min_size.0.get(), 512 * 1024);
+        assert!(RADIX_SIZED_ARENA.is_none());
+    }
+
+    #[cfg(not(feature = "preload"))]
+    #[allow(deprecated)]
+    #[test]
+    fn legacy_arena_sizes_clamp_to_512k_including_const_migration() {
+        use crate::frontend::global_alloc::Bytes;
+
+        const CONFIG: Config = crate::legacy_config_to_v2!(crate::RSMallocConfig {
+            arena_min_size: Bytes(4096),
+            ..crate::RSMallocConfig::DEFAULT
+        });
+        assert_eq!(CONFIG.tuning.arena_min_size.0.get(), 512 * 1024);
+        for bytes in [0, 4096, 512 * 1024 - 1, 512 * 1024, 1024 * 1024] {
+            let config = Config::from_legacy_compat(crate::RSMallocConfig {
+                arena_min_size: Bytes(bytes),
+                ..crate::RSMallocConfig::DEFAULT
+            });
+            assert_eq!(config.tuning.arena_min_size.0.get(), bytes.max(512 * 1024));
+        }
+    }
+
+    #[cfg(not(feature = "preload"))]
+    #[allow(deprecated)]
+    #[test]
+    #[should_panic(expected = "legacy arena size must be a multiple of 512 KiB for v2")]
+    fn legacy_arena_rejects_4k_aligned_non_multiple_above_minimum() {
+        Config::from_legacy_compat(crate::RSMallocConfig {
+            arena_min_size: crate::frontend::global_alloc::Bytes(512 * 1024 + 4096),
+            ..crate::RSMallocConfig::DEFAULT
+        });
+    }
 }

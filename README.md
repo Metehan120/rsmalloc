@@ -209,7 +209,7 @@ For lower-level malloc-style operations, `RSMalloc::raw()` exposes `v2::alloc::R
 
 By default, non-null free inputs are assumed to be live RSMalloc allocations. Free reads the alignment tag and header magic first; successful small and large frees do not perform an upfront ownership lookup. A radix check and foreign-pointer policy/fallback remain on the unrecognized-magic path, but handling foreign pointers is best-effort: metadata reads can fault or unrelated bytes can match allocator tags/magic before that check.
 
-Enable `validate-foreign-first-on-free` to reject non-owned addresses before those metadata reads. The radix tracks coarse 512 KiB regions, not allocation boundaries, so the feature does not make arbitrary or interior pointers safe to free. Recovered aligned-allocation bases are checked before their headers are read in either mode. The feature is disabled by default and is not included in `semi-hardened`.
+Enable `validate-foreign-first-on-free` to reject non-owned addresses before those metadata reads. The four-level radix tracks coarse 4 KiB regions, not allocation boundaries, so the feature does not make arbitrary or interior pointers safe to free. Recovered aligned-allocation bases are checked before their headers are read in either mode. The feature is disabled by default and is not included in `semi-hardened`.
 
 ### Debug/diagnostic tiers
 

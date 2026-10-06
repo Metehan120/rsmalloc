@@ -37,7 +37,7 @@ flowchart TD
     LARGE -- Yes --> SEGMENTED["Segmented-bitmap backend"]
     LARGE -- No or unavailable --> MMAP["Direct mapping"]
 
-    PAGE --> RADIX["512 KiB ownership radix"]
+    PAGE --> RADIX["4 KiB four-level ownership radix"]
     SEGMENTED --> RADIX
     MMAP --> RADIX
 
@@ -357,7 +357,7 @@ The backend can grow an allocation in place when the adjacent aligned half of th
 
 ### Direct mappings
 
-If segmented-bitmap reuse is disabled, ineligible, or unavailable, `big_malloc` creates a dedicated anonymous mapping. Mapping size is checked, page/THP adjusted, and rounded to the 512 KiB ownership granule. NUMA preference and optional huge-page advice are applied when configured.
+If segmented-bitmap reuse is disabled, ineligible, or unavailable, `big_malloc` creates a dedicated anonymous mapping. Mapping size is checked, page/THP adjusted, and rounded to the 4 KiB ownership granule. NUMA preference and optional huge-page advice are applied when configured.
 
 Direct allocations are removed with `munmap`. Unaligned direct allocations can mark a single radix ownership chunk; aligned allocations mark their full mapping because an adjusted user pointer may reside farther from the original header.
 
@@ -425,15 +425,17 @@ Direct realloc attempts `mremap` without moving; failure falls back to allocate/
 
 ## Ownership and Metadata Safety
 
-The ownership radix uses 512 KiB chunks over the low 56-bit user-address range. Its shape is:
+The ownership radix uses 4 KiB chunks (`CHUNK_SIZE = 4096`) over the low 56-bit user-address range. Its four-level geometry is `L0 = 8` bits and `L1 = L2 = L3 = 12` bits, with 12 low address bits selecting bytes within a chunk. Its shape is:
 
 ```text
-L1 pointer table -> L2 pointer table -> L3 atomic bitmap leaf
+L0 pointer table -> L1 pointer table -> L2 pointer table -> L3 atomic bitmap leaf
 ```
 
-A 512-byte L3 bitmap covers 2 GiB. Intermediate tables are allocated lazily under one metadata-allocation lock and published with release ordering. Ownership bits are atomic.
+A 512-byte L3 bitmap holds 4096 ownership bits and covers 16 MiB. Intermediate tables are allocated lazily under one metadata-allocation lock and published with release ordering. Nodes use page-arena-backed memory when available, with direct mappings as a fallback. Ownership bits are atomic; setting bits skips the release OR when a relaxed load finds them already set, and range updates batch masks by bitmap word and leaf.
 
-The 512 KiB granularity deliberately trades exactness for compact metadata and fast rejection. It is not sufficient to identify allocation boundaries; headers, aligned tags, and `BIG_MAP` provide allocation classification. Free checks coarse ownership first only with `validate-foreign-first-on-free`; the default successful path assumes ownership and classifies metadata directly.
+The 4 KiB granularity provides page-level ownership tracking and fast rejection. It is not sufficient to identify allocation boundaries; headers, aligned tags, and `BIG_MAP` provide allocation classification. Free checks coarse ownership first only with `validate-foreign-first-on-free`; the default successful path assumes ownership and classifies metadata directly.
+
+V2 arena configuration independently requires 512 KiB multiples and enforces a 512 KiB minimum at initialization. This is an arena sizing policy, not the radix ownership granularity; changing radix geometry does not change the v2 configuration contract.
 
 Header magic distinguishes live slab allocations, freed slab blocks, and large allocations. Optional hardening can also validate ownership for blocks popped from internal freelists and zero selected small payloads on free.
 

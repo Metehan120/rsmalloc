@@ -40,7 +40,7 @@ pub unsafe fn find_original_ptr(ptr: UnsafePointer<Header>) -> UnsafePointer<Hea
         // Do not dereference the recovered aligned allocation base until ownership is
         // verified the offset preceding an arbitrary pointer is untrusted and may
         // contain forged allocator metadata
-        if unlikely(!RADIX.is_owned_noninline(presumed_original_ptr as usize)) {
+        if unlikely(!RADIX.is_owned(presumed_original_ptr as usize)) {
             corruption_abort(
                 presumed_original_ptr as *mut u8,
                 "CRITICAL: possible aligned-path metadata injection: recovered pointer is not owned by rsmalloc",
@@ -103,7 +103,7 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
     }
 
     #[cfg(not(feature = "validate-foreign-first-on-free"))]
-    if !RADIX.is_owned(ptr.cast_usize()) {
+    if !RADIX.is_owned_noninline(ptr.cast_usize()) {
         #[cfg(feature = "preload")]
         crate::inner::fallback::free_fallback(ptr.cast_as_ptr() as *mut _);
 

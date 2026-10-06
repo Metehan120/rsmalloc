@@ -40,7 +40,7 @@ pub unsafe fn find_original_ptr(ptr: UnsafePointer<Header>) -> UnsafePointer<Hea
         // Do not dereference the recovered aligned allocation base until ownership is
         // verified the offset preceding an arbitrary pointer is untrusted and may
         // contain forged allocator metadata
-        if unlikely(!RADIX.is_owned(presumed_original_ptr as usize)) {
+        if unlikely(!RADIX.is_owned_noninline(presumed_original_ptr as usize)) {
             corruption_abort(
                 presumed_original_ptr as *mut u8,
                 "CRITICAL: possible aligned-path metadata injection: recovered pointer is not owned by rsmalloc",

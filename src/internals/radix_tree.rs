@@ -333,6 +333,11 @@ impl RadixTree {
         self.nodes.get(addr / CHUNK_SIZE)
     }
 
+    #[inline(never)]
+    pub unsafe fn is_owned_noninline(&self, addr: usize) -> bool {
+        self.is_owned(addr)
+    }
+
     #[cfg(feature = "debug")]
     pub unsafe fn report(&self) -> RadixReport {
         if self.nodes.l0.is_null() {

@@ -435,7 +435,7 @@ A 512-byte L3 bitmap holds 4096 ownership bits and covers 16 MiB. Intermediate t
 
 The 4 KiB granularity provides page-level ownership tracking and fast rejection. It is not sufficient to identify allocation boundaries; headers, aligned tags, and `BIG_MAP` provide allocation classification. Free checks coarse ownership first only with `validate-foreign-first-on-free`; the default successful path assumes ownership and classifies metadata directly.
 
-V2 arena configuration independently requires 512 KiB multiples and enforces a 512 KiB minimum at initialization. This is an arena sizing policy, not the radix ownership granularity; changing radix geometry does not change the v2 configuration contract.
+V2 arena configuration accepts zero and 4 KiB page multiples. Initialization clamps the requested minimum to 256 KiB, preserving the historical bootstrap minimum; the default remains 256 MiB. Legacy migration applies the same 256 KiB clamp before rejecting larger sizes that are not page multiples.
 
 Header magic distinguishes live slab allocations, freed slab blocks, and large allocations. Optional hardening can also validate ownership for blocks popped from internal freelists and zero selected small payloads on free.
 

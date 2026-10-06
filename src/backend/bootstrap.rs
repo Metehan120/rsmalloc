@@ -3,7 +3,7 @@ use crate::{
         background_thread::{
             DISABLE_RELIEF, SEGMENTED_BITMAP_DISABLE_PERCENTAGE, SEGMENTED_BITMAP_ENABLE_PERCENTAGE,
         },
-        page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR},
+        page_allocator::{ARENA_SIZE, MIN_ARENA_SIZE, PAGE_ALLOCATOR},
     },
     big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND,
     core_prim::{
@@ -90,7 +90,7 @@ pub unsafe fn main_bootstrap(config: BootstrapConfig) {
 
     get_clock();
 
-    ARENA_SIZE = config.arena_size.max(1024 * 512);
+    ARENA_SIZE = config.arena_size.max(MIN_ARENA_SIZE);
     MAX_REFILL_RETRIES = config.max_refill;
     PREDICTOR_INIT_BATCH = config.init_batch;
 

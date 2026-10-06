@@ -179,20 +179,15 @@ unsafe fn big_realloc(
     }
 
     if !is_in_segmented_bitmap {
-        let Some(direct_new) =
-            aligned_new.checked_align_to(crate::internals::radix_tree::CHUNK_SIZE)
-        else {
-            return UnsafePointer::NULL;
-        };
         if let Ok(new_addr) = mremap(
             old_mapping,
             old_mapped_size,
-            direct_new,
+            aligned_new,
             MremapFlags::empty(),
         ) {
             let new_meta = BigAllocMeta {
                 size: new_size,
-                order: direct_new.next_power_of_two().trailing_zeros() as usize,
+                order: aligned_new.next_power_of_two().trailing_zeros() as usize,
                 segmented_bitmap_region: 0,
                 aligned: false,
             };

@@ -86,6 +86,8 @@ static GLOBAL: RSMalloc = RSMalloc::new(CONFIG);
 
 Defaults: randomized magic values enabled, abort on foreign pointers, general THP enabled (segmented-bitmap THP forcing off), a 64 MiB initial segmented-bitmap region, a 256 MiB minimum slab arena, 10 MiB small and 512 MiB big background-trim thresholds, memory-pressure relief disabled, and the allocator-default refill prediction.
 
+`ArenaSize::new` accepts zero and multiples of 4 KiB. Initialization clamps the requested arena minimum to 256 KiB; the default remains 256 MiB.
+
 Security-sensitive configuration is hidden unless the `expose-security-critical-settings` feature is enabled. Keeping fixed magic values additionally requires the explicit unsafe `MagicSafetyDisable::acknowledge_safety_risk()` token.
 
 ### Migrating legacy Rust configuration
@@ -103,7 +105,7 @@ const CONFIG: rsmalloc::v2::config::Config =
 static GLOBAL: RSMalloc = RSMalloc::new(CONFIG);
 ```
 
-The macro is available in Rust allocator builds, not `preload` builds. It uses v2's 512 MiB default big-allocation trim threshold because the legacy config only specifies a small-allocation threshold. It **rejects** fixed magic, ignored foreign pointers, and arena sizes above 512 KiB that are not multiples of 512 KiB; these cannot be migrated silently. Convert security-sensitive choices explicitly with v2's `expose-security-critical-settings` feature and its required unsafe acknowledgement. The legacy configuration type and this macro are migration aids, not the preferred API for new code.
+The macro is available in Rust allocator builds, not `preload` builds. It uses v2's 512 MiB default big-allocation trim threshold because the legacy config only specifies a small-allocation threshold. It preserves the historical 256 KiB minimum by clamping smaller legacy arena sizes before validation. It **rejects** fixed magic, ignored foreign pointers, and arena sizes above 256 KiB that are not multiples of 4 KiB; these cannot be migrated silently. Convert security-sensitive choices explicitly with v2's `expose-security-critical-settings` feature and its required unsafe acknowledgement. The legacy configuration type and this macro are migration aids, not the preferred API for new code.
 
 ### Native allocation interface
 

@@ -11,11 +11,7 @@ use crate::{
     backend::background_thread::DISABLE_SEGMENTED_BITMAP,
     big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND,
     core_prim::wrappers::UnsafePointer,
-    internals::{
-        big_meta_map::BIG_MAP,
-        binder::NumaBind,
-        radix_tree::{CHUNK_SIZE, RADIX},
-    },
+    internals::{big_meta_map::BIG_MAP, binder::NumaBind, radix_tree::RADIX},
     record_mmap_call,
     rseq_core::{rseq_offsets::get_rseq, slab_cache::SLAB_CACHE},
     utility::Alignment,
@@ -41,7 +37,7 @@ pub unsafe fn estimate_and_align_2mb(size: usize) -> Option<usize> {
 
 #[inline(always)]
 pub unsafe fn direct_mapping_size(size: usize) -> Option<usize> {
-    estimate_and_align_2mb(size)?.checked_align_to(CHUNK_SIZE)
+    estimate_and_align_2mb(size)
 }
 
 #[inline(never)]
@@ -78,10 +74,6 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
     }
 
     if actual_ptr.is_null() {
-        let Some(size) = mapped_total.checked_align_to(CHUNK_SIZE) else {
-            return UnsafePointer::NULL;
-        };
-        mapped_total = size;
         record_mmap_call(mapped_total);
 
         if let Ok(pointer) = mmap_anonymous(

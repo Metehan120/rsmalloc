@@ -330,6 +330,10 @@ pub unsafe fn rs_alloc_no_flag(size: usize, aligned: bool) -> UnsafePointer<Head
 
 #[inline(always)]
 pub unsafe fn usable_size(ptr: UnsafePointer<Header>) -> usize {
+    if ptr.is_null() {
+        return 0;
+    }
+
     let ptr_addr = ptr.cast_usize();
 
     if likely(RADIX.is_owned(ptr_addr)) {

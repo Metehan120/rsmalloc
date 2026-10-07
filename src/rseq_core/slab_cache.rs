@@ -321,7 +321,7 @@ impl GenericCache for SlabCache {
 
         let mut current_cpu = 0;
         for _ in 0..3 {
-            current_cpu = read_volatile(&rseq.cpu_id) as usize;
+            current_cpu = read_volatile(&rseq.cpu_id_start) as usize;
             let list = &inner.cache[current_cpu].cache.get_unchecked(class);
             let usage_ptr = &list.usage;
 
@@ -361,7 +361,7 @@ impl GenericCache for SlabCache {
         let mut loop_count = 0;
 
         loop {
-            let current_cpu = read_volatile(&rseq.cpu_id) as usize;
+            let current_cpu = read_volatile(&rseq.cpu_id_start) as usize;
             let list = &inner.cache[current_cpu].cache.get_unchecked(class);
             let usage_ptr = &list.usage;
 
@@ -397,7 +397,7 @@ impl GenericCache for SlabCache {
         let rseq = get_rseq();
 
         loop {
-            let current_cpu = read_volatile(&rseq.cpu_id) as usize;
+            let current_cpu = read_volatile(&rseq.cpu_id_start) as usize;
             let list = inner.cache[current_cpu].cache.get_unchecked(class);
             let result = RseqCore.pop(addr_of!(*list), rseq, current_cpu);
 

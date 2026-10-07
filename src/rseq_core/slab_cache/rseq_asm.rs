@@ -97,7 +97,6 @@ impl RseqCoreTrait for RseqCore {
         usage_ptr: *mut usize,
     ) -> RseqResult {
         let res: usize;
-        let cpu_id_start = addr_of!(rseq.cpu_id_start);
 
         asm!(
             ".pushsection .data.rel.ro,\"aw\",@progbits",
@@ -114,7 +113,7 @@ impl RseqCoreTrait for RseqCore {
 
             "1:",
             // Test cpu_id_start against cpu_id before entering critical section.
-            "cmp [{cpu_id_start}], {cpu_id:e}",
+            "cmp dword ptr [{rseq} + {cpu_offset}], {cpu_id:e}",
             "jne 3f",
 
             "mov {tmp}, [{list}]",
@@ -141,7 +140,7 @@ impl RseqCoreTrait for RseqCore {
             list = in(reg) list_ptr,
             header = in(reg) header,
             res = lateout(reg) res,
-            cpu_id_start = in(reg) cpu_id_start,
+            cpu_offset = const std::mem::offset_of!(rseq, cpu_id),
             cpu_id = in(reg) cpu_id,
             usage = in(reg) usage_ptr,
             options(nostack),

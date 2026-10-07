@@ -84,6 +84,9 @@ Alpha-3 also strengthens transfer-cache ABA protection, addresses fork and backg
 
 - Added `PAGE_ALLOCATOR` to the fork-prepare/parent/child lock handling alongside the large-allocation backend and `BIG_MAP`. The pending metadata queue was initially included as well, then its lock/reset handling was removed when the queue became an ABA-tagged lock-free `AtomicU128` stack.
 
+- Fixed allocation deadlocks in application `pthread_atfork` callbacks registered before allocator initialization. Preload page, segmented-growth, large-metadata, and radix locks now freeze without retaining a data reference and allow the fork-owning thread to acquire a temporary guard; other threads remain excluded until recovery completes. Ordinary uncontended acquisition still uses one CAS, without identity syscalls or Rust TLS on the normal path.
+- Added a native preload regression covering earlier prepare/parent/child callbacks, allocation/refill, large reallocation, trimming, and concurrent forks. Recursive forks from callbacks and callbacks waiting on allocator-blocked threads remain unsupported; POSIX restrictions on multithreaded child callbacks still apply.
+
 ### Background-worker signal isolation
 
 - Fixed a MariaDB shutdown hang caused by the allocator's background worker inheriting an unblocked signal mask and interfering with application signal handling. Signals are now blocked before worker creation, avoiding a startup race, and the caller's original mask is restored by an RAII guard on success, spawn failure, or unwinding.
@@ -95,11 +98,16 @@ Alpha-3 also strengthens transfer-cache ABA protection, addresses fork and backg
 - Added a centralized `RSMallocError` error model, derived with `thiserror`, for out-of-memory failures, double frees, metadata corruption, invalid or foreign pointers, unavailable RSEQ state, and security violations. Fatal allocator paths now print consistent subsystem, pointer, reason, errno, and OS-error context before aborting instead of assembling unrelated messages at each call site.
 - Updated allocation, reallocation, random initialization, radix/tree metadata allocation, bootstrap, and RSEQ setup paths to propagate checked failures into the centralized handler or return allocation failure where the public contract permits it.
 
+- C `malloc` and `calloc` now set `ENOMEM` when allocation fails; `realloc` does so for a nonzero requested size, preserving zero-size free semantics. `pvalloc` also reports `ENOMEM` when page rounding overflows. Added ABI regression tests without adding per-size allocation special cases.
+
 ### Realloc hardening
 
 - Added a magic-value check (`MAGIC`/`BIG_MAGIC`) on the header found via `find_original_ptr` during `rs_realloc`'s owned-pointer path, aborting as a double-free/corruption if it doesn't match either expected value, instead of trusting whatever the search returned.
 - Replaced the manual overflow guard in `big_realloc`'s 2MB-aligned size estimate with a proper `Option`-returning `estimate_and_align_2mb`, built on new `checked_align_to`/`checked_align_of_page` helpers (see Alignment helpers below). `big_malloc`, `big_realloc`, and `big_free` all now propagate `None` instead of proceeding with a wrapped/undersized aligned size.
 - Replaced bare `.unwrap()` calls on recomputed big-allocation sizes (`big_free`, `big_realloc`) with `unwrap_or_else(|| RSMallocError::MemoryCorruption.log_and_abort(...))`, matching the rest of the big-allocation path's error handling instead of panicking on corrupted metadata.
+
+- Corrected `recallocarray` to erase discarded bytes on shrink and explicitly erase the old array before freeing it on growth or zero-size requests, independent of the `explicit-zero` feature. Growth allocates a zeroed replacement and preserves the original allocation on failure; new-size overflow reports `ENOMEM`, while old-size overflow reports `EINVAL`. Added eight regression tests.
+- Fixed Rust `GlobalAlloc::realloc` trimming so a zero-size request is handled explicitly instead of being treated as ordinary retained capacity.
 
 ### Hardware-feature abstraction
 
@@ -114,6 +122,8 @@ Alpha-3 also strengthens transfer-cache ABA protection, addresses fork and backg
 - Introduced `TransferReturn` (`start`/`end`/`total`/`available`) as a named return type for transfer-cache pop paths (`try_pop`, `transfer_pop_batch`, `first_nonempty_cpu_in_range`, `slowest_numa_steal_path`, `pop_slow`), replacing an unnamed tuple return.
 - Replaced raw pointer arithmetic in `slab_cache.rs` with `SafePointer<T>`/`UnsafePointer<T>`, `#[repr(transparent)]` newtype wrappers (`core_prim::wrappers`) providing `get_offset`/`walk_header`/`get_actual_header`/`cast_as_ptr`; `SafePointer<T>` also implements indexed access so cache-array call sites retain ordinary reference semantics. The wrapper refactor was checked against generated `malloc` code to avoid adding fast-path overhead.
 
+- Made the native `rs_usable_size` API unsafe, matching its requirement for a live allocator-owned pointer.
+
 ### Trim/transfer-cache correctness
 
 - Added separate `normal_blocks` and `trimmed_blocks` counters to each transfer-cache slot. Successful pushes and pops update the counter belonging to the selected list; trimming subtracts only the detached normal-list inventory, leaving already-trimmed blocks accounted for independently. This keeps the batching predictor's inventory feedback tied to the list actually supplying blocks.
@@ -122,6 +132,10 @@ Alpha-3 also strengthens transfer-cache ABA protection, addresses fork and backg
 - Fixed `trim_small`'s average-life update being incorrectly gated behind `total_push > 0` — it now correctly runs whenever `total > 0`, independent of whether any nodes were push-eligible that pass.
 - Added cached-VA threshold early-outs to `trim_small` and the large-allocation backend, skipping the trim-lock acquisition and full region/class walk entirely when neither cache has enough memory to reclaim. Forced trims bypass the backend guard, so memory-pressure relief still runs regardless of the configured background thresholds.
 - Replaced `trim_small`'s fixed `TRIM_REPUSH_BATCH` (16) periodic-flush threshold with `ITERATIONS[class] + ITERATIONS[class] / 2`, tying republished batches to per-class refill granularity and reducing transfer-head CAS frequency during classification.
+
+- Fixed transfer-cache pop retries to reload the selected head when switching from the normal list to the trimmed list.
+- Fixed preload relief-threshold parsing to clamp the enable threshold against the newly parsed disable threshold, rather than the previous global value. Added tests for defaults, custom values, and clamping.
+- Corrected the debug slab-usage load to use the atomic ordering import, restoring `preload,debug-exact` compilation.
 
 ### Calloc zero-skip correctness
 

@@ -3,6 +3,7 @@ pub mod big_meta_map;
 pub mod binder;
 #[cfg(feature = "preload")]
 pub mod env;
+pub mod fork_lock;
 pub mod lock;
 pub mod numa_parser;
 pub mod once;

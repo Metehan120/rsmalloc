@@ -48,7 +48,7 @@ pub trait RSMallocCoreAPI {
     /// The result can exceed the originally requested size. Only bytes the
     /// caller initialized may be read, regardless of the reported capacity.
     /// `None` means the allocator did not report a usable size.
-    fn rs_usable_size(&self, pointer: NonNull<u8>) -> Option<usize>;
+    unsafe fn rs_usable_size(&self, pointer: NonNull<u8>) -> Option<usize>;
     /// Initializes allocator-wide state ahead of the first allocation.
     ///
     /// Ordinary allocation calls initialize it automatically.
@@ -366,7 +366,7 @@ impl RSMallocCoreAPI for RSMalloc {
     type TrimIn = SimpleTrimSize;
     type TrimOut = Option<usize>;
 
-    fn rs_usable_size(&self, pointer: NonNull<u8>) -> Option<usize> {
+    unsafe fn rs_usable_size(&self, pointer: NonNull<u8>) -> Option<usize> {
         unsafe { self.init() };
 
         let usable = unsafe { usable_size(UnsafePointer::new(pointer.as_ptr()).cast()) };

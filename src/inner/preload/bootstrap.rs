@@ -1,9 +1,11 @@
 use crate::backend::bootstrap::{BootstrapConfig, main_bootstrap};
 use crate::backend::page_allocator::ARENA_SIZE;
-use crate::{
-    backend::background_thread::SEGMENTED_BITMAP_DISABLE_PERCENTAGE,
-    core_prim::predictor::DEFAULT_BATCH, internals::env::get_env_usize,
-};
+use crate::{core_prim::predictor::DEFAULT_BATCH, internals::env::get_env_usize};
+
+fn relief_thresholds(disable: usize, enable: usize) -> (usize, usize) {
+    let disable = disable.min(100);
+    (disable, enable.min(disable))
+}
 
 #[inline(never)]
 pub unsafe fn bootstrap() {
@@ -26,14 +28,10 @@ pub unsafe fn bootstrap() {
         get_env_usize("RS_BIG_TRIMMER_THRESHOLD".as_bytes()).unwrap_or(1024 * 1024 * 512);
 
     let disable_relief = get_env_usize("RS_ENABLE_RELIEF".as_bytes()).unwrap_or(1) != 0;
-    let disable_percentage =
-        get_env_usize("RS_SEGMENTED_BITMAP_RELIEF_DISABLE_PERCENTAGE".as_bytes())
-            .unwrap_or(85)
-            .min(100);
-    let enable_percentage =
-        get_env_usize("RS_SEGMENTED_BITMAP_RELIEF_ENABLE_PERCENTAGE".as_bytes())
-            .unwrap_or(80)
-            .min(SEGMENTED_BITMAP_DISABLE_PERCENTAGE);
+    let (disable_percentage, enable_percentage) = relief_thresholds(
+        get_env_usize("RS_SEGMENTED_BITMAP_RELIEF_DISABLE_PERCENTAGE".as_bytes()).unwrap_or(85),
+        get_env_usize("RS_SEGMENTED_BITMAP_RELIEF_ENABLE_PERCENTAGE".as_bytes()).unwrap_or(80),
+    );
 
     let disable_thp = get_env_usize("RS_DISABLE_THP".as_bytes()).unwrap_or(0) == 1;
 
@@ -56,4 +54,26 @@ pub unsafe fn bootstrap() {
     );
 
     main_bootstrap(config);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::relief_thresholds;
+
+    #[test]
+    fn relief_thresholds_preserve_valid_custom_percentages() {
+        assert_eq!(relief_thresholds(95, 90), (95, 90));
+        assert_eq!(relief_thresholds(85, 80), (85, 80));
+    }
+
+    #[test]
+    fn relief_thresholds_clamp_enable_to_configured_disable() {
+        assert_eq!(relief_thresholds(60, 80), (60, 60));
+        assert_eq!(relief_thresholds(0, 80), (0, 0));
+    }
+
+    #[test]
+    fn relief_thresholds_clamp_percentages_to_one_hundred() {
+        assert_eq!(relief_thresholds(usize::MAX, usize::MAX), (100, 100));
+    }
 }

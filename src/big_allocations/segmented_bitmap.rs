@@ -33,10 +33,7 @@ use crate::{
     global_vals::{BIG_TRIM_THRESHOLD, SMALL_TRIM_THRESHOLD, TOTAL_CACHED_VA},
     inner::alloc::MAX_REFILL_RETRIES,
     internals::{
-        binder::NumaBind,
-        lock::{LockGuard, SpinLock},
-        once::Once,
-        radix_tree::RADIX,
+        binder::NumaBind, fork_lock::SpinLock, lock::LockGuard, once::Once, radix_tree::RADIX,
     },
     record_mmap_call,
     rseq_core::slab_cache::SLAB_CACHE,
@@ -456,10 +453,10 @@ impl SegmentedBitmapAllocator {
     }
 
     #[cfg(feature = "preload")]
-    pub unsafe fn lock_all_for_fork(&self) {
+    pub unsafe fn lock_all_for_fork(&self, owner_tid: usize) {
         if let Some(state) = self.state.load(Ordering::Acquire).as_ref() {
             for id in 0..state.node_count {
-                std::mem::forget(state.node(id).growth.lock());
+                state.node(id).growth.freeze_for_fork(owner_tid);
             }
         }
     }
@@ -468,7 +465,7 @@ impl SegmentedBitmapAllocator {
     pub unsafe fn reset_locks_on_fork(&self) {
         if let Some(state) = self.state.load(Ordering::Acquire).as_ref() {
             for id in 0..state.node_count {
-                state.node(id).growth.unlock();
+                state.node(id).growth.thaw_after_fork();
             }
         }
     }

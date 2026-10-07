@@ -7,7 +7,7 @@ use rustix::io::Errno;
 
 use crate::inner::{
     align::{memalign_inner, posix_align_inner},
-    preload::libc_int::__errno_location,
+    preload::libc_int::{__errno_location, set_nomem},
 };
 
 #[unsafe(no_mangle)]
@@ -49,9 +49,61 @@ pub unsafe extern "C" fn pvalloc(size: usize) -> *mut c_void {
     } else {
         match size.checked_add(page_size - 1) {
             Some(v) => v & !(page_size - 1),
-            None => return null_mut(),
+            None => {
+                set_nomem();
+                return null_mut();
+            }
         }
     };
 
     (MEMALIGN)(page_size, rounded_size)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pvalloc_rounding_overflow_sets_enomem() {
+        unsafe {
+            for size in [usize::MAX, usize::MAX - 4094] {
+                *__errno_location() = 0;
+                let ptr = pvalloc(std::hint::black_box(size));
+                let errno = *__errno_location();
+                assert!(ptr.is_null());
+                assert_eq!(errno, Errno::NOMEM.raw_os_error());
+            }
+        }
+    }
+
+    #[test]
+    fn aligned_wrappers_allocation_overflow_sets_enomem() {
+        unsafe {
+            for allocate in [memalign, aligned_alloc] {
+                *__errno_location() = 0;
+                let ptr = allocate(4096, std::hint::black_box(usize::MAX & !4095));
+                let errno = *__errno_location();
+                assert!(ptr.is_null());
+                assert_eq!(errno, Errno::NOMEM.raw_os_error());
+            }
+            for allocate in [valloc, pvalloc] {
+                *__errno_location() = 0;
+                let ptr = allocate(std::hint::black_box(usize::MAX & !4095));
+                let errno = *__errno_location();
+                assert!(ptr.is_null());
+                assert_eq!(errno, Errno::NOMEM.raw_os_error());
+            }
+        }
+    }
+
+    #[test]
+    fn memalign_invalid_alignment_keeps_einval() {
+        unsafe {
+            *__errno_location() = 0;
+            let ptr = memalign(24, 64);
+            let errno = *__errno_location();
+            assert!(ptr.is_null());
+            assert_eq!(errno, Errno::INVAL.raw_os_error());
+        }
+    }
 }

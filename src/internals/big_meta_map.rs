@@ -3,7 +3,7 @@ use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 use crate::{
     BigAllocMeta, RSMallocError,
     backend::page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR},
-    internals::lock::SpinLock,
+    internals::fork_lock::SpinLock,
     record_mmap_call,
     traits::Lock,
 };
@@ -147,16 +147,16 @@ impl BigMetaMap {
     }
 
     #[cfg(feature = "preload")]
-    pub fn lock_for_fork(&self) {
+    pub fn lock_for_fork(&self, owner_tid: usize) {
         for shard in &self.shards {
-            core::mem::forget(shard.inner.lock());
+            shard.inner.freeze_for_fork(owner_tid);
         }
     }
 
     #[cfg(feature = "preload")]
     pub fn reset_lock_on_fork(&self) {
         for shard in &self.shards {
-            shard.inner.reset_at_fork();
+            shard.inner.thaw_after_fork();
         }
     }
 

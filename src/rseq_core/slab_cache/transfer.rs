@@ -323,6 +323,7 @@ impl SlabCache {
             if pack.current_header.is_null() {
                 if eq(list_ptr, normal_ptr) {
                     (list_ptr, size_ptr) = (trimmed_ptr, &list.size.trimmed_blocks);
+                    old = list_ptr.load(Ordering::Acquire);
                     continue;
                 }
                 self.clear_hint(normal_ptr, trimmed_ptr, inner, class, cpu_id);

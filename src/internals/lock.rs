@@ -146,10 +146,3 @@ impl<T> Lock for SpinLock<T> {
         self.state.store(false, Release);
     }
 }
-
-impl<T> SpinLock<T> {
-    #[cfg(feature = "preload")]
-    pub fn reset_at_fork(&self) {
-        self.state.store(false, Ordering::Relaxed);
-    }
-}

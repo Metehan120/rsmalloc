@@ -197,9 +197,7 @@ For lower-level malloc-style operations, `RSMalloc::raw()` exposes `v2::alloc::R
 | `check-owned-on-alloc` | Semi-hardening: verifies popped allocations are still `RADIX`-owned before returning them. Adds a lookup to the alloc path. |
 | `validate-foreign-first-on-free` | Opt-in: checks radix ownership before reading presumed allocation metadata on free. Rejected addresses reach preload fallback or the configured Rust foreign-pointer policy without those reads; adds a lookup to successful frees. |
 | `zero-small-on-free` | Zeroes 16–64B allocations (cryptographic-key sized) on free; cheap enough for security without a big performance penalty. |
-| `guard-pages-thp` | Lazily places a `PROT_NONE` guard page at the last 4KB of every **2MB-aligned** page-allocator block, materialized only as the bump pointer reaches it. Catches some OOB bugs; size classes up to 1MB are guaranteed never to straddle a guard (denied outright if they would), while larger requests only get a guard consumed at their leading edge, not dense coverage through their body. |
-| `guard-pages-ignore-thp` | Shrinks `guard-pages-thp`'s interval from 2MB to 64KB for denser coverage; fragments page tables more often. |
-| `semi-hardened` | Convenience bundle: `extended-header` + `check-owned-on-alloc` + `zero-small-on-free` + `guard-pages-ignore-thp`. |
+| `semi-hardened` | Convenience bundle: `extended-header` + `check-owned-on-alloc` + `zero-small-on-free`. |
 | `lazy-page-trim` | Lazy page-free advice for small-allocation trim instead of immediate `MADV_DONTNEED`. |
 | `trim-aggressively` | Skips the idle-class ceiling nudge in trim's average-lifetime tracking, keeping trim eligibility tighter. |
 | `disable-magic-security-checks` | Compile-time-only: disables magic-value double-free/corruption checks. |

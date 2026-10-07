@@ -2,7 +2,7 @@ use crate::{
     RSMallocError,
     backend::page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR},
     core_prim::wrappers::UnsafePointer,
-    internals::lock::SpinLock,
+    internals::fork_lock::SpinLock,
     record_mmap_call,
     traits::Lock,
     utility::unlikely,
@@ -275,13 +275,13 @@ impl RadixTree {
     }
 
     #[cfg(feature = "preload")]
-    pub fn lock_for_fork(&self) {
-        core::mem::forget(self.nodes.alloc_lock.lock());
+    pub fn lock_for_fork(&self, owner_tid: usize) {
+        self.nodes.alloc_lock.freeze_for_fork(owner_tid);
     }
 
     #[cfg(feature = "preload")]
     pub fn reset_lock_on_fork(&self) {
-        self.nodes.alloc_lock.reset_at_fork();
+        self.nodes.alloc_lock.thaw_after_fork();
     }
 
     #[inline(always)]
@@ -333,6 +333,7 @@ impl RadixTree {
         self.nodes.get(addr / CHUNK_SIZE)
     }
 
+    #[cfg(not(feature = "validate-foreign-first-on-free"))]
     #[inline(never)]
     pub unsafe fn is_owned_noninline(&self, addr: usize) -> bool {
         self.is_owned(addr)

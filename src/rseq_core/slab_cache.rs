@@ -423,7 +423,10 @@ pub struct TransferReturn {
 impl SlabCache {
     #[cfg(feature = "debug")]
     pub unsafe fn get_rseq_cpu_class_usage_bytes(&self, cpu_id: usize, class: usize) -> usize {
-        use crate::utility::{Alignment, SIZE_CLASSES};
+        use crate::{
+            internals::atomics::AtomicOrdering::Relaxed,
+            utility::{Alignment, SIZE_CLASSES},
+        };
         let inner = self.get_inner();
         let cpu = &inner.cache.get_offset(cpu_id).cache[class];
         let blocks = cpu.usage.load(Relaxed);

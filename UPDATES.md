@@ -6,7 +6,7 @@ v0.3.0-alpha (alpha-3) is RSMalloc's biggest update yet, reworking how it expose
 
 Internally, an experimental segmented-bitmap backend replaces the buddy cache for 4–64 MiB allocations, using atomic slot claims instead of tree traversal or per-order free lists. Page-arena reservations now use a lock-free bump fast path, pending refill metadata uses sharded ABA-tagged atomic stacks, and exact large-allocation metadata is split across independent hash-table shards. These changes reduce reliance on shared locks while preserving NUMA-local reuse. Slab and large-allocation trimming also get separate background schedules and revised large-block lifetime estimation.
 
-Alpha-3 also strengthens transfer-cache ABA protection, adds opt-in guard pages, addresses fork and background-worker signal-handling gaps, and expands structured diagnostics. Public frontend code is separated from allocator internals, with clearer API and architecture documentation. This is still an experimental alpha release: the new backend and public API may evolve, and the changes are not a blanket performance or production-readiness guarantee.
+Alpha-3 also strengthens transfer-cache ABA protection, addresses fork and background-worker signal-handling gaps, and expands structured diagnostics. Public frontend code is separated from allocator internals, with clearer API and architecture documentation. This is still an experimental alpha release: the new backend and public API may evolve, and the changes are not a blanket performance or production-readiness guarantee.
 
 ### Stable Rust and lock-free refill metadata
 
@@ -61,13 +61,6 @@ Alpha-3 also strengthens transfer-cache ABA protection, adds opt-in guard pages,
 - Changed the default free path to classify alignment tags and header magic before checking radix ownership. Successful small and large frees skip the upfront lookup and assume non-null inputs are live RSMalloc allocations.
 - Added the opt-in `validate-foreign-first-on-free` Cargo feature to restore ownership validation before metadata reads. Without it, the remaining late foreign-pointer check/fallback is best-effort: a foreign pointer can fault or be misclassified before reaching that check. The feature is disabled by default and is not part of `semi-hardened`.
 - Retained radix validation of recovered aligned-allocation bases before dereferencing their headers in both modes. Coarse ownership validation does not establish allocation boundaries or make invalid frees safe.
-
-### Guard pages
-
-- Added `guard-pages-thp` and `guard-pages-ignore-thp` Cargo features to `src/backend/page_allocator.rs`, the bump allocator backing every small-class refill. A `PROT_NONE` guard page is placed at the last 4KB of each fixed-size aligned block — 2MB intervals for `guard-pages-thp` (matched to the THP unit, so only the specific 2MB block hosting a guard loses THP eligibility), 64KB for `guard-pages-ignore-thp` (denser coverage, always fragments page tables).
-- Placement is lazy and reactive: a guard boundary is only actually `mprotect`ed the moment the bump pointer's address reaches it, not pre-mapped across the arena up front. Requests that fit within one guard segment (up to 1MB for `guard-pages-thp`, 32KB for `guard-pages-ignore-thp`) are guaranteed to never straddle a guard — denied outright and retried elsewhere if the arithmetic says they would. Larger requests consume one leading guard on the way in but don't get dense coverage through their body, since nothing else `mprotect`s the remaining guard-aligned positions in their span.
-- Fixed a real NULL-return bug found via a production crash report (`malloc` failing for a large, legitimate request): the original guard-check logic could permanently deny any request `>= GUARD_ALIGN`, since such a request can never avoid straddling a guard regardless of start address. `new_arena_locked` also now maps one extra page per arena so a snugly-sized request still leaves room for its own trailing guard, instead of a guard page eating the arena's last few KB and returning null for an otherwise-legitimate allocation.
-- Bundled into `semi-hardened` as `guard-pages-ignore-thp`, alongside the existing `extended-header` + `check-owned-on-alloc` + `zero-small-on-free`.
 
 ### Transfer-cache ABA hardening
 

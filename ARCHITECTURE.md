@@ -323,8 +323,6 @@ Requests are page-aligned and NUMA-preferred. Very large or unsuitable reservati
 
 `try_grow_inplace` can extend a page-backed range only when it is still the most recent bump allocation in its arena and sufficient tail space remains.
 
-Optional guard-page features place lazily materialized `PROT_NONE` pages at fixed arena intervals. They affect page-arena layout and are hardening modes, not the default allocation model.
-
 ## Large Allocations
 
 Requests outside slab classes enter `big_malloc`.
@@ -495,7 +493,9 @@ A future span-based slab design may allow safe trimming of size classes below 4 
 | Exact large metadata | Sharded hash table with one lock per shard. |
 | Trimming | Global trim exclusion plus subsystem/slot claims. |
 
-Fork handlers in preload builds acquire or reset allocator locks whose ownership cannot safely survive `fork` with vanished threads.
+Fork handlers in preload builds freeze segmented-growth, large-metadata, radix-allocation, and page-node locks before `fork`. A frozen reservation holds no reference to protected data. The forking thread can temporarily acquire a data guard from its reservation while running older application atfork callbacks; dropping that guard restores the reservation rather than unlocking it for other threads. Parent and child handlers release idle reservations with release ordering before releasing bootstrap serialization. The surviving child thread can also use inherited reservations in older child callbacks.
+
+Ordinary successful lock acquisition remains one CAS without thread-identity syscalls. These fork-aware locks are limited to the four lock families above; non-preload builds use ordinary spin locks, and the RSEQ and transfer-cache paths are unchanged. Manual trimming can decline while the global trim lock is held. Recursive `fork` inside a callback and callbacks that wait for allocator-blocked threads are not supported. This does not relax POSIX restrictions on allocation in a multithreaded fork child before `exec`.
 
 ## Performance Tradeoffs
 

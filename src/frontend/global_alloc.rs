@@ -812,7 +812,7 @@ impl RSMalloc {
 
         let requested = trim.get_request_size();
         let size = SEGMENTED_BITMAP_BACKEND.trim(requested);
-        if size < requested && requested != 0 {
+        if size < requested || requested == 0 {
             let small = SLAB_CACHE.trim_small(requested.saturating_sub(size));
             if small > 0 {
                 return RSTrimStatus::Trimmed(size + small);

@@ -123,7 +123,18 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
     // if it is double free, abort just to keep heap intact
     // if it is not double free, we have a memory corruption or a security violation
     if !cfg!(feature = "disable-magic-security-checks") {
-        abort_paths(header.cast_as_ptr(), header.magic);
+        if header.magic == FREED_MAGIC {
+            RSMallocError::DoubleFree {
+                ptr: ptr.cast_as_ptr(),
+            }
+            .log_and_abort()
+        }
+
+        RSMallocError::Corruption {
+            ptr: ptr.cast_as_ptr(),
+            reason: "magic mismatch",
+        }
+        .log_and_abort()
     }
 }
 
@@ -132,23 +143,6 @@ pub fn corruption_abort(ptr: *mut u8, reason: &'static str) {
     RSMallocError::Corruption {
         ptr: ptr.cast(),
         reason,
-    }
-    .log_and_abort()
-}
-
-#[inline(never)]
-pub unsafe fn abort_paths(
-    ptr: *mut u8,
-    #[cfg(not(feature = "extended-header"))] magic: u16,
-    #[cfg(feature = "extended-header")] magic: u64,
-) {
-    if magic == FREED_MAGIC {
-        RSMallocError::DoubleFree { ptr: ptr.cast() }.log_and_abort()
-    }
-
-    RSMallocError::Corruption {
-        ptr: ptr.cast(),
-        reason: "magic mismatch",
     }
     .log_and_abort()
 }

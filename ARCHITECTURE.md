@@ -376,7 +376,7 @@ The radix answers the coarse question “can this address belong to RSMalloc?”
 flowchart TD
     PTR["free(ptr)"] --> NULL{"Null?"}
     NULL -- Yes --> DONE[Return]
-    NULL -- No --> FIRST{"validate-foreign-first-on-free enabled?"}
+    NULL -- No --> FIRST{"validate-foreign-first enabled?"}
     FIRST -- Yes --> OWN{"RADIX owns address?"}
     OWN -- No --> FOREIGN["Preload fallback or configured foreign-pointer policy"]
     OWN -- Yes --> ALIGN["Recover original aligned pointer if tagged"]
@@ -397,9 +397,9 @@ flowchart TD
 
 By default, free uses metadata-first classification: after the null check it reads the alignment tag and header magic, and successful small or large frees skip the upfront ownership-radix lookup. Non-null inputs are assumed to be live allocations returned by RSMalloc. If neither live magic matches, the original address is checked against the radix before preload fallback, the configured Rust foreign-pointer policy, or double-free/corruption handling.
 
-The opt-in `validate-foreign-first-on-free` Cargo feature moves that ownership check ahead of the tag and header reads. Addresses rejected by the radix reach preload fallback or the configured Rust policy without reading presumed RSMalloc metadata. Without the feature, foreign-pointer handling is best-effort: preceding memory may be unreadable, or unrelated bytes may match allocator tags/magic before the late check is reached. Magic is not proof of ownership. The radix is coarse, so enabling the feature still does not make arbitrary interior or invalid pointers valid deallocation inputs.
+The opt-in `validate-foreign-first` Cargo feature moves that ownership check ahead of the tag and header reads. Addresses rejected by the radix reach preload fallback or the configured Rust policy without reading presumed RSMalloc metadata. Without the feature, foreign-pointer handling is best-effort: preceding memory may be unreadable, or unrelated bytes may match allocator tags/magic before the late check is reached. Magic is not proof of ownership. The radix is coarse, so enabling the feature still does not make arbitrary interior or invalid pointers valid deallocation inputs.
 
-Aligned allocations store a tag and original pointer before the adjusted payload. In both modes, a recovered aligned base is checked against the radix before its header is dereferenced; this does not validate the initial tag read in metadata-first mode.
+Aligned allocations store a tag and original pointer before the adjusted payload. With `validate-foreign-first` enabled, a recovered aligned base is checked against the radix before its header is dereferenced, and a non-owned recovered address aborts. Without the feature, this check is skipped and aligned free relies on valid alignment metadata.
 
 Small frees stamp `life_time`, change magic to the freed value, and enter the current CPU's cache. This CPU may differ from the allocation CPU by design.
 
@@ -431,7 +431,7 @@ L0 pointer table -> L1 pointer table -> L2 pointer table -> L3 atomic bitmap lea
 
 A 512-byte L3 bitmap holds 4096 ownership bits and covers 16 MiB. Intermediate tables are allocated lazily under one metadata-allocation lock and published with release ordering. Nodes use page-arena-backed memory when available, with direct mappings as a fallback. Ownership bits are atomic; setting bits skips the release OR when a relaxed load finds them already set, and range updates batch masks by bitmap word and leaf.
 
-The 4 KiB granularity provides page-level ownership tracking and fast rejection. It is not sufficient to identify allocation boundaries; headers, aligned tags, and `BIG_MAP` provide allocation classification. Free checks coarse ownership first only with `validate-foreign-first-on-free`; the default successful path assumes ownership and classifies metadata directly.
+The 4 KiB granularity provides page-level ownership tracking and fast rejection. It is not sufficient to identify allocation boundaries; headers, aligned tags, and `BIG_MAP` provide allocation classification. Free checks coarse ownership first only with `validate-foreign-first`; the default successful path assumes ownership and classifies metadata directly.
 
 V2 arena configuration accepts zero and 4 KiB page multiples. Initialization clamps the requested minimum to 256 KiB, preserving the historical bootstrap minimum; the default remains 256 MiB. Legacy migration applies the same 256 KiB clamp before rejecting larger sizes that are not page multiples.
 

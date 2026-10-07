@@ -28,7 +28,7 @@ native-allocation-api = []
 preload = []
 check-owned-on-alloc = []
 # Opt-in ownership validation before free's metadata reads; otherwise foreign handling is best-effort.
-validate-foreign-first-on-free = []
+validate-foreign-first = []
 
 # Debug options
 debug-print = ["debug"]
@@ -59,7 +59,7 @@ trim-aggressively = []
 explicit-zero = []
 # Zeroes 16~64b sized allocations (cryptographic key sized) on free; good for security without big performance penalty
 zero-small-on-free = []
-semi-hardened = ["extended-header", "check-owned-on-alloc", "zero-small-on-free"]
+semi-hardened = ["extended-header", "check-owned-on-alloc", "zero-small-on-free", "validate-foreign-first"]
 
 expose-security-critical-settings = []
 

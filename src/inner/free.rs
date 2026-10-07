@@ -6,7 +6,7 @@ use crate::{
     ALIGN_TAG, BIG_MAGIC, CURRENT_STAMP, FREED_MAGIC, Header, MAGIC, OFFSET_SIZE, RSMallocError,
     TAG_SIZE,
     big_allocations::big_allocation::big_free,
-    core_prim::wrappers::UnsafePointer,
+    core_prim::wrappers::{SafePointer, UnsafePointer},
     internals::radix_tree::RADIX,
     rseq_core::slab_cache::SLAB_CACHE,
     traits::GenericCache,
@@ -37,10 +37,8 @@ pub unsafe fn find_original_ptr(ptr: UnsafePointer<Header>) -> UnsafePointer<Hea
         let raw_loc = (header_search_ptr.cast_usize()).wrapping_sub(OFFSET_SIZE) as *const usize;
         let presumed_original_ptr = read_unaligned(raw_loc) as *mut c_void;
 
-        // Do not dereference the recovered aligned allocation base until ownership is
-        // verified the offset preceding an arbitrary pointer is untrusted and may
-        // contain forged allocator metadata
-        if unlikely(!RADIX.is_owned_noninline(presumed_original_ptr as usize)) {
+        #[cfg(feature = "validate-foreign-first")]
+        if unlikely(!RADIX.is_owned(presumed_original_ptr as usize)) {
             corruption_abort(
                 presumed_original_ptr as *mut u8,
                 "CRITICAL: possible aligned-path metadata injection: recovered pointer is not owned by rsmalloc",
@@ -65,7 +63,7 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
     #[cfg(feature = "debug-full-critic")]
     RS_FREE_CALLS_DEBUG.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-    #[cfg(feature = "validate-foreign-first-on-free")]
+    #[cfg(feature = "validate-foreign-first")]
     if !RADIX.is_owned(ptr.cast_usize()) {
         #[cfg(feature = "preload")]
         crate::inner::fallback::free_fallback(ptr.cast_as_ptr() as *mut _);
@@ -102,7 +100,12 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
         return;
     }
 
-    #[cfg(not(feature = "validate-foreign-first-on-free"))]
+    cold_path(header, ptr);
+}
+
+#[inline(never)]
+unsafe fn cold_path(header: SafePointer<Header>, ptr: UnsafePointer<Header>) {
+    #[cfg(not(feature = "validate-foreign-first"))]
     if !RADIX.is_owned_noninline(ptr.cast_usize()) {
         #[cfg(feature = "preload")]
         crate::inner::fallback::free_fallback(ptr.cast_as_ptr() as *mut _);
@@ -138,6 +141,7 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
     }
 }
 
+#[cfg(feature = "validate-foreign-first")]
 #[inline(never)]
 pub fn corruption_abort(ptr: *mut u8, reason: &'static str) {
     RSMallocError::Corruption {

@@ -358,7 +358,6 @@ impl GenericCache for SlabCache {
     unsafe fn push(&self, class: usize, header: *mut Header) {
         let inner = self.get_inner();
         let rseq = get_rseq();
-        let mut loop_count = 0;
 
         loop {
             let current_cpu = read_volatile(&rseq.cpu_id_start) as usize;
@@ -379,15 +378,8 @@ impl GenericCache for SlabCache {
                 break;
             }
 
-            if loop_count > 3 {
-                self.transfer_push_single_noninline(class, header, current_cpu, inner);
-                return;
-            }
-
             #[cfg(feature = "debug")]
             ABORTS.fetch_add(1, Relaxed);
-
-            loop_count += 1;
         }
     }
 

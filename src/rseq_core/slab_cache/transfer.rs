@@ -162,17 +162,6 @@ impl SlabCache {
         }
     }
 
-    #[inline(never)]
-    pub unsafe fn transfer_push_single_noninline(
-        &self,
-        class: usize,
-        header: *mut Header,
-        cpu_id: usize,
-        inner: &SlabCacheInner,
-    ) {
-        self.transfer_push_single(class, header, cpu_id, inner);
-    }
-
     pub unsafe fn transfer_push_single(
         &self,
         class: usize,

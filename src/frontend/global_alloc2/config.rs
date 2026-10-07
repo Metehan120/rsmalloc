@@ -450,7 +450,7 @@ impl MagicSafetyDisable {
 #[cfg(any(feature = "expose-security-critical-settings", doc))]
 /// Policy for pointers detected as not owned by rsmalloc.
 ///
-/// Free reads metadata first unless `validate-foreign-first-on-free` is enabled.
+/// Free reads metadata first unless `validate-foreign-first` is enabled.
 /// Without that feature, this policy is best-effort and may not be reached before
 /// a fault or misclassification. Coarse validation does not permit invalid frees.
 #[derive(Clone, Copy, Debug)]

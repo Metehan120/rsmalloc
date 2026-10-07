@@ -4,6 +4,8 @@ An RSEQ-based memory allocator for Rust, focused on low-overhead concurrent allo
 
 **Status: `0.3.0-alpha`. Alpha-quality software — not production-ready.** See [Status & Limitations](#status--limitations) below.
 
+> **Alpha-3 ownership change:** By default, non-null pointers passed to `free` must be live RSMalloc allocations. Free now reads alignment/header metadata before checking radix ownership, and recovered aligned-allocation bases are not ownership-checked by default. Foreign-pointer fallback/policy is therefore best-effort: an invalid or foreign pointer may fault or be misclassified before reaching it. Enable `validate-foreign-first` to check input ownership before metadata reads and validate recovered aligned bases before reading their headers. This feature is **off by default and enabled by `semi-hardened`**. Its coarse page-level checks do not make interior pointers, double frees, or other invalid inputs safe. See [Free ownership assumptions](#free-ownership-assumptions).
+
 **Major milestone:** RSMalloc's default Rust `GlobalAlloc` and C `LD_PRELOAD` configurations now build on stable Rust. The allocator no longer depends on Rust thread-local storage: refill metadata and adaptive batching are maintained per CPU, and overflow refill metadata uses an ABA-tagged lock-free queue. The optional `allocator-api` feature remains nightly-only until Rust stabilizes `std::alloc::Allocator`.
 
 [crates.io](https://crates.io/crates/rsmalloc) · [Architecture](ARCHITECTURE.md) · [Release Notes](UPDATES.md) · [Roadmap](ROADMAP.md) · [Todo](TODO.md) · [Benchmarks](benchmarks/benchmarks.md) · [Contributing](CONTRIBUTING.md)
@@ -195,9 +197,9 @@ For lower-level malloc-style operations, `RSMalloc::raw()` exposes `v2::alloc::R
 | `page-backend-no-huge-page` | No-huge-page advice for slab arenas — cuts RSS on THP-aggressive systems (e.g. CachyOS), costs TLB pressure. |
 | `page-backend-huge-page` | Huge-page advice for slab arenas (ignored if the above is also set). |
 | `check-owned-on-alloc` | Semi-hardening: verifies popped allocations are still `RADIX`-owned before returning them. Adds a lookup to the alloc path. |
-| `validate-foreign-first-on-free` | Opt-in: checks radix ownership before reading presumed allocation metadata on free. Rejected addresses reach preload fallback or the configured Rust foreign-pointer policy without those reads; adds a lookup to successful frees. |
+| `validate-foreign-first` | Opt-in: checks radix ownership before reading presumed allocation metadata on free. Rejected input addresses reach preload fallback or the configured Rust foreign-pointer policy without those reads. Also validates recovered aligned-allocation bases before reading their headers, aborting if the recovered address is not owned; adds ownership lookups to successful frees. |
 | `zero-small-on-free` | Zeroes 16–64B allocations (cryptographic-key sized) on free; cheap enough for security without a big performance penalty. |
-| `semi-hardened` | Convenience bundle: `extended-header` + `check-owned-on-alloc` + `zero-small-on-free`. |
+| `semi-hardened` | Convenience bundle: `extended-header` + `check-owned-on-alloc` + `zero-small-on-free` + `validate-foreign-first`. |
 | `lazy-page-trim` | Lazy page-free advice for small-allocation trim instead of immediate `MADV_DONTNEED`. |
 | `trim-aggressively` | Skips the idle-class ceiling nudge in trim's average-lifetime tracking, keeping trim eligibility tighter. |
 | `disable-magic-security-checks` | Compile-time-only: disables magic-value double-free/corruption checks. |
@@ -209,7 +211,7 @@ For lower-level malloc-style operations, `RSMalloc::raw()` exposes `v2::alloc::R
 
 By default, non-null free inputs are assumed to be live RSMalloc allocations. Free reads the alignment tag and header magic first; successful small and large frees do not perform an upfront ownership lookup. A radix check and foreign-pointer policy/fallback remain on the unrecognized-magic path, but handling foreign pointers is best-effort: metadata reads can fault or unrelated bytes can match allocator tags/magic before that check.
 
-Enable `validate-foreign-first-on-free` to reject non-owned addresses before those metadata reads. The four-level radix tracks coarse 4 KiB regions, not allocation boundaries, so the feature does not make arbitrary or interior pointers safe to free. Recovered aligned-allocation bases are checked before their headers are read in either mode. The feature is disabled by default and is not included in `semi-hardened`.
+Enable `validate-foreign-first` to reject non-owned addresses before those metadata reads. The four-level radix tracks coarse 4 KiB regions, not allocation boundaries, so the feature does not make arbitrary or interior pointers safe to free. With this feature enabled, recovered aligned-allocation bases are also checked before their headers are read; a non-owned recovered address aborts with a possible aligned-path metadata-injection diagnostic. Without the feature, this recovered-base ownership check is skipped, so aligned free relies on valid alignment metadata. The feature is disabled by default and is enabled by `semi-hardened`.
 
 ### Debug/diagnostic tiers
 

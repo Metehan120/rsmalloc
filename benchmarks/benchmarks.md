@@ -22,7 +22,7 @@ The current release-candidate snapshot includes:
 
 The raw file contains 22 alpha-3 results, and aggregate charts use all **22 tests shared by all five allocators**.
 
-RSMalloc has two `rptestN` measurements. Aggregates use the first result (`0.597 s`), collected while running the complete suite. The independent result (`0.631 s`) remains in the raw file to show observed run-order variance.
+The latest RSMalloc snapshot uses **column-wise medians across ten runs for 20 workloads**, including `rptestN` (`0.638 s`). With an even run count, each median is the average of the fifth and sixth sorted observations; fractional RSS or fault counts and extra timing precision reflect that calculation, not increased measurement precision. `rbstressN` and `z3` were not included in these runs and retain their older single-run measurements. Other allocators retain their existing measurements; this is not a fresh, repeated-run comparison of all five allocators.
 
 Historical alpha-2 rows remain in the raw file for development context but are not included in the charts.
 
@@ -65,24 +65,22 @@ The following values were calculated from the 22-test common set in [`benchmark_
 
 ### Per-test winner counts
 
-Seven elapsed-time tests tie:
+Five elapsed-time tests tie:
 
 - `cache-scratch1`: all five allocators
-- `cache-scratchN`: RSMalloc and glibc
-- `gs`: RSMalloc, mimalloc, and tcmalloc
 - `mstressN`: mimalloc and tcmalloc
 - `rbstressN`: RSMalloc and tcmalloc
-- `redis`: RSMalloc, mimalloc, and tcmalloc
+- `redis`: mimalloc and tcmalloc
 - `z3`: all five allocators
 
-The clean elapsed-time wins therefore total 15 rather than 22.
+The clean elapsed-time wins therefore total 17 rather than 22.
 
 ```mermaid
 xychart-beta
     title "Fastest-time clean wins across 22 common tests"
     x-axis [rsmalloc, glibc, tcmalloc, mimalloc, jemalloc]
     y-axis "wins" 0 --> 22
-    bar [1, 1, 4, 8, 1]
+    bar [3, 2, 4, 8, 0]
 ```
 
 ```mermaid
@@ -90,7 +88,7 @@ xychart-beta
     title "Lowest-RSS wins across 22 common tests"
     x-axis [rsmalloc, glibc, tcmalloc, mimalloc, jemalloc]
     y-axis "wins" 0 --> 22
-    bar [1, 15, 5, 1, 0]
+    bar [2, 15, 4, 1, 0]
 ```
 
 ### Overall relative score
@@ -102,7 +100,7 @@ xychart-beta
     title "Elapsed-time relative score"
     x-axis [rsmalloc, glibc, tcmalloc, mimalloc, jemalloc]
     y-axis "score x100" 0 --> 180
-    bar [123, 154, 142, 104, 114]
+    bar [123, 154, 142, 104, 115]
 ```
 
 ```mermaid
@@ -110,7 +108,7 @@ xychart-beta
     title "RSS relative score"
     x-axis [rsmalloc, glibc, tcmalloc, mimalloc, jemalloc]
     y-axis "score x100" 0 --> 240
-    bar [153, 115, 163, 185, 229]
+    bar [156, 117, 166, 188, 233]
 ```
 
 ### Stress cases
@@ -120,7 +118,7 @@ xychart-beta
     title "sh6benchN elapsed time"
     x-axis [rsmalloc, glibc, tcmalloc, mimalloc, jemalloc]
     y-axis "milliseconds" 0 --> 2100
-    bar [300, 1980, 190, 160, 270]
+    bar [310, 1980, 190, 160, 270]
 ```
 
 ```mermaid
@@ -128,7 +126,7 @@ xychart-beta
     title "sh6benchN RSS"
     x-axis [rsmalloc, glibc, tcmalloc, mimalloc, jemalloc]
     y-axis "MiB" 0 --> 400
-    bar [362, 334, 217, 213, 289]
+    bar [361, 334, 217, 213, 289]
 ```
 
 ```mermaid
@@ -136,7 +134,7 @@ xychart-beta
     title "sh8benchN elapsed time"
     x-axis [rsmalloc, glibc, tcmalloc, mimalloc, jemalloc]
     y-axis "milliseconds" 0 --> 10000
-    bar [1510, 9520, 4190, 390, 800]
+    bar [1595, 9520, 4190, 390, 800]
 ```
 
 ```mermaid
@@ -144,7 +142,7 @@ xychart-beta
     title "sh8benchN RSS"
     x-axis [rsmalloc, glibc, tcmalloc, mimalloc, jemalloc]
     y-axis "MiB" 0 --> 260
-    bar [171, 237, 126, 240, 232]
+    bar [172, 237, 126, 240, 232]
 ```
 
 ### Page-reclaim and system-time totals
@@ -153,7 +151,7 @@ These totals cover the same 22-test common set and are not included in the relat
 
 | Allocator | Minor page-reclaims | System CPU time |
 | --- | ---: | ---: |
-| RSMalloc | 118,625 | 4.78 s |
+| RSMalloc | 113,996.5 | 4.435 s |
 | glibc | 909,741 | 54.20 s |
 | tcmalloc | 459,050 | 42.30 s |
 | mimalloc | 115,224 | 3.77 s |

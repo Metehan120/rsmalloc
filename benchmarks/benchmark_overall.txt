@@ -2,42 +2,32 @@
 
 # Unreleased version of rsmalloc, benchmarks are have not yet settled.
 rsmalloc alpha-3:
-# Column-wise medians across 10 runs; rbstressN, and z3, result are unchanged, will be runned under repeated run medians later.
-cfrac           sys     3.0300   7136     3.020    0.000  0           258
-espresso        sys     2.9500   9128     2.930    0.010  0           259.5
-barnes          sys     1.7000   72212    1.690    0.000  0           681
-# ~2.680-2.720
-redis           sys     2.6800   13554    0.090    0.030  0           1498
-leanN           sys     7.2500   271776   16.605   0.225  0           1432
-larsonN-sized   sys     3.1860   81050    59.100   0.140  0           6788
-mstressN        sys     0.9900   336130   7.315    0.545  0           1719.5
-rptestN         sys     0.6370   66522    1.125    0.495  0           619
-gs              sys     0.1900   47104    0.180    0.005  0           1483.5
-# Lua is consistently around 0.99
-lua             sys     0.9900   116214   5.620    0.395  0           56861
-alloc-test1     sys     2.3400   19646    2.330    0.000  0           474.5
+# Column-wise medians across the latest 10 runs for the 20 tests below.
+# rbstressN and z3 retain older single-run results; they were not included in these runs.
+cfrac           sys     3.0100   7372     3.000    0.000  0           256.5
+espresso        sys     2.9600   7414     2.935    0.010  0           254.5
+barnes          sys     1.6750   68198    1.665    0.000  0           684
+redis           sys     2.7900   13560    0.095    0.030  0           1465
+leanN           sys     7.2100   269886   16.540   0.160  0           1051.5
+larsonN-sized   sys     3.2990   80388    58.645   0.115  0           6571
+mstressN        sys     1.0300   332896   7.555    0.670  0           1431.5
+rptestN         sys     0.6380   63340    1.265    0.310  0           609
+gs              sys     0.1800   47180    0.170    0.005  0           1482
+lua             sys     0.9900   113680   5.785    0.350  0           56560.5
+alloc-test1     sys     2.3000   19166    2.300    0.000  0           344.5
+alloc-testN     sys     3.1000   25434    36.460   0.045  0           451.5
+sh6benchN       sys     0.3100   369682   2.890    0.595  0           1573
+sh8benchN       sys     1.5950   176282   17.820   0.405  0           1411.5
+xmalloc-testN   sys     0.7150   18244    57.600   1.135  0           375.5
+cache-scratch1  sys     0.8600   8822     0.860    0.000  0           316
+cache-scratchN  sys     0.1600   8816     1.700    0.000  0           353
+glibc-simple    sys     1.5500   7384     1.540    0.000  0           251.5
+glibc-thread    sys     1.2245   10996    23.800   0.010  0           359.5
+rocksdb         sys     3.2050   109856   2.960    0.535  0           948
 
-# This benchmark performs about 600 million allocations and 600 million frees roughly
-# 1.2 billion allocator operations in total. It repeatedly exercises rsmalloc's heavier
-# local fast paths without benefiting from its strengths in widely distributed,
-# multi/cross-thread workloads, so even a few extra instructions per operation are amplified.
-alloc-testN     sys     3.0500   23386    35.820   0.045  0           447
-
-# Architectural worst-cases
-sh6benchN       sys     0.2800   370638   2.665    0.480  0           1802.5
-sh8benchN       sys     1.4700   175212   16.575   0.325  0           1358
-
-# Expected slowdown for overall speed up
-xmalloc-testN   sys     0.9215   25352    56.925   1.225  0           412.5
-cache-scratch1  sys     0.8600   6690     0.860    0.000  0           317
-cache-scratchN  sys     0.1600   6696     1.670    0.000  0           355
-glibc-simple    sys     1.5200   6752     1.515    0.000  0           259.5
-glibc-thread    sys     1.1700   12946    23.805   0.010  0           361
-rocksdb         sys     3.2750   109918   2.940    0.605  0           943
-
-# old results, will be updated
-rbstressN   sys   03.06 151956 2.98 0.06 0 36584
-z3          sys   00.05 54444 0.04 0.00 0 663
+# Older results, not rerun in this snapshot
+rbstressN       sys     3.0600   151956   2.980    0.060  0           36584
+z3              sys     0.0500   54444    0.040    0.000  0           663
 
 # Old benchmark results, will be updated before Alpha-3 release
 rsmalloc alpha-2 (THP handled by kernel like most of the allocators, expected higher RSS):

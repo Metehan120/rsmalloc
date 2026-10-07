@@ -168,7 +168,7 @@ impl PageAllocator {
 
         let node_id = node_id.unwrap_or_else(|| {
             let inner = SLAB_CACHE.get_inner();
-            let cpu_id = get_rseq().cpu_id as usize;
+            let cpu_id = get_rseq().cpu_id_start as usize;
             SLAB_CACHE.node_for_cpu(cpu_id, inner)
         });
 

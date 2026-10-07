@@ -32,7 +32,7 @@ impl RseqCoreTrait for RseqCore {
     ) -> RseqResult {
         let res: usize;
         let cs = get_cs_ptr(rseq);
-        let cpu_id_start = addr_of!(rseq.cpu_id_start);
+        let cpu_id_ptr = addr_of!(rseq.cpu_id);
 
         asm!(
             ".pushsection .data.rel.ro,\"aw\",@progbits",
@@ -48,8 +48,8 @@ impl RseqCoreTrait for RseqCore {
             "mov [{cs_ptr}], {tmp}",
 
             "1:",
-            // Test cpu_id_start against cpu_id before entering critical section.
-            "cmp [{cpu_id_start}], {cpu_id:e}",
+            // Validate the sampled CPU inside the critical section.
+            "cmp [{cpu_id_ptr}], {cpu_id:e}",
             "jne 3f",
 
             "mov {tmp}, [{list}]",
@@ -76,7 +76,7 @@ impl RseqCoreTrait for RseqCore {
             header = in(reg) header,
             res = lateout(reg) res,
             tail = in(reg) tail,
-            cpu_id_start = in(reg) cpu_id_start,
+            cpu_id_ptr = in(reg) cpu_id_ptr,
             cpu_id = in(reg) cpu_id,
             usage = in(reg) usage_ptr,
             batch_total = in(reg) batch_total,
@@ -112,7 +112,7 @@ impl RseqCoreTrait for RseqCore {
             "mov [{rseq} + {cs_offset}], {tmp}",
 
             "1:",
-            // Test cpu_id_start against cpu_id before entering critical section.
+            // Validate the sampled CPU inside the critical section.
             "cmp dword ptr [{rseq} + {cpu_offset}], {cpu_id:e}",
             "jne 3f",
 

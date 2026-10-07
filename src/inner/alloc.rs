@@ -212,7 +212,7 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
         REFILLS_BY_CLASS[class].fetch_add(1, Ordering::Relaxed);
     }
 
-    let cpu_id = get_rseq().cpu_id as usize;
+    let cpu_id = get_rseq().cpu_id_start as usize;
     let cache_batch = refill!(class, cpu_id);
 
     let transfer_result = SLAB_CACHE.try_pop(class, cache_batch, cpu_id);

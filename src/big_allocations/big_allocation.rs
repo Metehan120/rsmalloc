@@ -55,7 +55,7 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
     let mut actual_ptr: *mut u8 = null_mut();
     let mut segmented_bitmap_region = 0usize;
     let mut flags = Flags::Allocated;
-    let cpu_id = get_rseq().cpu_id as usize;
+    let cpu_id = get_rseq().cpu_id_start as usize;
     let inner = SLAB_CACHE.get_inner();
     let node_id = SLAB_CACHE.node_for_cpu(cpu_id, inner);
 

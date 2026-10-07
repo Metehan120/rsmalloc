@@ -333,7 +333,6 @@ impl RadixTree {
         self.nodes.get(addr / CHUNK_SIZE)
     }
 
-    #[cfg(not(feature = "validate-foreign-first-on-free"))]
     #[inline(never)]
     pub unsafe fn is_owned_noninline(&self, addr: usize) -> bool {
         self.is_owned(addr)

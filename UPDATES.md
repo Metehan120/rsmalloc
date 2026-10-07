@@ -61,6 +61,7 @@ Alpha-3 also strengthens transfer-cache ABA protection, addresses fork and backg
 - Changed the default free path to classify alignment tags and header magic before checking radix ownership. Successful small and large frees skip the upfront lookup and assume non-null inputs are live RSMalloc allocations.
 - Added the opt-in `validate-foreign-first` Cargo feature to restore ownership validation before metadata reads. Without it, the remaining late foreign-pointer check/fallback is best-effort: a foreign pointer can fault or be misclassified before reaching that check. The feature is disabled by default and is included in `semi-hardened`.
 - Gated radix validation of recovered aligned-allocation bases before dereferencing their headers on `validate-foreign-first`, alongside input-address validation. Coarse ownership validation does not establish allocation boundaries or make invalid frees safe.
+- Added an unconditional supported-address-range check to free: non-null input addresses at or above `2^56` abort before alignment/header metadata reads, independently of `validate-foreign-first`. This range check does not establish mapping or ownership. Radix ownership queries now separate address validation from bitmap lookup so free's input check is not repeated; the default late ownership lookup stays out of line, and corruption/invalid-pointer reporting uses cold helpers.
 
 ### Transfer-cache ABA hardening
 

@@ -7,7 +7,7 @@ use crate::{
     TAG_SIZE,
     big_allocations::big_allocation::big_free,
     core_prim::wrappers::{SafePointer, UnsafePointer},
-    internals::radix_tree::RADIX,
+    internals::radix_tree::{RADIX, valid_user_addr},
     rseq_core::slab_cache::SLAB_CACHE,
     traits::GenericCache,
     utility::{likely, unlikely},
@@ -59,12 +59,15 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
     if unlikely(ptr.is_null()) {
         return;
     }
+    if unlikely(!valid_user_addr(ptr.cast_usize())) {
+        invalid_pointer_abort(ptr.cast_usize())
+    }
 
     #[cfg(feature = "debug-full-critic")]
     RS_FREE_CALLS_DEBUG.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     #[cfg(feature = "validate-foreign-first")]
-    if !RADIX.is_owned(ptr.cast_usize()) {
+    if !RADIX.is_owned_inner::<false>(ptr.cast_usize()) {
         #[cfg(feature = "preload")]
         crate::inner::fallback::free_fallback(ptr.cast_as_ptr() as *mut _);
 
@@ -107,7 +110,7 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
 #[inline(never)]
 unsafe fn cold_path(header: SafePointer<Header>, ptr: UnsafePointer<Header>) {
     #[cfg(not(feature = "validate-foreign-first"))]
-    if !RADIX.is_owned_noninline(ptr.cast_usize()) {
+    if !RADIX.is_owned_noninline_no_validation(ptr.cast_usize()) {
         #[cfg(feature = "preload")]
         crate::inner::fallback::free_fallback(ptr.cast_as_ptr() as *mut _);
 
@@ -143,11 +146,21 @@ unsafe fn cold_path(header: SafePointer<Header>, ptr: UnsafePointer<Header>) {
 }
 
 #[cfg(feature = "validate-foreign-first")]
+#[cold]
 #[inline(never)]
-pub fn corruption_abort(ptr: *mut u8, reason: &'static str) {
+fn corruption_abort(ptr: *mut u8, reason: &'static str) {
     RSMallocError::Corruption {
         ptr: ptr.cast(),
         reason,
     }
     .log_and_abort()
+}
+
+#[cold]
+#[inline(never)]
+fn invalid_pointer_abort(addr: usize) -> ! {
+    RSMallocError::InvalidPointer {
+        ptr: addr as *mut u8,
+    }
+    .log_and_abort();
 }

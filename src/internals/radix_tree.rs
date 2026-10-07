@@ -318,12 +318,12 @@ impl RadixTree {
     }
 
     #[inline(always)]
-    pub unsafe fn is_owned(&self, addr: usize) -> bool {
+    pub unsafe fn is_owned_inner<const VALIDATE: bool>(&self, addr: usize) -> bool {
         if unlikely(self.nodes.l0.is_null()) {
             return false;
         }
 
-        if unlikely(!Self::valid_user_addr(addr)) {
+        if unlikely(!Self::valid_user_addr(addr)) && VALIDATE {
             RSMallocError::InvalidPointer {
                 ptr: addr as *mut u8,
             }
@@ -333,10 +333,15 @@ impl RadixTree {
         self.nodes.get(addr / CHUNK_SIZE)
     }
 
+    #[inline(always)]
+    pub unsafe fn is_owned(&self, addr: usize) -> bool {
+        self.is_owned_inner::<true>(addr)
+    }
+
     #[cfg(not(feature = "validate-foreign-first"))]
     #[inline(never)]
-    pub unsafe fn is_owned_noninline(&self, addr: usize) -> bool {
-        self.is_owned(addr)
+    pub unsafe fn is_owned_noninline_no_validation(&self, addr: usize) -> bool {
+        self.is_owned_inner::<false>(addr)
     }
 
     #[cfg(feature = "debug")]
@@ -402,6 +407,10 @@ impl RadixTree {
     const fn valid_user_addr(addr: usize) -> bool {
         addr < MAX_ADDR
     }
+}
+
+pub const fn valid_user_addr(addr: usize) -> bool {
+    addr < MAX_ADDR
 }
 
 pub static mut RADIX: RadixTree = unsafe { RadixTree::new_const() };

@@ -103,6 +103,7 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
     cold_path(header, ptr);
 }
 
+#[cold]
 #[inline(never)]
 unsafe fn cold_path(header: SafePointer<Header>, ptr: UnsafePointer<Header>) {
     #[cfg(not(feature = "validate-foreign-first"))]

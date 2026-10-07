@@ -15,17 +15,26 @@ rptestN         sys     0.6380   63340    1.265    0.310  0           609
 gs              sys     0.1800   47180    0.170    0.005  0           1482
 lua             sys     0.9900   113680   5.785    0.350  0           56560.5
 alloc-test1     sys     2.3000   19166    2.300    0.000  0           344.5
+
+# This benchmark performs about 600 million allocations and 600 million frees roughly
+# 1.2 billion allocator operations in total. It repeatedly exercises rsmalloc's heavier
+# local fast paths without benefiting from its strengths in widely distributed,
+# multi/cross-thread workloads, so even a few extra instructions per operation are amplified.
 alloc-testN     sys     3.1000   25434    36.460   0.045  0           451.5
+
+# Architectural worst-cases
 sh6benchN       sys     0.3100   369682   2.890    0.595  0           1573
 sh8benchN       sys     1.5950   176282   17.820   0.405  0           1411.5
 xmalloc-testN   sys     0.7150   18244    57.600   1.135  0           375.5
+
 cache-scratch1  sys     0.8600   8822     0.860    0.000  0           316
 cache-scratchN  sys     0.1600   8816     1.700    0.000  0           353
 glibc-simple    sys     1.5500   7384     1.540    0.000  0           251.5
 glibc-thread    sys     1.2245   10996    23.800   0.010  0           359.5
+
 rocksdb         sys     3.2050   109856   2.960    0.535  0           948
 
-# Older results, not rerun in this snapshot
+# old results, will be updated
 rbstressN       sys     3.0600   151956   2.980    0.060  0           36584
 z3              sys     0.0500   54444    0.040    0.000  0           663
 

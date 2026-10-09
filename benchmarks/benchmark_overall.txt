@@ -61,105 +61,109 @@ glibc-thread sys   1.438 12884 23.76 0.03 0 373
 rocksdb     sys   03.29 107456 2.92 0.65 0 851
 
 jemalloc 5.3.1 (CachyOS build):
-cfrac       sys   02.93 11484 2.92 0.00 0 401
-espresso    sys   02.98 11492 2.95 0.01 0 402
+# Column-wise medians across 10 runs for 20 workloads; rbstressN and z3 retain older single-run results.
+cfrac           sys     2.9400   11564    2.930    0.000  0           401
+espresso        sys     2.9900   11540    2.960    0.015  0           404
 # 1.68-1.69
-barnes      sys   01.68 75300 1.67 0.00 0 538
-redis       sys   3.180 15964 0.12 0.02 0 1186
-leanN       sys   07.11 259764 16.08 0.26 0 15869
-larsonN-sized sys   3.003 168792 57.69 0.36 0 51216
-mstressN    sys   01.16 247940 4.36 3.80 0 1026108
-rptestN     sys   .754 106212 1.63 0.27 0 14835
-gs          sys   00.20 46392 0.19 0.01 0 3351
-lua         sys   01.02 107800 5.86 0.44 0 75140
-alloc-test1 sys   02.19 22348 2.18 0.00 0 683
-alloc-testN sys   02.71 60368 31.75 0.00 0 489
-sh6benchN   sys   00.27 295604 2.88 0.05 0 19853
-sh8benchN   sys   00.80 237308 9.07 0.04 0 6379
-xmalloc-testN sys   0.257 194352 57.03 0.77 0 37188
-cache-scratch1 sys   00.86 11408 0.86 0.00 0 405
-cache-scratchN sys   00.16 11484 1.66 0.00 0 434
-glibc-simple sys   01.73 15208 1.73 0.00 0 424
-glibc-thread sys   1.038 64436 23.81 0.00 0 501
+barnes          sys     1.6800   77208    1.670    0.000  0           539.5
+redis           sys     3.2200   15958    0.120    0.030  0           1177.5
+leanN           sys     6.9600   267652   15.660   0.230  0           15693
+larsonN-sized   sys     3.0465   165366   59.135   0.350  0           55361
+mstressN        sys     1.2300   247326   4.670    4.090  0           1012505
+rptestN         sys     0.8285   107658   1.925    0.135  0           15483.5
+gs              sys     0.2000   44878    0.190    0.010  0           3078.5
+lua             sys     1.0300   107628   5.985    0.495  0           75369
+alloc-test1     sys     2.1900   22244    2.180    0.000  0           684
+alloc-testN     sys     2.7600   60312    32.545   0.010  0           501
+sh6benchN       sys     0.2900   298030   3.110    0.060  0           21223
+sh8benchN       sys     0.8500   249490   9.440    0.045  0           6859.5
+xmalloc-testN   sys     0.2550   198086   57.385   0.790  0           34808
+cache-scratch1  sys     0.8600   11532    0.860    0.000  0           403
+cache-scratchN  sys     0.1500   11500    1.780    0.000  0           436.5
+glibc-simple    sys     1.6750   15226    1.670    0.000  0           434.5
+glibc-thread    sys     1.0700   60344    23.855   0.010  0           498
 # 3.22-3.28
-rocksdb     sys   03.25 140744 2.92 0.60 0 2986
+rocksdb         sys     3.2650   140722   2.925    0.620  0           2958
 rbstressN   sys   03.12 156628 3.04 0.07 0 36446
 z3          sys   00.05 56952 0.04 0.00 0 1892
 
 mimalloc 3.5 (CachyOS build):
-cfrac       sys   02.83 4900 2.82 0.00 0 220
-espresso    sys   02.91 10968 2.88 0.02 1 222
-barnes      sys   01.70 67620 1.69 0.00 0 570
-redis       sys   2.680 15168 0.10 0.02 1 932
-leanN       sys   06.96 320844 16.05 0.20 0 2810
-larsonN-sized sys   3.175 130260 58.17 0.25 0 9243
-mstressN    sys   00.92 389580 6.92 0.35 0 992
-rptestN     sys   .689 105412 1.15 0.44 0 699
-gs          sys   00.19 52964 0.18 0.00 0 1737
+# Column-wise medians across 10 runs for 20 workloads; rbstressN and z3 retain older single-run results.
+cfrac           sys     2.8350   4916     2.820    0.000  0           220
+espresso        sys     2.9100   10960    2.890    0.010  0           225
+barnes          sys     1.7000   67588    1.690    0.000  0           571
+redis           sys     2.8095   15514    0.100    0.030  0           979.5
+leanN           sys     6.9400   344670   16.110   0.210  0           1830.5
+larsonN-sized   sys     3.0025   133012   59.080   0.310  0           8933
+mstressN        sys     0.9600   387548   7.315    0.320  0           951.5
+rptestN         sys     0.6525   107402   1.065    0.410  0           829.5
+gs              sys     0.1900   53250    0.180    0.010  0           1454
 # ~1.01-1.05
-lua         sys   01.01 121520 5.83 0.41 0 55273
-alloc-test1 sys   02.19 16864 2.18 0.00 0 312
-alloc-testN sys   02.66 49944 31.25 0.05 0 416
-sh6benchN   sys   00.16 217688 1.62 0.15 0 682
-sh8benchN   sys   00.39 246180 4.11 0.27 0 665
-xmalloc-testN sys   0.209 76236 57.92 0.89 0 1376
-cache-scratch1 sys   00.86 6356 0.86 0.00 0 285
-cache-scratchN sys   00.16 6452 1.66 0.00 0 309
-glibc-simple sys   01.67 4900 1.67 0.00 0 210
-glibc-thread sys   .970 35124 23.72 0.07 0 386
+lua             sys     1.0200   123706   6.005    0.460  0           55460.5
+alloc-test1     sys     2.1650   16882    2.155    0.000  0           312
+alloc-testN     sys     2.6900   49794    31.785   0.045  0           404
+sh6benchN       sys     0.1800   217672   1.820    0.165  0           696
+sh8benchN       sys     0.4400   254454   4.640    0.340  0           661.5
+xmalloc-testN   sys     0.2160   68282    57.805   1.005  0           1650.5
+cache-scratch1  sys     0.8600   6616     0.860    0.000  0           287
+cache-scratchN  sys     0.1600   6608     1.690    0.000  0           309
+glibc-simple    sys     1.6000   4916     1.590    0.000  0           213
+glibc-thread    sys     0.9965   35294    23.715   0.070  0           383
 # What in the hell
-rocksdb     sys   03.18 149460 2.88 0.58 0 915
+rocksdb         sys     3.2400   149660   2.880    0.630  0           917.5
 # Around 3.13
 rbstressN   sys   03.12 156628 3.04 0.07 0 36446
 z3          sys   00.05 68112 0.04 0.00 0 524
 
 tcmalloc latest (CachyOS build):
-cfrac       sys   02.88 13044 2.87 0.00 0 1850
-espresso    sys   02.90 11336 2.87 0.02 0 1940
-barnes      sys   01.70 73880 1.69 0.01 0 1818
-redis       sys   2.680 18252 0.10 0.02 0 2372
-leanN       sys   07.51 213172 17.02 0.32 0 49056
-larsonN-sized sys   2.915 83712 58.70 0.21 0 19377
-mstressN    sys   00.92 194072 6.83 0.22 0 39596
-rptestN     sys   .931 61320 2.02 0.29 0 15027
-gs          sys   00.19 45632 0.18 0.00 0 6544
+# Column-wise medians across 10 runs for 20 workloads; rbstressN and z3 retain older single-run results.
+cfrac           sys     2.8800   11108    2.870    0.000  0           1752
+espresso        sys     2.8800   11814    2.855    0.020  0           1735
+barnes          sys     1.7000   76146    1.690    0.000  0           2088
+redis           sys     2.6600   15526    0.090    0.030  0           2691
+leanN           sys     7.4350   210132   16.895   0.270  0           48740.5
+larsonN-sized   sys     2.9265   84840    59.385   0.170  0           19167.5
+mstressN        sys     0.9600   196354   7.145    0.230  0           37840.5
+rptestN         sys     0.8985   61110    2.115    0.090  0           14349.5
+gs              sys     0.2000   42716    0.180    0.010  0           6572.5
 # ~1.05
-lua         sys   01.05 111816 5.80 0.68 0 175083
-alloc-test1 sys   02.17 18760 2.16 0.00 0 2701
-alloc-testN sys   02.74 19640 32.43 0.02 0 4473
-sh6benchN   sys   00.19 222276 1.93 0.11 0 54152
-sh8benchN   sys   04.19 129368 30.38 16.14 0 11740
-xmalloc-testN sys   13.280 44888 21.75 23.53 0 10503
-cache-scratch1 sys   00.86 12880 0.86 0.00 0 1229
-cache-scratchN sys   00.16 10968 1.64 0.00 0 1740
-glibc-simple sys   01.32 13012 1.32 0.00 0 1658
-glibc-thread sys   1.065 12800 23.82 0.01 0 2725
+lua             sys     1.0600   108492   5.880    0.760  2           177311.5
+alloc-test1     sys     2.1850   18612    2.170    0.000  0           2939
+alloc-testN     sys     2.7600   20676    32.740   0.010  0           4346.5
+sh6benchN       sys     0.2000   221478   2.010    0.125  0           54319
+sh8benchN       sys     4.1250   129730   30.260   15.975 0           12711.5
+xmalloc-testN   sys     13.3245   45218    23.195   26.130 0           10593
+cache-scratch1  sys     0.8600   11346    0.860    0.000  0           1616
+cache-scratchN  sys     0.1500   12008    1.780    0.000  0           1486
+glibc-simple    sys     1.3000   11210    1.290    0.000  0           1626.5
+glibc-thread    sys     1.1000   12726    23.850   0.000  0           2379.5
 # 3.32-3.40
-rocksdb     sys   03.36 103852 2.96 0.67 0 21242
+rocksdb         sys     3.3250   103020   2.975    0.635  0           21644
 rbstressN   sys   03.06 121240 2.99 0.05 0 28527
 z3          sys   00.05 52248 0.04 0.00 0 5697
 
 glibc 2.44:
-cfrac       sys   02.87 3304 2.86 0.00 0 438
-espresso    sys   03.21 3204 3.19 0.01 0 583
-barnes      sys   01.69 62212 1.68 0.00 0 777
-redis       sys   2.700 8024 0.09 0.03 1 1212
-leanN       sys   08.27 249548 18.53 0.44 1 60896
-larsonN-sized sys   3.897 123296 57.17 1.70 0 34197
-mstressN    sys   01.06 343856 7.18 1.00 0 141872
+# Column-wise medians across 10 runs for 20 workloads; rbstressN and z3 retain older single-run results.
+cfrac           sys     2.8700   3278     2.860    0.000  0           438
+espresso        sys     3.2100   3336     3.180    0.020  0           582
+barnes          sys     1.6950   62178    1.685    0.000  0           776
+redis           sys     2.6400   8144     0.090    0.030  0           1209.5
+leanN           sys     8.2250   255400   18.375   0.440  0           62601.5
+larsonN-sized   sys     4.0790   122658   56.895   2.000  0           33453.5
+mstressN        sys     1.0750   345078   7.245    0.905  0           133229
 # GLibc cooked here
-rptestN     sys   .497 40084 0.86 0.39 0 19848
-gs          sys   00.20 32932 0.18 0.01 6 5399
-lua         sys   01.00 88824 5.58 0.41 0 106666
-alloc-test1 sys   02.46 14568 2.44 0.00 0 1927
-alloc-testN sys   03.05 17888 35.99 0.03 0 3768
-sh6benchN   sys   01.98 342104 15.01 5.63 0 85378
-sh8benchN   sys   09.52 243064 43.74 25.77 0 74398
-xmalloc-testN sys   1.416 52080 38.14 18.05 0 293520
-cache-scratch1 sys   00.86 4316 0.86 0.00 0 233
-cache-scratchN sys   00.15 4164 1.79 0.00 0 266
-glibc-simple sys   02.25 2564 2.24 0.00 0 222
-glibc-thread sys   1.094 3752 23.85 0.00 0 804
-rocksdb     sys   03.37 93280 2.99 0.67 0 36858
+rptestN         sys     0.4980   40238    0.950    0.295  0           19828.5
+gs              sys     0.1900   32888    0.180    0.010  0           5401
+lua             sys     1.0100   88848    5.710    0.445  0           105241
+alloc-test1     sys     2.4600   14810    2.440    0.000  0           1929.5
+alloc-testN     sys     3.0700   17800    36.420   0.030  0           3769
+sh6benchN       sys     3.0150   342426   16.325   6.875  0           85425.5
+sh8benchN       sys     12.1400   240044   52.580   33.620 0           65493
+xmalloc-testN   sys     1.2945   53502    39.410   17.395 0           269176.5
+cache-scratch1  sys     0.8600   4220     0.860    0.000  0           234.5
+cache-scratchN  sys     0.1500   4332     1.785    0.000  0           267
+glibc-simple    sys     2.2750   2564     2.270    0.000  0           224
+glibc-thread    sys     1.1180   3624     23.890   0.000  0           804.5
+rocksdb         sys     3.3500   93888    2.980    0.655  0           36859
 rbstressN   sys   03.29 136876 3.20 0.06 0 36003
 z3          sys   00.05 41480 0.04 0.00 0 4476

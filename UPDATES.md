@@ -152,6 +152,11 @@ Alpha-3 also strengthens transfer-cache ABA protection, addresses fork and backg
 
 - Added `rsmalloc-macro`, a small proc-macro crate (`syn`/`quote`) providing `#[assert_sizes(N)]` (compile-time `size_of::<T>() == N` assertion on a struct/enum, replacing manual `const _: () = assert!(...)` blocks) and `#[stable_api_surface(since = "...")]` (documentation-only marker for internal functions whose signature/contract shouldn't casually change, e.g. the RSEQ asm trait methods). Both are pure compile-time constructs with no runtime cost.
 
+### Important RSEQ contract fix
+
+- Corrected the CPU-field pairing to follow the Linux RSEQ ABI: sample `cpu_id_start` outside the critical section to select the per-CPU cache, then compare that same sample against `cpu_id` inside the critical section before modifying the list and committing. Single push, batch push, and pop now validate `cpu_id`, rather than comparing against `cpu_id_start` again.
+- This check validates the cache selection made before the protected section, including migration before descriptor publication; RSEQ restart handling protects execution inside the section up to the commit point. `cpu_id_start` alone is not the validation field and can contain a plausible CPU index even when RSEQ is uninitialized. The `cpu_id` field carries the uninitialized/registration-failed sentinel values and remains the field used for availability checks.
+
 ### RSEQ/slab fast path
 
 - Rewrote the successful RSEQ pop sequence to reuse its result register for descriptor setup and the list head, validate the sampled CPU through constant offsets from the RSEQ base, remove the guarded next-node prefetch and final result copy, and keep the list-head store immediately adjacent to `post_commit_ip`.

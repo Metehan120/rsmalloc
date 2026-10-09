@@ -98,7 +98,6 @@ larsonN-sized   sys     3.0025   133012   59.080   0.310  0           8933
 mstressN        sys     0.9600   387548   7.315    0.320  0           951.5
 rptestN         sys     0.6525   107402   1.065    0.410  0           829.5
 gs              sys     0.1900   53250    0.180    0.010  0           1454
-# ~1.01-1.05
 lua             sys     1.0200   123706   6.005    0.460  0           55460.5
 alloc-test1     sys     2.1650   16882    2.155    0.000  0           312
 alloc-testN     sys     2.6900   49794    31.785   0.045  0           404
@@ -109,7 +108,6 @@ cache-scratch1  sys     0.8600   6616     0.860    0.000  0           287
 cache-scratchN  sys     0.1600   6608     1.690    0.000  0           309
 glibc-simple    sys     1.6000   4916     1.590    0.000  0           213
 glibc-thread    sys     0.9965   35294    23.715   0.070  0           383
-# What in the hell
 rocksdb         sys     3.2400   149660   2.880    0.630  0           917.5
 # Around 3.13
 rbstressN   sys   03.12 156628 3.04 0.07 0 36446

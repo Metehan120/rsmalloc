@@ -22,7 +22,7 @@ portable-atomic = {version = "1", features = ["require-cas"]}
 thiserror = { version = "2", default-features = false }
 
 [features]
-default = ["experimental-confidence-predictor"]
+default = []
 allocator-api = []
 native-allocation-api = []
 preload = []

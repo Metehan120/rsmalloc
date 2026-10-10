@@ -4,6 +4,8 @@ use std::sync::atomic::AtomicUsize;
 
 #[cfg(feature = "preload")]
 use crate::inner::preload::libc_int::set_nomem;
+#[cfg(feature = "experimental-confidence-predictor")]
+use crate::utility::PREDICTOR_BATCHING;
 use crate::{
     BIG_MAGIC, Header, MAGIC, RSMallocError,
     big_allocations::big_allocation::big_malloc,
@@ -46,7 +48,16 @@ unsafe fn record_refill_prediction(
         return;
     }
 
-    if count == wanted && wanted >= 8 && wanted < ITERATIONS[class] {
+    #[cfg(feature = "experimental-confidence-predictor")]
+    let max_batch = if _can_probe_more {
+        PREDICTOR_BATCHING[class]
+    } else {
+        ITERATIONS[class]
+    };
+    #[cfg(not(feature = "experimental-confidence-predictor"))]
+    let max_batch = ITERATIONS[class];
+
+    if count == wanted && wanted >= 8 && wanted < max_batch {
         crate::REFILL_UNDER_PREDICTS.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -96,7 +107,12 @@ unsafe fn record_refill_prediction(
         return;
     }
 
-    if wanted >= 8 && wanted < ITERATIONS[class] {
+    #[cfg(feature = "experimental-confidence-predictor")]
+    let max_batch = PREDICTOR_BATCHING[class];
+    #[cfg(not(feature = "experimental-confidence-predictor"))]
+    let max_batch = ITERATIONS[class];
+
+    if wanted >= 8 && wanted < max_batch {
         if let Some(cache) = SLAB_CACHE.try_pop(class, 1, cpu_id) {
             crate::REFILL_UNDER_PREDICTS.fetch_add(1, Ordering::Relaxed);
             SLAB_CACHE.transfer_push_batch(
@@ -219,7 +235,7 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
     #[cfg(feature = "experimental-confidence-predictor")]
     let (cache_batch, low_request) = SLAB_CACHE
         .transfer_predictor(cpu_id, class)
-        .transfer_batch(PREDICTOR_INIT_BATCH, ITERATIONS[class]);
+        .transfer_batch(PREDICTOR_INIT_BATCH, PREDICTOR_BATCHING[class]);
 
     let transfer_result = SLAB_CACHE.try_pop(class, cache_batch, cpu_id);
     if let Some(transfer_cache) = transfer_result {
@@ -257,7 +273,7 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
                 cache_batch,
                 transfer_cache.total,
                 low_request,
-                ITERATIONS[class],
+                PREDICTOR_BATCHING[class],
             );
 
         let one = take_one_from_batch(
@@ -285,7 +301,7 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
             cache_batch,
             0,
             low_request,
-            ITERATIONS[class],
+            PREDICTOR_BATCHING[class],
         );
 
     refill(class, cpu_id, cache_batch)

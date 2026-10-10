@@ -105,6 +105,9 @@ pub unsafe fn main_bootstrap(config: BootstrapConfig) {
     SEGMENTED_BITMAP_ATTEMPT_HUGE = config.segmented_bitmap_attempt_huge;
     DISABLE_TRIM_THREAD = config.disable_trimmer;
     SMALL_TRIM_THRESHOLD = config.small_trim_threshold;
+    if config.big_trim_threshold < 1024 * 1024 * 128 {
+        panic!("incorrect size for big_trim_threshold, minimum should be 128mb")
+    }
     BIG_TRIM_THRESHOLD = config.big_trim_threshold;
     DISABLE_RELIEF = config.disable_relief;
 

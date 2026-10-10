@@ -50,6 +50,7 @@ impl AdaptiveBatching {
         }
     }
 
+    #[cfg(not(feature = "experimental-confidence-predictor"))]
     #[inline(always)]
     pub fn update_transfer(&self, init_batch: usize, available: usize, max: usize) {
         if unlikely(available > isize::MAX as usize) {
@@ -77,11 +78,129 @@ impl AdaptiveBatching {
         }
     }
 
+    #[cfg(feature = "experimental-confidence-predictor")]
+    #[inline(always)]
+    fn decode_transfer(state: usize, init_batch: usize) -> (usize, u8, u8) {
+        if unlikely(state == 0) {
+            (init_batch.max(1), 5, 0)
+        } else {
+            let (batch, stats) = Self::decode(state, init_batch);
+            let (confidence, low) = confidence_policy::unpack(stats);
+            (batch, confidence, low)
+        }
+    }
+
+    #[cfg(feature = "experimental-confidence-predictor")]
+    #[inline(always)]
+    pub fn transfer_batch(&self, init_batch: usize, fallback: usize) -> (usize, bool) {
+        let state = self.state.load(Ordering::Relaxed);
+        let (batch, confidence, low) = Self::decode_transfer(state, init_batch);
+        (
+            batch.min(fallback),
+            confidence_policy::is_low(confidence, low),
+        )
+    }
+
+    #[cfg(feature = "experimental-confidence-predictor")]
+    #[inline(never)]
+    pub fn update_transfer_feedback_noninline(
+        &self,
+        init_batch: usize,
+        available: usize,
+        requested: usize,
+        obtained: usize,
+        was_low: bool,
+        max: usize,
+    ) {
+        self.update_transfer_feedback(init_batch, available, requested, obtained, was_low, max);
+    }
+
+    #[cfg(feature = "experimental-confidence-predictor")]
+    #[inline(always)]
+    pub fn update_transfer_feedback(
+        &self,
+        init_batch: usize,
+        available: usize,
+        requested: usize,
+        obtained: usize,
+        was_low: bool,
+        max: usize,
+    ) {
+        if unlikely(available > isize::MAX as usize || requested == 0) {
+            return;
+        }
+
+        let old = self.state.load(Ordering::Relaxed);
+        let (batch, confidence, low) = Self::decode_transfer(old, init_batch);
+        let (next, confidence, low) = confidence_policy::next(
+            batch, confidence, low, available, requested, obtained, was_low, max,
+        );
+        let new = Self::encode(next, confidence_policy::pack(confidence, low));
+        if new != old {
+            let _ =
+                self.state
+                    .compare_exchange_weak(old, new, Ordering::Relaxed, Ordering::Relaxed);
+        }
+    }
+
     #[inline(always)]
     pub fn batch(&self, init_batch: usize, fallback: usize) -> usize {
         let state = self.state.load(Ordering::Relaxed);
         let (batch, _) = Self::decode(state, init_batch);
         batch.min(fallback)
+    }
+}
+
+#[cfg(feature = "experimental-confidence-predictor")]
+mod confidence_policy {
+    #[inline(always)]
+    pub(super) fn pack(confidence: u8, low: u8) -> u8 {
+        confidence | (low << 4)
+    }
+
+    #[inline(always)]
+    pub(super) fn unpack(stats: u8) -> (u8, u8) {
+        ((stats & 0x0f).min(10), (stats >> 4).min(10))
+    }
+
+    #[inline(always)]
+    pub(super) fn is_low(confidence: u8, low: u8) -> bool {
+        low != 0 && (confidence / 2) <= low
+    }
+
+    #[inline(always)]
+    pub(super) fn next(
+        batch: usize,
+        confidence: u8,
+        low: u8,
+        available: usize,
+        requested: usize,
+        obtained: usize,
+        was_low: bool,
+        max: usize,
+    ) -> (usize, u8, u8) {
+        let max = max.max(1).min(usize::MAX >> 8);
+        let target = available.clamp(1, max);
+        let batch = batch.clamp(1, max);
+        let confidence = confidence.min(10);
+        let low = low.min(10);
+        let (confidence, low) = if obtained < requested {
+            (confidence.saturating_sub(1), (low + 2).min(10))
+        } else if was_low {
+            // A small request succeeding doesn't establish that a normal one would.
+            (confidence, low.saturating_sub(1))
+        } else {
+            ((confidence + 1).min(10), low.saturating_sub(1))
+        };
+
+        let next = if is_low(confidence, low) {
+            (target - target.div_ceil(3)).max(1)
+        } else if confidence >= 8 {
+            batch.saturating_add((batch >> 3).max(1)).min(target)
+        } else {
+            batch.min(target)
+        };
+        (next, confidence, low)
     }
 }
 

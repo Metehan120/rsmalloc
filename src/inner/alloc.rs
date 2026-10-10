@@ -141,6 +141,7 @@ unsafe fn take_one_from_batch(
     UnsafePointer::new(first)
 }
 
+#[cfg(not(feature = "experimental-confidence-predictor"))]
 macro_rules! refill {
     ($class:expr, $cpu_id:expr) => {{
         let batch = SLAB_CACHE
@@ -213,20 +214,49 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
     }
 
     let cpu_id = get_rseq().cpu_id_start as usize;
+    #[cfg(not(feature = "experimental-confidence-predictor"))]
     let cache_batch = refill!(class, cpu_id);
+    #[cfg(feature = "experimental-confidence-predictor")]
+    let (cache_batch, low_request) = SLAB_CACHE
+        .transfer_predictor(cpu_id, class)
+        .transfer_batch(PREDICTOR_INIT_BATCH, ITERATIONS[class]);
 
     let transfer_result = SLAB_CACHE.try_pop(class, cache_batch, cpu_id);
     if let Some(transfer_cache) = transfer_result {
-        #[cfg(feature = "predictor-debug")]
+        #[cfg(all(
+            feature = "predictor-debug",
+            not(feature = "experimental-confidence-predictor")
+        ))]
         eprintln!(
             "refill (transfer):\n class: {class}, \n caller cpu_id: {cpu_id}, \n returned cpu_id: {}, \n expected_size: {cache_batch}, \n observed_size: {}, \n available_total: {}",
             transfer_cache.cpu_id, transfer_cache.total, transfer_cache.available
         );
+        #[cfg(all(
+            feature = "predictor-debug",
+            feature = "experimental-confidence-predictor"
+        ))]
+        eprintln!(
+            "refill (transfer):\n class: {class}, \n caller cpu_id: {cpu_id}, \n returned cpu_id: {}, \n expected_size: {cache_batch}, \n observed_size: {}, \n available_total: {}, \n is_low: {low_request}",
+            transfer_cache.cpu_id, transfer_cache.total, transfer_cache.available
+        );
+        #[cfg(not(feature = "experimental-confidence-predictor"))]
         SLAB_CACHE
             .transfer_predictor(cpu_id, class)
             .update_transfer(
                 PREDICTOR_INIT_BATCH,
                 transfer_cache.available,
+                ITERATIONS[class],
+            );
+
+        #[cfg(feature = "experimental-confidence-predictor")]
+        SLAB_CACHE
+            .transfer_predictor(cpu_id, class)
+            .update_transfer_feedback(
+                PREDICTOR_INIT_BATCH,
+                transfer_cache.available,
+                cache_batch,
+                transfer_cache.total,
+                low_request,
                 ITERATIONS[class],
             );
 
@@ -245,6 +275,18 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
 
         return one;
     }
+
+    #[cfg(feature = "experimental-confidence-predictor")]
+    SLAB_CACHE
+        .transfer_predictor(cpu_id, class)
+        .update_transfer_feedback_noninline(
+            PREDICTOR_INIT_BATCH,
+            0,
+            cache_batch,
+            0,
+            low_request,
+            ITERATIONS[class],
+        );
 
     refill(class, cpu_id, cache_batch)
 }

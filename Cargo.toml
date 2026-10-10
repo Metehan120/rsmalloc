@@ -22,13 +22,15 @@ portable-atomic = {version = "1", features = ["require-cas"]}
 thiserror = { version = "2", default-features = false }
 
 [features]
-default = []
+default = ["experimental-confidence-predictor"]
 allocator-api = []
 native-allocation-api = []
 preload = []
 check-owned-on-alloc = []
 # Opt-in ownership validation before free's metadata reads; otherwise foreign handling is best-effort.
 validate-foreign-first = []
+# Benchmark-only transfer batching confidence policy; excluded from release presets.
+experimental-confidence-predictor = []
 
 # Debug options
 debug-print = ["debug"]

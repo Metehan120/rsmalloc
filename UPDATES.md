@@ -167,6 +167,16 @@ Alpha-3 also strengthens transfer-cache ABA protection, addresses fork and backg
 - Adjusted the separate bulk-fill predictor's feedback after a transfer miss: `refill` discounts the number of blocks observed from a successful bulk fill by at least one and otherwise by half of the missed transfer batch (clamped to a minimum observation of one). A full bulk batch still supplies the existing bounded growth signal, but the transfer miss no longer looks like unqualified bulk demand.
 - Moved partially consumed bulk-fill metadata from thread-local `ThreadBulk` storage into per-CPU/per-class atomic slots in `MainCache`, eliminating the remaining Rust TLS and thread-destructor dependency while retaining the NUMA-aware pending queue as the collision/overflow path.
 
+### Experimental confidence-based transfer batching
+
+- Added the opt-in `experimental-confidence-predictor` feature as an alternative to the original inventory-based adaptive transfer policy. It remains excluded from default features and `semi-hardened`; bulk-fill prediction and trim lifetime estimation are unchanged.
+- Packs the normal batch candidate and two saturating 0–10 scores (normal confidence and back-off evidence) into the existing `AtomicUsize`, without enlarging the predictor or adding locks or allocations. Feedback uses a single best-effort, non-retrying relaxed CAS.
+- Starts with confidence 5 and no back-off evidence. A full normal request raises confidence by one and removes one point of back-off evidence; a nonempty short return lowers confidence by one and adds two points of evidence. Empty transfer outcomes are ignored rather than training the predictor toward minimum batches.
+- Selects low-confidence mode when back-off evidence is nonzero and at least half the normal confidence. Low requests use two thirds of the bounded normal candidate, rounded down with a minimum of one for a positive candidate. Successful low requests drain evidence without lowering the stored normal candidate or increasing normal confidence, preventing repeated back-off from compounding into permanent batch shrinkage. Short returns reduce the candidate to the obtained count; full normal requests at confidence 8 or above grow it by one eighth (at least one block), bounded by sampled inventory and the per-class limit. Inventory is historical feedback, not a reservation or a guarantee of current availability.
+- Added independent `PREDICTOR_BATCHING` limits of `CACHE_HIGH_BLOCKS[class] + 1`, allowing a transfer refill to fill an empty CPU cache to its per-class high-water mark after returning one block to the caller. The original transfer policy and bulk refills retain `ITERATIONS` limits.
+- With `predictor-debug`, experimental transfer logs now include `is_low`, recording the mode selected for the request before feedback updates it.
+- Initial development testing reports throughput comparable to the original policy, with potentially lower RSS on some workloads. These observations are workload-dependent, not a general performance guarantee; repeated non-debug comparisons are needed to establish the memory benefit.
+
 ### Instruction and codegen optimization
 
 - Changed x86-64 RSEQ pointer construction from `add` to `lea`, preserving flags as declared by the inline-assembly contract without increasing the instruction count.

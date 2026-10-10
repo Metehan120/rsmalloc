@@ -292,18 +292,6 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
         return one;
     }
 
-    #[cfg(feature = "experimental-confidence-predictor")]
-    SLAB_CACHE
-        .transfer_predictor(cpu_id, class)
-        .update_transfer_feedback_noninline(
-            PREDICTOR_INIT_BATCH,
-            0,
-            cache_batch,
-            0,
-            low_request,
-            PREDICTOR_BATCHING[class],
-        );
-
     refill(class, cpu_id, cache_batch)
 }
 

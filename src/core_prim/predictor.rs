@@ -95,24 +95,9 @@ impl AdaptiveBatching {
     pub fn transfer_batch(&self, init_batch: usize, fallback: usize) -> (usize, bool) {
         let state = self.state.load(Ordering::Relaxed);
         let (batch, confidence, low) = Self::decode_transfer(state, init_batch);
-        (
-            batch.min(fallback),
-            confidence_policy::is_low(confidence, low),
-        )
-    }
-
-    #[cfg(feature = "experimental-confidence-predictor")]
-    #[inline(never)]
-    pub fn update_transfer_feedback_noninline(
-        &self,
-        init_batch: usize,
-        available: usize,
-        requested: usize,
-        obtained: usize,
-        was_low: bool,
-        max: usize,
-    ) {
-        self.update_transfer_feedback(init_batch, available, requested, obtained, was_low, max);
+        let is_low = confidence_policy::is_low(confidence, low);
+        let candidate = batch.min(fallback);
+        (confidence_policy::request(candidate, is_low), is_low)
     }
 
     #[cfg(feature = "experimental-confidence-predictor")]
@@ -126,7 +111,7 @@ impl AdaptiveBatching {
         was_low: bool,
         max: usize,
     ) {
-        if unlikely(available > isize::MAX as usize || requested == 0) {
+        if unlikely(available > isize::MAX as usize || requested == 0 || obtained == 0) {
             return;
         }
 
@@ -154,6 +139,15 @@ impl AdaptiveBatching {
 #[cfg(feature = "experimental-confidence-predictor")]
 mod confidence_policy {
     #[inline(always)]
+    pub(super) fn request(candidate: usize, is_low: bool) -> usize {
+        if is_low {
+            (candidate - candidate.div_ceil(3)).max(1).min(candidate)
+        } else {
+            candidate
+        }
+    }
+
+    #[inline(always)]
     pub(super) fn pack(confidence: u8, low: u8) -> u8 {
         confidence | (low << 4)
     }
@@ -180,21 +174,25 @@ mod confidence_policy {
         max: usize,
     ) -> (usize, u8, u8) {
         let max = max.max(1).min(usize::MAX >> 8);
-        let target = available.clamp(1, max);
         let batch = batch.clamp(1, max);
         let confidence = confidence.min(10);
         let low = low.min(10);
+        if requested == 0 || obtained == 0 {
+            return (batch, confidence, low);
+        }
+        let target = available.max(obtained).clamp(1, max);
         let (confidence, low) = if obtained < requested {
             (confidence.saturating_sub(1), (low + 2).min(10))
         } else if was_low {
-            // A small request succeeding doesn't establish that a normal one would.
             (confidence, low.saturating_sub(1))
         } else {
             ((confidence + 1).min(10), low.saturating_sub(1))
         };
 
-        let next = if is_low(confidence, low) {
-            (target - target.div_ceil(3)).max(1)
+        let next = if obtained < requested {
+            batch.min(obtained)
+        } else if was_low {
+            batch
         } else if confidence >= 8 {
             batch.saturating_add((batch >> 3).max(1)).min(target)
         } else {

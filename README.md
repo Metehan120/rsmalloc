@@ -192,6 +192,7 @@ For lower-level malloc-style operations, `RSMalloc::raw()` exposes `v2::alloc::R
 |---|---|
 | `preload` | Builds the C ABI / `LD_PRELOAD` surface. |
 | `native-allocation-api` | Enables the optional `v2::allocation_api::AllocationAPI` malloc-style Rust interface; disabled by default. |
+| `confidence-predictor` | Opt-in confidence-based transfer batching, with refill limits sized to each CPU cache's per-class capacity. May affect overall allocator performance: throughput, latency, and memory usage are workload-dependent. Disabled by default and not included in `semi-hardened`. |
 | `expose-security-critical-settings` | Exposes the v2 configuration knobs that can weaken magic randomization or foreign-pointer handling. |
 | `extended-header` | Wider per-allocation header metadata. |
 | `page-backend-no-huge-page` | No-huge-page advice for slab arenas — cuts RSS on THP-aggressive systems (e.g. CachyOS), costs TLB pressure. |

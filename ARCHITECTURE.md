@@ -33,7 +33,7 @@ flowchart TD
     TRANSFER -- No reusable batch --> BULK["Lazy bulk initialization"]
     BULK --> PAGE["NUMA-aware page arenas"]
 
-    SIZE -- No --> LARGE{"At most 64 MiB and backend enabled?"}
+    SIZE -- No --> LARGE{"Adjusted total at most 64 MiB and backend enabled?"}
     LARGE -- Yes --> SEGMENTED["Segmented-bitmap backend"]
     LARGE -- No or unavailable --> MMAP["Direct mapping"]
 
@@ -82,7 +82,7 @@ Initialization is intentionally allocator-internal. Metadata is obtained from an
 
 ## Allocation Classification
 
-`utility::match_size_class` maps requests through `2 MiB` to one of 34 slab classes. Requests through 4 KiB use a lookup-oriented fast path; larger slab requests use the remaining class table.
+`utility::match_size_class` maps requests through `2 MiB` to one of 34 slab classes. Requests through 4 KiB use a 16-byte-granularity lookup; requests through 32 KiB use a 4-KiB-granularity lookup. Larger slab requests derive the power-of-two class from the request's bit width.
 
 Every allocation has an internal `Header` immediately before its ordinary payload. The default header is 16-byte aligned and 16 bytes wide; `extended-header` uses a 32-byte variant. The first field and positioning are assembly-sensitive because free blocks reuse `Header::next` as their intrusive list link.
 
@@ -102,7 +102,7 @@ flowchart TD
     SAME --> REMOTE{"Found?"}
     REMOTE -- No and NUMA --> OTHER["Scan other NUMA ranges"]
     OTHER --> RESULT{"Found?"}
-    REMOTE -- Yes --> FEEDBACK["Update transfer predictor from supplying-list inventory"]
+    REMOTE -- Yes --> FEEDBACK["Update transfer predictor from inventory and selected policy"]
     RESULT -- Yes --> FEEDBACK
     LOCALHIT -- Yes --> FEEDBACK
     FEEDBACK --> ONE["Return one; RSEQ-push remainder locally"]
@@ -139,11 +139,14 @@ The 4096-byte alignment separates CPU state, supports NUMA binding of CPU ranges
 
 The RSEQ assembly in `rseq_core/slab_cache/rseq_asm.rs` follows this shape:
 
-1. install the operation's static RSEQ descriptor in libc's `rseq_cs` field;
-2. compare the registered CPU ID with the CPU sampled by the caller;
-3. prepare the list operation;
-4. commit by storing the new shared freelist head;
-5. execute usage accounting after `post_commit_ip`.
+1. sample libc's `cpu_id_start` outside the critical section to select the per-CPU cache;
+2. install the operation's static RSEQ descriptor in libc's `rseq_cs` field;
+3. compare libc's `cpu_id` inside the critical section with the caller's sample;
+4. prepare the list operation;
+5. commit by storing the new shared freelist head;
+6. execute usage accounting after `post_commit_ip`.
+
+The two CPU fields are not interchangeable: `cpu_id_start` selects the cache, while `cpu_id` validates that selection before commit and carries the unavailable/registration-failed sentinel values. The comparison also detects migration between the caller's sample and entry into the protected section.
 
 The shared freelist-head store is the commit point. Linux restarts execution at the abort handler if migration or preemption invalidates the critical section before that point. RSEQ does **not** roll back arbitrary stores, so only publication of the new shared head is treated as transactional; preparatory writes are limited to unpublished/free nodes where repeating them is safe.
 
@@ -153,9 +156,9 @@ The usage update is a locked atomic operation after commit. Moving it before the
 
 ### Cache overflow and abort fallback
 
-A free or returned batch is pushed to the local RSEQ cache while its usage is below `CACHE_HIGH_BLOCKS[class]`. If the high watermark is reached, a single block or batch is sent to that CPU's transfer cache instead.
+A single free is pushed to the local RSEQ cache while its usage is below `CACHE_HIGH_BLOCKS[class]`; otherwise it goes to that CPU's transfer cache. A returned batch is accepted locally only when the sampled usage plus the entire batch fits the high-water limit. If it does not fit, the entire batch goes to the transfer cache rather than being split to fill the remaining room.
 
-Single-block push retries a bounded number of RSEQ aborts before using the transfer cache. A batch push falls back to the transfer cache after an unsuccessful RSEQ attempt because the batch is already available as a linked range.
+Single-block push retries unsuccessful RSEQ attempts, resampling the CPU and checking usage on each iteration; it has no fixed retry limit. Batch push makes up to three attempts before falling back to the transfer cache, and can overflow immediately if the sampled cache lacks room. Pop likewise retries failed RSEQ attempts; a successfully observed empty list returns to the refill path.
 
 ## Transfer Cache
 
@@ -197,7 +200,7 @@ Every successful update advances the generation. The full pointer remains intact
 
 A pop walks at most the requested number of intrusive nodes, then atomically replaces the head with the first unclaimed node. The normal list is checked before the trimmed list. If the selected list empties, its availability hint is cleared and both heads are rechecked to repair the important concurrent-push false-negative race.
 
-Successful pushes add to the selected list's block counter after the head CAS. A successful pop subtracts its actual node count from that same counter with a relaxed `fetch_sub`; the previous counter value becomes `TransferReturn::available`. This samples pre-subtraction inventory without an extra counter load. The head and counter stay paired when falling back from the normal list to the trimmed list. List publication uses the head's acquire/release operations; the counters supply advisory batching feedback, not ownership of nodes.
+Successful pushes add to the selected list's block counter after the head CAS. A successful pop subtracts its actual node count from that same counter with `AtomicOrdering::TransferFetchOp` (`Relaxed` on the supported x86-64 target); the previous counter value becomes `TransferReturn::available`. This samples pre-subtraction inventory without an extra counter load. The head and counter stay paired when falling back from the normal list to the trimmed list. List publication uses the head's acquire/release operations; the counters supply advisory batching feedback, not ownership of nodes.
 
 ### Spatial adaptation: transfer hints
 
@@ -229,16 +232,17 @@ The trimmer samples and subtracts only `normal_blocks` when it successfully deta
 
 Each `MainCache` has separate predictors for transfer reuse and bulk initialization. Predictors are indexed by CPU and size class because they model the cache being accessed, not the identity of the calling thread.
 
-`AdaptiveBatching` packs two values into one `AtomicUsize`:
+`AdaptiveBatching` stores its state in one `AtomicUsize`. The high bits hold a batch candidate; the low byte's interpretation depends on the policy:
 
-```text
-high bits: predicted batch
-low byte:  consecutive low-observation count
-```
+| Predictor | Low byte |
+| --- | --- |
+| Default transfer policy | Zero; no streak tracking. |
+| Opt-in confidence transfer policy | Two 4-bit scores: normal confidence and back-off evidence. |
+| Bulk-fill policy | Consecutive low-observation count. |
 
-Zeroed mapped storage means “use the configured initial batch.” Selection is a relaxed load. Feedback uses a single relaxed `compare_exchange_weak`; a failed update is dropped because prediction is advisory and retrying would add contention without affecting correctness.
+Zeroed mapped storage means “use the configured initial batch.” Selection is a relaxed load. Feedback uses a single relaxed `compare_exchange_weak`; a failed update is dropped because prediction is advisory and retrying would add contention without affecting correctness. Neither transfer policy learns from empty transfer outcomes.
 
-### Inventory-aware transfer batching
+### Default inventory-aware transfer batching
 
 A successful transfer feeds `TransferReturn::available` to the requesting CPU's predictor, using the supplying list's inventory even for cross-CPU or remote-NUMA steals. The target is one quarter of that sample, clamped to `1..=ITERATIONS[class]`. The predictor moves toward it at the same rate in both directions:
 
@@ -251,6 +255,36 @@ else if target < batch:
 ```
 
 Growth and shrinkage each close one quarter of the gap, with a minimum step of one block, smoothing inventory changes without immediately jumping to the target. The low-observation byte is reset to zero for transfer updates. Samples above `isize::MAX` are ignored. A transfer miss leaves this predictor unchanged and proceeds to bulk fill; a full transfer no longer supplies a synthetic growth signal. The target guides future requests, while the actual linked list determines how many nodes a pop can return.
+
+### Opt-in confidence-based transfer batching
+
+The `confidence-predictor` Cargo feature replaces only the transfer policy. It is disabled by default and is not included in `semi-hardened`; bulk-fill and lifetime predictors are unchanged. No extra predictor storage, locks, or allocations are introduced.
+
+The high bits store a **normal candidate**, not the last reduced request. The low byte packs normal confidence in its low nibble and back-off evidence in its high nibble. Both scores saturate in `0..=10`; zero-initialized state starts with confidence 5 and evidence 0.
+
+Request selection captures the mode before performing the transfer:
+
+```text
+candidate = min(normal candidate, PREDICTOR_BATCHING[class])
+is_low = evidence != 0 && floor(confidence / 2) <= evidence
+requested = candidate                            if not is_low
+requested = max(floor(2 * candidate / 3), 1)      if is_low and candidate > 0
+```
+
+A successful, nonempty transfer feeds the selected mode, requested count, obtained count, and supplying list's pre-subtraction inventory to the requesting CPU's predictor. The scores change as follows:
+
+| Outcome | Normal confidence | Back-off evidence |
+| --- | --- | --- |
+| Full normal request | +1 | −1 |
+| Full low-confidence request | Unchanged | −1 |
+| Nonempty short return | −1 | +2 |
+| Empty outcome | Unchanged | Unchanged |
+
+The candidate is clamped to the class limit. A short return reduces it to at most the obtained count. A full low-confidence return preserves it: satisfying a deliberately smaller request does not reveal whether the normal candidate would have succeeded, so storing that reduced request would compound shrinkage. Full normal requests grow the candidate by `max(candidate / 8, 1)` when updated confidence is at least 8; otherwise they keep it, subject to the inventory bound. For full normal feedback, the resulting candidate is bounded by `max(available, obtained)` and the class limit. Inventory samples above `isize::MAX` are ignored, as are zero requests and zero returns.
+
+Confidence transfers use a separate limit, `PREDICTOR_BATCHING[class] = CACHE_HIGH_BLOCKS[class] + 1`. One block is returned immediately to the caller, so the remainder can fill an **empty** CPU cache to its high-water mark. Default transfers and bulk initialization still use `ITERATIONS[class]`. This is a static capacity limit, not a reservation of local room: migration or concurrent cache activity can still send the remainder back to transfer through the normal whole-batch overflow path.
+
+Inventory and confidence are advisory. They do not guarantee that the requested blocks exist or reserve them; the transfer list determines the actual result. The policy may affect overall throughput, latency, and memory usage depending on the workload. Its additional per-refill decision cost does not translate one-to-one into allocation overhead, because it also changes batch sizes and refill frequency.
 
 ### Demand-based bulk batching
 
@@ -319,7 +353,7 @@ The fast path loads the current arena and reserves a page-aligned range with a C
 
 Arena removal means removal from future bump searches; ownership of previously issued ranges remains represented by the radix and subsystem metadata.
 
-Requests are page-aligned and NUMA-preferred. Very large or unsuitable reservations may bypass arenas and use a direct mapping. The default minimum arena size is 256 MiB, but virtual reservation size should not be confused with resident memory: slab headers and payload pages are touched lazily.
+Requests are page-aligned and NUMA-preferred. `PageAllocator::alloc` always reserves through arenas; a newly mapped arena has at least `max(requested, ARENA_SIZE)` data bytes. Some callers choose a direct mapping instead of invoking the page allocator when a reservation is unsuitable for their arena policy. The default arena data size is 256 MiB, while the configurable minimum is 256 KiB. Virtual reservation size should not be confused with resident memory: slab headers and payload pages are touched lazily.
 
 `try_grow_inplace` can extend a page-backed range only when it is still the most recent bump allocation in its arena and sufficient tail space remains.
 
@@ -329,7 +363,7 @@ Requests outside slab classes enter `big_malloc`.
 
 ### Segmented-bitmap backend
 
-When enabled, requests no larger than 64 MiB first try `SEGMENTED_BITMAP_BACKEND`. Requests are rounded to one of five orders:
+When enabled, `big_malloc` first tries `SEGMENTED_BITMAP_BACKEND` if the adjusted total size is no larger than 64 MiB. Eligibility and order selection use the payload plus `Header::SIZE`, after page/THP adjustment, not the payload size alone. A 64-MiB payload therefore exceeds the backend's total-size limit and uses a direct mapping; payloads at smaller order boundaries can also require the next order. Eligible totals are rounded to one of five orders:
 
 | Order | Block size |
 | --- | ---: |
@@ -376,7 +410,9 @@ The radix answers the coarse question “can this address belong to RSMalloc?”
 flowchart TD
     PTR["free(ptr)"] --> NULL{"Null?"}
     NULL -- Yes --> DONE[Return]
-    NULL -- No --> FIRST{"validate-foreign-first enabled?"}
+    NULL -- No --> RANGE{"Address below 2^56?"}
+    RANGE -- No --> INVALID["Abort: invalid pointer"]
+    RANGE -- Yes --> FIRST{"validate-foreign-first enabled?"}
     FIRST -- Yes --> OWN{"RADIX owns address?"}
     OWN -- No --> FOREIGN["Preload fallback or configured foreign-pointer policy"]
     OWN -- Yes --> ALIGN["Recover original aligned pointer if tagged"]
@@ -395,7 +431,9 @@ flowchart TD
     CHECK -- No --> FOREIGN
 ```
 
-By default, free uses metadata-first classification: after the null check it reads the alignment tag and header magic, and successful small or large frees skip the upfront ownership-radix lookup. Non-null inputs are assumed to be live allocations returned by RSMalloc. If neither live magic matches, the original address is checked against the radix before preload fallback, the configured Rust foreign-pointer policy, or double-free/corruption handling.
+Every non-null free first checks that the input address is below `2^56`; out-of-range inputs abort before tag/header reads or foreign-pointer fallback, independently of feature settings. This range check does not prove mapping, ownership, or allocation boundaries.
+
+By default, free then uses metadata-first classification: it reads the alignment tag and header magic, and successful small or large frees skip the upfront ownership-radix lookup. Non-null inputs are assumed to be live allocations returned by RSMalloc. If neither live magic matches, the original address is checked against the radix before preload fallback, the configured Rust foreign-pointer policy, or double-free/corruption handling.
 
 The opt-in `validate-foreign-first` Cargo feature moves that ownership check ahead of the tag and header reads. Addresses rejected by the radix reach preload fallback or the configured Rust policy without reading presumed RSMalloc metadata. Without the feature, foreign-pointer handling is best-effort: preceding memory may be unreadable, or unrelated bytes may match allocator tags/magic before the late check is reached. Magic is not proof of ownership. The radix is coarse, so enabling the feature still does not make arbitrary interior or invalid pointers valid deallocation inputs.
 
@@ -439,7 +477,7 @@ Header magic distinguishes live slab allocations, freed slab blocks, and large a
 
 ## Trimming, Lifetime Adaptation, and Relief
 
-The background thread advances `CURRENT_STAMP` in 100 ms units. It keeps separate last-run stamps for slab and segmented-bitmap trimming: the slab pass is scheduled after more than `max(AVERAGE_BLOCK_TIMES, 30)` stamps, while the segmented-bitmap pass uses its own `SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES` interval. Both are best-effort and subject to their respective cache thresholds and the global trim lock.
+The background thread advances `CURRENT_STAMP` in 100 ms units. It keeps separate last-run stamps for slab and segmented-bitmap trimming: the slab pass is scheduled after more than `max(AVERAGE_BLOCK_TIMES, 30)` stamps, while the segmented-bitmap pass uses its own `SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES` interval. Both are best-effort and subject to the global trim lock. Their low-cache gate is shared: the age-based scans skip only when both slab and segmented-bitmap cached-VA totals are below their configured thresholds. Reaching either threshold permits both subsystems past that gate, while their scheduling intervals remain separate.
 
 ### Slab trimming
 
@@ -466,7 +504,7 @@ The v2 `RSMallocCoreAPI::trim` path scans slab caches first and then the segment
 
 ### Pressure relief
 
-Small and segmented-bitmap cached-VA thresholds avoid scans when little memory is reclaimable. A process-memory pressure policy can temporarily disable segmented-bitmap allocation, force cached large blocks to be advised away, and re-enable the backend only after pressure remains below a lower threshold.
+Small and segmented-bitmap cached-VA thresholds avoid scans when little memory is reclaimable. A system-wide RAM-and-swap pressure policy can temporarily disable segmented-bitmap allocation, force cached large blocks to be advised away, and re-enable the backend only after pressure remains below a lower threshold.
 
 Cached virtual address space is not equivalent to resident memory. Page arenas and segmented regions may remain reserved while their pages are untouched or reclaimed.
 
@@ -517,6 +555,7 @@ Costs include:
 - 128-bit atomic transfer heads under cross-CPU overflow traffic;
 - 128-bit atomic pending-queue heads when per-CPU refill publication collides or local state is empty;
 - dependent linked-list loads during pop and batch extraction;
+- additional refill-policy work with `confidence-predictor`, whose batching changes can improve or regress overall performance depending on the workload;
 - retained virtual arenas/regions even when pages have been reclaimed;
 - architecture and platform dependence on Linux RSEQ and x86-64 assembly.
 
@@ -537,7 +576,7 @@ When changing the allocator, preserve these boundaries:
 
 1. Never place a non-idempotent shared store before an RSEQ commit and assume abort will undo it.
 2. Never treat a transfer hint or predictor value as proof that a block exists.
-3. Never dereference recovered aligned-allocation metadata before ownership validation.
+3. Preserve ownership-before-metadata ordering when `validate-foreign-first` is enabled, including validation of recovered aligned bases before reading their headers. The default metadata-first path instead requires valid allocator-owned inputs and alignment metadata.
 4. Never weaken transfer or pending-queue ABA protection by packing tags into assumed-unused pointer bits.
 5. Never publish page, region, radix, or metadata state before initialization required by its acquire readers is complete.
 6. Keep expensive or contended recovery paths out of the ordinary local allocation/free instruction path unless measurement justifies the change.
@@ -557,5 +596,7 @@ Debug builds can report:
 - segmented region state;
 - radix ownership density;
 - page-arena counts and mapping requests.
+
+`predictor-debug` logs requested and returned refill counts and supplying transfer inventory. With `confidence-predictor` also enabled, transfer logs include `is_low`, recording the request mode captured before feedback rather than the predictor's mode after the update. The bulk-refill log label `mmap` denotes the bulk path, not necessarily an actual mapping syscall.
 
 These counters describe event frequency, not performance in isolation. Instrumentation can materially alter scheduling, contention windows, and allocation throughput. Performance conclusions require optimized A/B runs, while debug reports are best used to identify which architectural path a workload exercises.

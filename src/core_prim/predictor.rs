@@ -50,7 +50,7 @@ impl AdaptiveBatching {
         }
     }
 
-    #[cfg(not(feature = "experimental-confidence-predictor"))]
+    #[cfg(not(feature = "confidence-predictor"))]
     #[inline(always)]
     pub fn update_transfer(&self, init_batch: usize, available: usize, max: usize) {
         if unlikely(available > isize::MAX as usize) {
@@ -78,7 +78,7 @@ impl AdaptiveBatching {
         }
     }
 
-    #[cfg(feature = "experimental-confidence-predictor")]
+    #[cfg(feature = "confidence-predictor")]
     #[inline(always)]
     fn decode_transfer(state: usize, init_batch: usize) -> (usize, u8, u8) {
         if unlikely(state == 0) {
@@ -90,7 +90,7 @@ impl AdaptiveBatching {
         }
     }
 
-    #[cfg(feature = "experimental-confidence-predictor")]
+    #[cfg(feature = "confidence-predictor")]
     #[inline(always)]
     pub fn transfer_batch(&self, init_batch: usize, fallback: usize) -> (usize, bool) {
         let state = self.state.load(Ordering::Relaxed);
@@ -100,7 +100,7 @@ impl AdaptiveBatching {
         (confidence_policy::request(candidate, is_low), is_low)
     }
 
-    #[cfg(feature = "experimental-confidence-predictor")]
+    #[cfg(feature = "confidence-predictor")]
     #[inline(always)]
     pub fn update_transfer_feedback(
         &self,
@@ -136,7 +136,7 @@ impl AdaptiveBatching {
     }
 }
 
-#[cfg(feature = "experimental-confidence-predictor")]
+#[cfg(feature = "confidence-predictor")]
 mod confidence_policy {
     #[inline(always)]
     pub(super) fn request(candidate: usize, is_low: bool) -> usize {

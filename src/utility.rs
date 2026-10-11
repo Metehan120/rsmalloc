@@ -143,7 +143,7 @@ pub const CACHE_HIGH_BLOCKS: [usize; NUM_SIZE_CLASSES] = {
 
 // A transfer refill returns one block immediately; the remainder can fill an
 // empty CPU cache without exceeding its per-class high-water mark.
-#[cfg(feature = "experimental-confidence-predictor")]
+#[cfg(feature = "confidence-predictor")]
 pub const PREDICTOR_BATCHING: [usize; NUM_SIZE_CLASSES] = {
     let mut arr = [1; NUM_SIZE_CLASSES];
     let mut i = 0;
@@ -209,7 +209,7 @@ mod tests {
             .position(|&class_size| size <= class_size)
     }
 
-    #[cfg(feature = "experimental-confidence-predictor")]
+    #[cfg(feature = "confidence-predictor")]
     #[test]
     fn predictor_batching_fills_cache_after_returning_one_block() {
         use super::{CACHE_HIGH_BLOCKS, ITERATIONS, PREDICTOR_BATCHING};

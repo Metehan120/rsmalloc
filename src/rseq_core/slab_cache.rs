@@ -63,7 +63,8 @@ pub struct TransferCache {
 }
 
 // NOTE: Use 4096-byte alignment to avoid false sharing between cache lines and NUMA node balancing.
-#[assert_sizes(4096)]
+#[cfg_attr(feature = "predictive-demand", assert_sizes(8192))]
+#[cfg_attr(not(feature = "predictive-demand"), assert_sizes(4096))]
 #[repr(C, align(4096))]
 pub struct MainCache {
     cache: [RseqCache; NUM_SIZE_CLASSES],
@@ -477,6 +478,22 @@ impl SlabCache {
         let inner = self.get_inner();
         let list = &inner.cache[cpu_id].mail[class];
         list
+    }
+
+    #[cfg(feature = "predictive-demand")]
+    #[inline(never)]
+    pub unsafe fn profile_refill_demand(&self, cpu_id: usize, refill_class: usize) {
+        let cpu = &self.get_inner().cache[cpu_id];
+        let cached = cpu.cache[refill_class].usage.load(AtomicOrdering::Relaxed);
+        #[cfg(feature = "confidence-predictor")]
+        let max = crate::utility::PREDICTOR_BATCHING[refill_class];
+        #[cfg(not(feature = "confidence-predictor"))]
+        let max = crate::utility::ITERATIONS[refill_class];
+        cpu.transfer_batching[refill_class].update_demand(
+            cached,
+            crate::core_prim::predictor::PREDICTOR_INIT_BATCH,
+            max,
+        );
     }
 
     #[inline(always)]

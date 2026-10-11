@@ -181,10 +181,6 @@ pub unsafe fn refill(class: usize, cpu_id: usize, fill_demand: usize) -> UnsafeP
     let bulk_batch = bulk_refill!(class, cpu_id);
 
     if let Ok((start, tail, count)) = bulk_fill(class, cpu_id, bulk_batch) {
-        #[cfg(feature = "predictor-debug")]
-        eprintln!(
-            "refill (mmap):\n class: {class}, \n cpu_id: {cpu_id}, \n expected_size: {bulk_batch}, \n observed_size: {count}"
-        );
         let observed = if count == bulk_batch && bulk_batch < ITERATIONS[class] {
             bulk_batch.saturating_add((bulk_batch / 4).max(1))
         } else {
@@ -230,31 +226,39 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
     }
 
     let cpu_id = get_rseq().cpu_id_start as usize;
+    #[cfg(feature = "predictive-demand")]
+    SLAB_CACHE.profile_refill_demand(cpu_id, class);
+
     #[cfg(not(feature = "confidence-predictor"))]
     let cache_batch = refill!(class, cpu_id);
+
     #[cfg(feature = "confidence-predictor")]
     let (cache_batch, low_request) = SLAB_CACHE
         .transfer_predictor(cpu_id, class)
         .transfer_batch(PREDICTOR_INIT_BATCH, PREDICTOR_BATCHING[class]);
 
+    #[cfg(all(feature = "predictor-debug", feature = "predictive-demand"))]
+    let expected_demand = SLAB_CACHE
+        .transfer_predictor(cpu_id, class)
+        .expected_demand(PREDICTOR_INIT_BATCH);
+
     let transfer_result = SLAB_CACHE.try_pop(class, cache_batch, cpu_id);
     if let Some(transfer_cache) = transfer_result {
-        #[cfg(all(
-            feature = "predictor-debug",
-            not(feature = "confidence-predictor")
-        ))]
+        #[cfg(all(feature = "predictor-debug", not(feature = "confidence-predictor")))]
         eprintln!(
             "refill (transfer):\n class: {class}, \n caller cpu_id: {cpu_id}, \n returned cpu_id: {}, \n expected_size: {cache_batch}, \n observed_size: {}, \n available_total: {}",
             transfer_cache.cpu_id, transfer_cache.total, transfer_cache.available
         );
-        #[cfg(all(
-            feature = "predictor-debug",
-            feature = "confidence-predictor"
-        ))]
+
+        #[cfg(all(feature = "predictor-debug", feature = "confidence-predictor"))]
         eprintln!(
             "refill (transfer):\n class: {class}, \n caller cpu_id: {cpu_id}, \n returned cpu_id: {}, \n expected_size: {cache_batch}, \n observed_size: {}, \n available_total: {}, \n is_low: {low_request}",
             transfer_cache.cpu_id, transfer_cache.total, transfer_cache.available
         );
+
+        #[cfg(all(feature = "predictor-debug", feature = "predictive-demand"))]
+        eprintln!(" expected_demand: {expected_demand}");
+
         #[cfg(not(feature = "confidence-predictor"))]
         SLAB_CACHE
             .transfer_predictor(cpu_id, class)

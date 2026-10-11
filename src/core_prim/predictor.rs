@@ -1,4 +1,6 @@
 use crate::utility::{NUM_SIZE_CLASSES, unlikely};
+#[cfg(feature = "predictive-demand")]
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub const DEFAULT_BATCH: usize = 128;
@@ -7,6 +9,10 @@ pub static mut BULK_FILL_PREDICTOR_INIT_BATCH: usize = 384;
 
 pub struct AdaptiveBatching {
     state: AtomicUsize,
+    #[cfg(feature = "predictive-demand")]
+    demand: AtomicUsize,
+    #[cfg(feature = "predictive-demand")]
+    unused: AtomicU32,
 }
 
 impl AdaptiveBatching {
@@ -53,14 +59,12 @@ impl AdaptiveBatching {
     #[cfg(not(feature = "confidence-predictor"))]
     #[inline(always)]
     pub fn update_transfer(&self, init_batch: usize, available: usize, max: usize) {
-        if unlikely(available > isize::MAX as usize) {
-            return;
-        }
-
         let old = self.state.load(Ordering::Relaxed);
         let (batch, _) = Self::decode(old, init_batch);
-        let max = max.max(1);
         let batch = batch.clamp(1, max);
+        #[cfg(feature = "predictive-demand")]
+        let target = (((available >> 2) + self.expected_demand(init_batch)) >> 1).clamp(1, max);
+        #[cfg(not(feature = "predictive-demand"))]
         let target = (available >> 2).clamp(1, max);
         let next = if target > batch {
             batch + ((target - batch) >> 2).max(1)
@@ -76,6 +80,35 @@ impl AdaptiveBatching {
                 self.state
                     .compare_exchange_weak(old, new, Ordering::Relaxed, Ordering::Relaxed);
         }
+    }
+
+    #[cfg(feature = "predictive-demand")]
+    #[inline(always)]
+    pub fn expected_demand(&self, init: usize) -> usize {
+        let demand = self.demand.load(Ordering::Relaxed);
+        if unlikely(demand == 0) { init } else { demand }
+    }
+
+    #[cfg(feature = "predictive-demand")]
+    #[inline(always)]
+    pub fn update_demand(&self, cached: usize, init: usize, max: usize) {
+        let old = self.demand.load(Ordering::Relaxed);
+        let demand = if unlikely(old == 0) {
+            init.clamp(1, max)
+        } else {
+            old
+        };
+        let unused = self.unused.load(Ordering::Relaxed) as usize;
+        let next = if cached < unused {
+            (demand * 2).min(max)
+        } else {
+            (demand / 2).max(1)
+        };
+        if next != old {
+            self.demand.store(next, Ordering::Relaxed);
+        }
+        self.unused
+            .store(demand.saturating_sub(cached) as u32, Ordering::Relaxed);
     }
 
     #[cfg(feature = "confidence-predictor")]
@@ -111,14 +144,19 @@ impl AdaptiveBatching {
         was_low: bool,
         max: usize,
     ) {
-        if unlikely(available > isize::MAX as usize || requested == 0 || obtained == 0) {
-            return;
-        }
-
         let old = self.state.load(Ordering::Relaxed);
         let (batch, confidence, low) = Self::decode_transfer(old, init_batch);
         let (next, confidence, low) = confidence_policy::next(
-            batch, confidence, low, available, requested, obtained, was_low, max,
+            batch,
+            confidence,
+            low,
+            available,
+            requested,
+            obtained,
+            was_low,
+            max,
+            #[cfg(feature = "predictive-demand")]
+            self.expected_demand(init_batch),
         );
         let new = Self::encode(next, confidence_policy::pack(confidence, low));
         if new != old {
@@ -154,7 +192,8 @@ mod confidence_policy {
 
     #[inline(always)]
     pub(super) fn unpack(stats: u8) -> (u8, u8) {
-        ((stats & 0x0f).min(10), (stats >> 4).min(10))
+        // Initialization and capped score transitions preserve 0..=10.
+        (stats & 0x0f, stats >> 4)
     }
 
     #[inline(always)]
@@ -172,15 +211,11 @@ mod confidence_policy {
         obtained: usize,
         was_low: bool,
         max: usize,
+        #[cfg(feature = "predictive-demand")] expected_demand: usize,
     ) -> (usize, u8, u8) {
-        let max = max.max(1).min(usize::MAX >> 8);
         let batch = batch.clamp(1, max);
-        let confidence = confidence.min(10);
-        let low = low.min(10);
-        if requested == 0 || obtained == 0 {
-            return (batch, confidence, low);
-        }
-        let target = available.max(obtained).clamp(1, max);
+        let supply = available.max(obtained).min(max);
+
         let (confidence, low) = if obtained < requested {
             (confidence.saturating_sub(1), (low + 2).min(10))
         } else if was_low {
@@ -193,10 +228,25 @@ mod confidence_policy {
             batch.min(obtained)
         } else if was_low {
             batch
-        } else if confidence >= 8 {
-            batch.saturating_add((batch >> 3).max(1)).min(target)
         } else {
-            batch.min(target)
+            #[cfg(feature = "predictive-demand")]
+            if expected_demand < batch {
+                return (
+                    (batch - ((batch - expected_demand) >> 3).max(1)).min(supply),
+                    confidence,
+                    low,
+                );
+            }
+            if confidence >= 8 {
+                #[cfg(feature = "predictive-demand")]
+                let growth = (expected_demand >> 3).max(1);
+                #[cfg(not(feature = "predictive-demand"))]
+                let growth = (batch >> 3).max(1);
+                // Class limits bound the candidate and the growth increment.
+                (batch + growth).min(supply)
+            } else {
+                batch.min(supply)
+            }
         };
         (next, confidence, low)
     }

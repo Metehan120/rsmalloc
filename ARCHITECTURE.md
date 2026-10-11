@@ -232,7 +232,7 @@ The trimmer samples and subtracts only `normal_blocks` when it successfully deta
 
 Each `MainCache` has separate predictors for transfer reuse and bulk initialization. Predictors are indexed by CPU and size class because they model the cache being accessed, not the identity of the calling thread.
 
-`AdaptiveBatching` stores its state in one `AtomicUsize`. The high bits hold a batch candidate; the low byte's interpretation depends on the policy:
+`AdaptiveBatching` stores policy state in one `AtomicUsize`. The opt-in `predictive-demand` feature adds a separate expected-demand `AtomicUsize` and previous-unused-block `AtomicU32`; bulk-fill predictors leave those fields unused. `MainCache` is 4096 bytes without the feature and 8192 bytes with it, retaining 4096-byte alignment. In the policy state, the high bits hold a batch candidate; the low byte's interpretation depends on the policy:
 
 | Predictor | Low byte |
 | --- | --- |
@@ -244,10 +244,13 @@ Zeroed mapped storage means “use the configured initial batch.” Selection is
 
 ### Default inventory-aware transfer batching
 
-A successful transfer feeds `TransferReturn::available` to the requesting CPU's predictor, using the supplying list's inventory even for cross-CPU or remote-NUMA steals. The target is one quarter of that sample, clamped to `1..=ITERATIONS[class]`. The predictor moves toward it at the same rate in both directions:
+With `predictive-demand`, every refill samples only the caller CPU's RSEQ cache occupancy for the refilling size class. Occupancy below the previous unused-block sample doubles expected demand up to the class transfer limit; otherwise it halves demand down to one. The next unused-block sample is `demand.saturating_sub(cached)`, using demand before the adjustment. This is a raw sample, not an EMA. No other classes are scanned. Only refill code performs this bookkeeping: allocation/free cache hits and overflow paths are unchanged. These relaxed occupancy samples are heuristic feedback, not exact allocation rates or reservations.
+
+A successful transfer feeds `TransferReturn::available` to the requesting CPU's predictor, using the supplying list's inventory even for cross-CPU or remote-NUMA steals. Without `predictive-demand`, the original policy targets one quarter of that inventory. With the feature, it averages that value with expected demand. Both use the existing quarter-gap adjustment; demand influences the target rather than acting as a hard cap:
 
 ```text
-target = clamp(available / 4, 1, class maximum)
+target = clamp(available / 4, 1, class maximum)                         without predictive-demand
+target = clamp((available / 4 + expected demand) / 2, 1, class maximum) with predictive-demand
 if target > batch:
     batch += max((target - batch) / 4, 1)
 else if target < batch:
@@ -258,7 +261,7 @@ Growth and shrinkage each close one quarter of the gap, with a minimum step of o
 
 ### Opt-in confidence-based transfer batching
 
-The `confidence-predictor` Cargo feature replaces only the transfer policy. It is disabled by default and is not included in `semi-hardened`; bulk-fill and lifetime predictors are unchanged. No extra predictor storage, locks, or allocations are introduced.
+The `confidence-predictor` Cargo feature replaces only the transfer policy. It is disabled by default and is not included in `semi-hardened`; bulk-fill and lifetime predictors are unchanged. Both transfer policies can independently enable `predictive-demand`; it is disabled by default and introduces no new locks or separate allocations.
 
 The high bits store a **normal candidate**, not the last reduced request. The low byte packs normal confidence in its low nibble and back-off evidence in its high nibble. Both scores saturate in `0..=10`; zero-initialized state starts with confidence 5 and evidence 0.
 
@@ -280,7 +283,7 @@ A successful, nonempty transfer feeds the selected mode, requested count, obtain
 | Nonempty short return | −1 | +2 |
 | Empty outcome | Unchanged | Unchanged |
 
-The candidate is clamped to the class limit. A short return reduces it to at most the obtained count. A full low-confidence return preserves it: satisfying a deliberately smaller request does not reveal whether the normal candidate would have succeeded, so storing that reduced request would compound shrinkage. Full normal requests grow the candidate by `max(candidate / 8, 1)` when updated confidence is at least 8; otherwise they keep it, subject to the inventory bound. For full normal feedback, the resulting candidate is bounded by `max(available, obtained)` and the class limit. Inventory samples above `isize::MAX` are ignored, as are zero requests and zero returns.
+The candidate is clamped to the class limit. A short return reduces it to at most the obtained count. A full low-confidence return preserves it: satisfying a deliberately smaller request does not reveal whether the normal candidate would have succeeded, so storing that reduced request would compound shrinkage. Without `predictive-demand`, full normal feedback grows the candidate by `max(candidate / 8, 1)` at updated confidence of at least 8, and otherwise keeps it, subject to the inventory bound. With `predictive-demand`, expected demand below the candidate closes one eighth of the downward gap; otherwise updated confidence of at least 8 grows it by `max(expected demand / 8, 1)`. For full normal feedback, the resulting candidate is bounded by `max(available, obtained)` and the class limit. Inventory samples above `isize::MAX` are ignored, as are zero requests and zero returns.
 
 Confidence transfers use a separate limit, `PREDICTOR_BATCHING[class] = CACHE_HIGH_BLOCKS[class] + 1`. One block is returned immediately to the caller, so the remainder can fill an **empty** CPU cache to its high-water mark. Default transfers and bulk initialization still use `ITERATIONS[class]`. This is a static capacity limit, not a reservation of local room: migration or concurrent cache activity can still send the remainder back to transfer through the normal whole-batch overflow path.
 

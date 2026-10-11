@@ -32,7 +32,7 @@ validate-foreign-first = []
 # Opt-in confidence-based transfer batching; may affect overall allocator performance.
 confidence-predictor = []
 # Opt-in refill-only demand prediction; may affect overall allocator performance.
-predictive-demand = []
+experimental-predictive-demand = []
 
 # Debug options
 debug-print = ["debug"]

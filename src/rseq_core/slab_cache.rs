@@ -63,8 +63,8 @@ pub struct TransferCache {
 }
 
 // NOTE: Use 4096-byte alignment to avoid false sharing between cache lines and NUMA node balancing.
-#[cfg_attr(feature = "predictive-demand", assert_sizes(8192))]
-#[cfg_attr(not(feature = "predictive-demand"), assert_sizes(4096))]
+#[cfg_attr(feature = "experimental-predictive-demand", assert_sizes(8192))]
+#[cfg_attr(not(feature = "experimental-predictive-demand"), assert_sizes(4096))]
 #[repr(C, align(4096))]
 pub struct MainCache {
     cache: [RseqCache; NUM_SIZE_CLASSES],
@@ -480,7 +480,7 @@ impl SlabCache {
         list
     }
 
-    #[cfg(feature = "predictive-demand")]
+    #[cfg(feature = "experimental-predictive-demand")]
     #[inline(never)]
     pub unsafe fn profile_refill_demand(&self, cpu_id: usize, refill_class: usize) {
         let cpu = &self.get_inner().cache[cpu_id];

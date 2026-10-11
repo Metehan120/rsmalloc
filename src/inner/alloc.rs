@@ -226,7 +226,7 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
     }
 
     let cpu_id = get_rseq().cpu_id_start as usize;
-    #[cfg(feature = "predictive-demand")]
+    #[cfg(feature = "experimental-predictive-demand")]
     SLAB_CACHE.profile_refill_demand(cpu_id, class);
 
     #[cfg(not(feature = "confidence-predictor"))]
@@ -237,7 +237,7 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
         .transfer_predictor(cpu_id, class)
         .transfer_batch(PREDICTOR_INIT_BATCH, PREDICTOR_BATCHING[class]);
 
-    #[cfg(all(feature = "predictor-debug", feature = "predictive-demand"))]
+    #[cfg(all(feature = "predictor-debug", feature = "experimental-predictive-demand"))]
     let expected_demand = SLAB_CACHE
         .transfer_predictor(cpu_id, class)
         .expected_demand(PREDICTOR_INIT_BATCH);
@@ -256,7 +256,7 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
             transfer_cache.cpu_id, transfer_cache.total, transfer_cache.available
         );
 
-        #[cfg(all(feature = "predictor-debug", feature = "predictive-demand"))]
+        #[cfg(all(feature = "predictor-debug", feature = "experimental-predictive-demand"))]
         eprintln!(" expected_demand: {expected_demand}");
 
         #[cfg(not(feature = "confidence-predictor"))]

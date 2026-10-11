@@ -1,5 +1,5 @@
 use crate::utility::{NUM_SIZE_CLASSES, unlikely};
-#[cfg(feature = "predictive-demand")]
+#[cfg(feature = "experimental-predictive-demand")]
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -9,9 +9,9 @@ pub static mut BULK_FILL_PREDICTOR_INIT_BATCH: usize = 384;
 
 pub struct AdaptiveBatching {
     state: AtomicUsize,
-    #[cfg(feature = "predictive-demand")]
+    #[cfg(feature = "experimental-predictive-demand")]
     demand: AtomicUsize,
-    #[cfg(feature = "predictive-demand")]
+    #[cfg(feature = "experimental-predictive-demand")]
     unused: AtomicU32,
 }
 
@@ -62,9 +62,9 @@ impl AdaptiveBatching {
         let old = self.state.load(Ordering::Relaxed);
         let (batch, _) = Self::decode(old, init_batch);
         let batch = batch.clamp(1, max);
-        #[cfg(feature = "predictive-demand")]
+        #[cfg(feature = "experimental-predictive-demand")]
         let target = (((available >> 2) + self.expected_demand(init_batch)) >> 1).clamp(1, max);
-        #[cfg(not(feature = "predictive-demand"))]
+        #[cfg(not(feature = "experimental-predictive-demand"))]
         let target = (available >> 2).clamp(1, max);
         let next = if target > batch {
             batch + ((target - batch) >> 2).max(1)
@@ -82,14 +82,14 @@ impl AdaptiveBatching {
         }
     }
 
-    #[cfg(feature = "predictive-demand")]
+    #[cfg(feature = "experimental-predictive-demand")]
     #[inline(always)]
     pub fn expected_demand(&self, init: usize) -> usize {
         let demand = self.demand.load(Ordering::Relaxed);
         if unlikely(demand == 0) { init } else { demand }
     }
 
-    #[cfg(feature = "predictive-demand")]
+    #[cfg(feature = "experimental-predictive-demand")]
     #[inline(always)]
     pub fn update_demand(&self, cached: usize, init: usize, max: usize) {
         let old = self.demand.load(Ordering::Relaxed);
@@ -155,7 +155,7 @@ impl AdaptiveBatching {
             obtained,
             was_low,
             max,
-            #[cfg(feature = "predictive-demand")]
+            #[cfg(feature = "experimental-predictive-demand")]
             self.expected_demand(init_batch),
         );
         let new = Self::encode(next, confidence_policy::pack(confidence, low));
@@ -211,7 +211,7 @@ mod confidence_policy {
         obtained: usize,
         was_low: bool,
         max: usize,
-        #[cfg(feature = "predictive-demand")] expected_demand: usize,
+        #[cfg(feature = "experimental-predictive-demand")] expected_demand: usize,
     ) -> (usize, u8, u8) {
         let batch = batch.clamp(1, max);
         let supply = available.max(obtained).min(max);
@@ -229,7 +229,7 @@ mod confidence_policy {
         } else if was_low {
             batch
         } else {
-            #[cfg(feature = "predictive-demand")]
+            #[cfg(feature = "experimental-predictive-demand")]
             if expected_demand < batch {
                 return (
                     (batch - ((batch - expected_demand) >> 3).max(1)).min(supply),
@@ -238,9 +238,9 @@ mod confidence_policy {
                 );
             }
             if confidence >= 8 {
-                #[cfg(feature = "predictive-demand")]
+                #[cfg(feature = "experimental-predictive-demand")]
                 let growth = (expected_demand >> 3).max(1);
-                #[cfg(not(feature = "predictive-demand"))]
+                #[cfg(not(feature = "experimental-predictive-demand"))]
                 let growth = (batch >> 3).max(1);
                 // Class limits bound the candidate and the growth increment.
                 (batch + growth).min(supply)

@@ -1,6 +1,6 @@
 # Benchmarks
 
-This directory contains development benchmark snapshots for RSMalloc and several widely used allocators. See [**Detailed results: per-workload tables and time/RSS charts**](benchmarks_detailed.md) for a readable comparison of all 22 workloads. The raw measurements are in [`benchmark_overall.txt`](benchmark_overall.txt).
+This directory contains development benchmark snapshots for RSMalloc and several widely used allocators. See [**Detailed results: per-workload tables and time/RSS charts**](benchmarks_detailed.md) for a readable comparison of all 21 workloads. The raw measurements are in [`benchmark_overall.txt`](benchmark_overall.txt).
 
 A reproducible MariaDB/sysbench memory harness is available under [`mariadb/`](mariadb/README.md).
 
@@ -20,9 +20,9 @@ The current release-candidate snapshot includes:
 - mimalloc `3.5`
 - jemalloc `5.3.1`
 
-The raw file contains 22 alpha-3 results, and aggregate charts use all **22 tests shared by all five allocators**.
+The raw file contains **21 alpha-3 workloads shared by all five allocators**.
 
-All five allocators now use **column-wise medians across ten runs for the same 20 workloads**. RSMalloc uses the previously supplied ten-run results; mimalloc, jemalloc, tcmalloc, and glibc use the newly supplied ten-run results. With an even run count, each median is the average of the fifth and sixth sorted observations; fractional RSS or fault counts and extra timing precision reflect that calculation, not increased measurement precision. `rbstressN` and `z3` were not included in these runs and retain older single-run measurements for every allocator. The 22-test aggregates therefore mix 20 repeated-run medians with two older results. Allocator version labels and environment details below are retained from the existing snapshot; the new measurements do not independently record build flags or configuration.
+All five allocators use **column-wise medians across ten runs for the same 21 workloads**. With an even run count, each median is the average of the fifth and sixth sorted observations; fractional RSS or fault counts and extra timing precision reflect that calculation, not increased measurement precision. `z3` now uses the newly supplied ten-run results. Allocator version labels and environment details below are retained from the existing snapshot; the measurements do not independently record build flags or configuration.
 
 Historical alpha-2 rows remain in the raw file for development context but are not included in the charts.
 
@@ -61,34 +61,33 @@ The tables should therefore be read as a workload profile, not as a universal al
 
 ## Summary
 
-The following values were calculated from the 22-test common set in [`benchmark_overall.txt`](benchmark_overall.txt). Exact ties at the harness's reported precision are excluded from clean winner counts.
+The following values were calculated from the 21-test common set in [`benchmark_overall.txt`](benchmark_overall.txt). Exact ties at the harness's reported precision are excluded from clean winner counts.
 
 ### Per-test winner counts
 
-Five elapsed-time tests tie:
+Four elapsed-time tests tie:
 
 - `cache-scratch1`: all five allocators
 - `cache-scratchN`: glibc, tcmalloc, and jemalloc
 - `mstressN`: tcmalloc and mimalloc
-- `rbstressN`: RSMalloc and tcmalloc
-- `z3`: all five allocators
+- `z3`: RSMalloc, glibc, mimalloc, and jemalloc
 
-The clean elapsed-time wins therefore total 17 rather than 22.
+The clean elapsed-time wins therefore total 17 rather than 21.
 
 ```mermaid
 xychart-beta
-    title "Fastest-time clean wins across 22 common tests"
+    title "Fastest-time clean wins across 21 common tests"
     x-axis [rsmalloc, glibc, tcmalloc, mimalloc, jemalloc]
-    y-axis "wins" 0 --> 22
+    y-axis "wins" 0 --> 21
     bar [4, 2, 3, 8, 0]
 ```
 
 ```mermaid
 xychart-beta
-    title "Lowest-RSS wins across 22 common tests"
+    title "Lowest-RSS wins across 21 common tests"
     x-axis [rsmalloc, glibc, tcmalloc, mimalloc, jemalloc]
-    y-axis "wins" 0 --> 22
-    bar [2, 15, 4, 1, 0]
+    y-axis "wins" 0 --> 21
+    bar [2, 15, 3, 1, 0]
 ```
 
 ### Overall relative score
@@ -100,7 +99,7 @@ xychart-beta
     title "Elapsed-time relative score"
     x-axis [rsmalloc, glibc, tcmalloc, mimalloc, jemalloc]
     y-axis "score x100" 0 --> 180
-    bar [122, 156, 141, 104, 114]
+    bar [123, 159, 144, 104, 115]
 ```
 
 ```mermaid
@@ -108,7 +107,7 @@ xychart-beta
     title "RSS relative score"
     x-axis [rsmalloc, glibc, tcmalloc, mimalloc, jemalloc]
     y-axis "score x100" 0 --> 240
-    bar [156, 117, 162, 189, 233]
+    bar [158, 117, 166, 192, 240]
 ```
 
 ### Stress cases
@@ -147,14 +146,14 @@ xychart-beta
 
 ### Page-reclaim and system-time totals
 
-These totals cover the same 22-test common set and are not included in the relative scores.
+These totals cover the same 21-test common set and are not included in the relative scores.
 
 | Allocator | Minor page-reclaims | System CPU time |
 | --- | ---: | ---: |
-| RSMalloc | 113,996.5 | 4.435 s |
-| glibc | 867,421.5 | 62.780 s |
-| tcmalloc | 460,133 | 44.505 s |
-| mimalloc | 114,258 | 4.085 s |
-| jemalloc | 1,287,155.5 | 6.960 s |
+| RSMalloc | 77,299 | 4.375 s |
+| glibc | 830,906.5 | 62.720 s |
+| tcmalloc | 431,870.5 | 44.455 s |
+| mimalloc | 77,815 | 4.015 s |
+| jemalloc | 1,250,697 | 6.890 s |
 
 Instrumentation, scheduler variation, and outlier stress tests can strongly affect these totals. Use the raw per-test rows when investigating a specific result.

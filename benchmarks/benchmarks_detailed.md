@@ -2,12 +2,12 @@
 
 [Overview and aggregate charts](benchmarks.md) · [Source measurements](benchmark_overall.txt)
 
-A readable comparison of **22 workloads across five allocators**, with every reported metric and separate elapsed-time and memory charts. Historical alpha-2 rows are excluded.
+A readable comparison of **21 workloads across five allocators**, with every reported metric and separate elapsed-time and memory charts. Historical alpha-2 rows are excluded.
 
 ## Measurement notes
 
 - These are development snapshots, **not production performance guarantees**. Test with your own workload and configuration.
-- All five allocators use **column-wise medians of ten runs for the same 20 workloads**. `rbstressN` and `z3` retain older single-run results for every allocator and are explicitly marked below.
+- All five allocators use **column-wise medians of ten runs for the same 21 workloads**. `z3` now uses the newly supplied ten-run results.
 - RSMalloc uses the previously supplied ten-run dataset; the other four allocators use the newly supplied ten-run datasets. Version labels and environment details are retained from the existing snapshot; new build/configuration metadata was not supplied. Repeated-run medians do not by themselves establish statistical significance for small differences.
 - For ten runs, a median averages the fifth and sixth sorted values. Extra decimal places and fractional fault counts come from aggregation, not extra harness precision. Different column medians need not describe one actual run.
 - Elapsed time is wall-clock seconds; user/system values are CPU seconds and can exceed elapsed time in multithreaded workloads. RSS is reported in KiB in the tables and converted to MiB in the charts.
@@ -22,11 +22,11 @@ The relative scores below are the geometric mean of each result divided by the b
 
 | Allocator | Time score | RSS score | Clean time wins | Clean RSS wins |
 | --- | ---: | ---: | ---: | ---: |
-| RSMalloc alpha-3 | 121.56 | 155.92 | 4 | 2 |
-| glibc 2.44 | 156.12 | 116.96 | 2 | 15 |
-| tcmalloc | 140.67 | 162.14 | 3 | 4 |
-| mimalloc 3.5 | 103.56 | 188.67 | 8 | 1 |
-| jemalloc 5.3.1 | 114.20 | 232.96 | 0 | 0 |
+| RSMalloc alpha-3 | 122.70 | 157.74 | 4 | 2 |
+| glibc 2.44 | 158.91 | 117.16 | 2 | 15 |
+| tcmalloc | 143.62 | 165.51 | 3 | 3 |
+| mimalloc 3.5 | 103.64 | 192.08 | 8 | 1 |
+| jemalloc 5.3.1 | 114.82 | 239.57 | 0 | 0 |
 
 ### Workload index
 
@@ -52,8 +52,7 @@ The relative scores below are the geometric mean of each result divided by the b
 | [glibc-simple](#glibc-simple) | 1.55 | 7,384 | tcmalloc | glibc |
 | [glibc-thread](#glibc-thread) | 1.2245 | 10,996 | mimalloc | glibc |
 | [rocksdb](#rocksdb) | 3.205 | 109,856 | rsmalloc | glibc |
-| [rbstressN](#rbstressn) (older run) | 3.06 | 151,956 | rsmalloc, tcmalloc | tcmalloc |
-| [z3](#z3) (older run) | 0.05 | 54,444 | rsmalloc, glibc, tcmalloc, mimalloc, jemalloc | glibc |
+| [z3](#z3) | 0.05 | 56,030 | rsmalloc, glibc, mimalloc, jemalloc | glibc |
 
 ## cfrac
 
@@ -623,54 +622,25 @@ xychart-beta
 
 [Back to workload index](#workload-index)
 
-## rbstressN
-
-**Results for all five allocators are older single runs**, not a median from the latest ten-run snapshot.
-
-| Allocator | Elapsed (s) | RSS (KiB) | User CPU (s) | System CPU (s) | Major faults | Minor faults/reclaims |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| RSMalloc alpha-3 | **3.06** | 151,956 | 2.98 | 0.06 | 0 | 36,584 |
-| glibc 2.44 | 3.29 | 136,876 | 3.2 | 0.06 | 0 | 36,003 |
-| tcmalloc | **3.06** | **121,240** | 2.99 | 0.05 | 0 | 28,527 |
-| mimalloc 3.5 | 3.12 | 156,628 | 3.04 | 0.07 | 0 | 36,446 |
-| jemalloc 5.3.1 | 3.12 | 156,628 | 3.04 | 0.07 | 0 | 36,446 |
-
-```mermaid
-xychart-beta
-    title "rbstressN: elapsed time"
-    x-axis [rsmalloc, glibc, tcmalloc, mimalloc, jemalloc]
-    y-axis "milliseconds" 0 --> 3700
-    bar [3060, 3290, 3060, 3120, 3120]
-```
-
-```mermaid
-xychart-beta
-    title "rbstressN: resident memory"
-    x-axis [rsmalloc, glibc, tcmalloc, mimalloc, jemalloc]
-    y-axis "MiB" 0 --> 170
-    bar [148.395, 133.668, 118.398, 152.957, 152.957]
-```
-
-[Back to workload index](#workload-index)
 
 ## z3
 
-**Results for all five allocators are older single runs**, not a median from the latest ten-run snapshot. All five elapsed times tie at the reported precision.
+Results are column-wise medians across ten runs. Four allocators tie at `0.05 s`; tcmalloc's median is `0.055 s`.
 
 | Allocator | Elapsed (s) | RSS (KiB) | User CPU (s) | System CPU (s) | Major faults | Minor faults/reclaims |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| RSMalloc alpha-3 | **0.05** | 54,444 | 0.04 | 0 | 0 | 663 |
-| glibc 2.44 | **0.05** | **41,480** | 0.04 | 0 | 0 | 4,476 |
-| tcmalloc | **0.05** | 52,248 | 0.04 | 0 | 0 | 5,697 |
-| mimalloc 3.5 | **0.05** | 68,112 | 0.04 | 0 | 0 | 524 |
-| jemalloc 5.3.1 | **0.05** | 56,952 | 0.04 | 0 | 0 | 1,892 |
+| RSMalloc alpha-3 | **0.05** | 56,030 | 0.04 | 0 | 0 | 549.5 |
+| glibc 2.44 | **0.05** | **41,646** | 0.04 | 0 | 0 | 3,964 |
+| tcmalloc | 0.055 | 49,830 | 0.04 | 0 | 0 | 5,961.5 |
+| mimalloc 3.5 | **0.05** | 68,242 | 0.04 | 0 | 0 | 527 |
+| jemalloc 5.3.1 | **0.05** | 57,076 | 0.04 | 0 | 0 | 1,879.5 |
 
 ```mermaid
 xychart-beta
     title "z3: elapsed time"
     x-axis [rsmalloc, glibc, tcmalloc, mimalloc, jemalloc]
-    y-axis "milliseconds" 0 --> 56
-    bar [50, 50, 50, 50, 50]
+    y-axis "milliseconds" 0 --> 62
+    bar [50, 50, 55, 50, 50]
 ```
 
 ```mermaid
@@ -678,7 +648,7 @@ xychart-beta
     title "z3: resident memory"
     x-axis [rsmalloc, glibc, tcmalloc, mimalloc, jemalloc]
     y-axis "MiB" 0 --> 74
-    bar [53.168, 40.508, 51.023, 66.516, 55.617]
+    bar [54.717, 40.67, 48.662, 66.643, 55.738]
 ```
 
 [Back to workload index](#workload-index)

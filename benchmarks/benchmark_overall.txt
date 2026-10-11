@@ -2,8 +2,7 @@
 
 # Unreleased version of rsmalloc, benchmarks are have not yet settled.
 rsmalloc alpha-3:
-# Column-wise medians across the latest 10 runs for the 20 tests below.
-# rbstressN and z3 retain older single-run results; they were not included in these runs.
+# Column-wise medians across the latest 10 runs for all 21 tests below.
 cfrac           sys     3.0100   7372     3.000    0.000  0           256.5
 espresso        sys     2.9600   7414     2.935    0.010  0           254.5
 barnes          sys     1.6750   68198    1.665    0.000  0           684
@@ -31,12 +30,8 @@ cache-scratch1  sys     0.8600   8822     0.860    0.000  0           316
 cache-scratchN  sys     0.1600   8816     1.700    0.000  0           353
 glibc-simple    sys     1.5500   7384     1.540    0.000  0           251.5
 glibc-thread    sys     1.2245   10996    23.800   0.010  0           359.5
-
 rocksdb         sys     3.2050   109856   2.960    0.535  0           948
-
-# old results, will be updated
-rbstressN       sys     3.0600   151956   2.980    0.060  0           36584
-z3              sys     0.0500   54444    0.040    0.000  0           663
+z3              sys     0.0500   56030    0.040    0.000  0           549.5
 
 # Old benchmark results, will be updated before Alpha-3 release
 rsmalloc alpha-2 (THP handled by kernel like most of the allocators, expected higher RSS):
@@ -61,7 +56,7 @@ glibc-thread sys   1.438 12884 23.76 0.03 0 373
 rocksdb     sys   03.29 107456 2.92 0.65 0 851
 
 jemalloc 5.3.1 (CachyOS build):
-# Column-wise medians across 10 runs for 20 workloads; rbstressN and z3 retain older single-run results.
+# Column-wise medians across 10 runs for all 21 workloads.
 cfrac           sys     2.9400   11564    2.930    0.000  0           401
 espresso        sys     2.9900   11540    2.960    0.015  0           404
 # 1.68-1.69
@@ -84,11 +79,10 @@ glibc-simple    sys     1.6750   15226    1.670    0.000  0           434.5
 glibc-thread    sys     1.0700   60344    23.855   0.010  0           498
 # 3.22-3.28
 rocksdb         sys     3.2650   140722   2.925    0.620  0           2958
-rbstressN   sys   03.12 156628 3.04 0.07 0 36446
-z3          sys   00.05 56952 0.04 0.00 0 1892
+z3              sys     0.0500   57076    0.040    0.000  0           1879.5
 
 mimalloc 3.5 (CachyOS build):
-# Column-wise medians across 10 runs for 20 workloads; rbstressN and z3 retain older single-run results.
+# Column-wise medians across 10 runs for all 21 workloads.
 cfrac           sys     2.8350   4916     2.820    0.000  0           220
 espresso        sys     2.9100   10960    2.890    0.010  0           225
 barnes          sys     1.7000   67588    1.690    0.000  0           571
@@ -109,12 +103,10 @@ cache-scratchN  sys     0.1600   6608     1.690    0.000  0           309
 glibc-simple    sys     1.6000   4916     1.590    0.000  0           213
 glibc-thread    sys     0.9965   35294    23.715   0.070  0           383
 rocksdb         sys     3.2400   149660   2.880    0.630  0           917.5
-# Around 3.13
-rbstressN   sys   03.12 156628 3.04 0.07 0 36446
-z3          sys   00.05 68112 0.04 0.00 0 524
+z3              sys     0.0500   68242    0.040    0.000  0           527
 
 tcmalloc latest (CachyOS build):
-# Column-wise medians across 10 runs for 20 workloads; rbstressN and z3 retain older single-run results.
+# Column-wise medians across 10 runs for all 21 workloads.
 cfrac           sys     2.8800   11108    2.870    0.000  0           1752
 espresso        sys     2.8800   11814    2.855    0.020  0           1735
 barnes          sys     1.7000   76146    1.690    0.000  0           2088
@@ -137,11 +129,10 @@ glibc-simple    sys     1.3000   11210    1.290    0.000  0           1626.5
 glibc-thread    sys     1.1000   12726    23.850   0.000  0           2379.5
 # 3.32-3.40
 rocksdb         sys     3.3250   103020   2.975    0.635  0           21644
-rbstressN   sys   03.06 121240 2.99 0.05 0 28527
-z3          sys   00.05 52248 0.04 0.00 0 5697
+z3              sys     0.0550   49830    0.040    0.000  0           5961.5
 
 glibc 2.44:
-# Column-wise medians across 10 runs for 20 workloads; rbstressN and z3 retain older single-run results.
+# Column-wise medians across 10 runs for all 21 workloads.
 cfrac           sys     2.8700   3278     2.860    0.000  0           438
 espresso        sys     3.2100   3336     3.180    0.020  0           582
 barnes          sys     1.6950   62178    1.685    0.000  0           776
@@ -163,5 +154,4 @@ cache-scratchN  sys     0.1500   4332     1.785    0.000  0           267
 glibc-simple    sys     2.2750   2564     2.270    0.000  0           224
 glibc-thread    sys     1.1180   3624     23.890   0.000  0           804.5
 rocksdb         sys     3.3500   93888    2.980    0.655  0           36859
-rbstressN   sys   03.29 136876 3.20 0.06 0 36003
-z3          sys   00.05 41480 0.04 0.00 0 4476
+z3              sys     0.0500   41646    0.040    0.000  0           3964

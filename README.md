@@ -349,7 +349,7 @@ Use these for troubleshooting, **not performance benchmarks**. Features enable t
 
 Start with the [benchmark overview](benchmarks/benchmarks.md), or use the [detailed results](benchmarks/benchmarks_detailed.md) for per-workload tables and elapsed-time/RSS charts. The [raw measurements](benchmarks/benchmark_overall.txt) remain available for inspection.
 
-The current comparison covers 22 workloads and five allocators. Twenty workloads use column-wise medians of ten runs; `rbstressN` and `z3` retain older single-run results. Aggregate charts therefore mix repeated-run medians with two older measurements. Different column medians need not represent one actual run, and small differences do not by themselves establish statistical significance.
+The current comparison covers 21 workloads and five allocators, using column-wise medians of ten runs. Different column medians need not represent one actual run, and small differences do not by themselves establish statistical significance.
 
 A reproducible [MariaDB/sysbench harness](benchmarks/mariadb/README.md) and [rstress results](benchmarks/rstress_results.md) are also available. Kernel, scheduling, compiler flags, THP, NUMA layout, and allocator settings can materially change results. Compare both speed and memory use with your own workload; do not treat one synthetic ranking as a universal allocator ranking.
 

@@ -22,7 +22,7 @@ The current release-candidate snapshot includes:
 
 The raw file contains **21 alpha-3 workloads shared by all five allocators**.
 
-All five allocators use **column-wise medians across ten runs for the same 21 workloads**. With an even run count, each median is the average of the fifth and sixth sorted observations; fractional RSS or fault counts and extra timing precision reflect that calculation, not increased measurement precision. `z3` now uses the newly supplied ten-run results. Allocator version labels and environment details below are retained from the existing snapshot; the measurements do not independently record build flags or configuration.
+All five allocators use **column-wise medians across ten runs for the same 21 workloads**. With an even run count, each median is the average of the fifth and sixth sorted observations; fractional RSS or fault counts and extra timing precision reflect that calculation, not increased measurement precision. RSMalloc's 20 non-`z3` workloads use the latest supplied runs; its `z3` medians are retained from the previous dataset because no new `z3` measurements were supplied. The other allocators are unchanged. Allocator version labels and environment details below are retained from the existing snapshot; the measurements do not independently record build flags or configuration.
 
 Historical alpha-2 rows remain in the raw file for development context but are not included in the charts.
 
@@ -65,21 +65,23 @@ The following values were calculated from the 21-test common set in [`benchmark_
 
 ### Per-test winner counts
 
-Four elapsed-time tests tie:
+Six elapsed-time tests tie:
 
-- `cache-scratch1`: all five allocators
-- `cache-scratchN`: glibc, tcmalloc, and jemalloc
+- `barnes`: RSMalloc and jemalloc
 - `mstressN`: tcmalloc and mimalloc
+- `gs`: RSMalloc, glibc, and mimalloc
+- `cache-scratch1`: all five allocators
+- `cache-scratchN`: RSMalloc, glibc, tcmalloc, and jemalloc
 - `z3`: RSMalloc, glibc, mimalloc, and jemalloc
 
-The clean elapsed-time wins therefore total 17 rather than 21.
+The clean elapsed-time wins therefore total 15 rather than 21.
 
 ```mermaid
 xychart-beta
     title "Fastest-time clean wins across 21 common tests"
     x-axis [rsmalloc, glibc, tcmalloc, mimalloc, jemalloc]
     y-axis "wins" 0 --> 21
-    bar [4, 2, 3, 8, 0]
+    bar [2, 2, 3, 8, 0]
 ```
 
 ```mermaid
@@ -99,7 +101,7 @@ xychart-beta
     title "Elapsed-time relative score"
     x-axis [rsmalloc, glibc, tcmalloc, mimalloc, jemalloc]
     y-axis "score x100" 0 --> 180
-    bar [123, 159, 144, 104, 115]
+    bar [122, 158, 143, 103, 115]
 ```
 
 ```mermaid
@@ -107,7 +109,7 @@ xychart-beta
     title "RSS relative score"
     x-axis [rsmalloc, glibc, tcmalloc, mimalloc, jemalloc]
     y-axis "score x100" 0 --> 240
-    bar [158, 117, 166, 192, 240]
+    bar [160, 117, 165, 192, 239]
 ```
 
 ### Stress cases
@@ -117,7 +119,7 @@ xychart-beta
     title "sh6benchN elapsed time"
     x-axis [rsmalloc, glibc, tcmalloc, mimalloc, jemalloc]
     y-axis "milliseconds" 0 --> 3400
-    bar [310, 3015, 200, 180, 290]
+    bar [300, 3015, 200, 180, 290]
 ```
 
 ```mermaid
@@ -133,7 +135,7 @@ xychart-beta
     title "sh8benchN elapsed time"
     x-axis [rsmalloc, glibc, tcmalloc, mimalloc, jemalloc]
     y-axis "milliseconds" 0 --> 14000
-    bar [1595, 12140, 4125, 440, 850]
+    bar [1575, 12140, 4125, 440, 850]
 ```
 
 ```mermaid
@@ -141,7 +143,7 @@ xychart-beta
     title "sh8benchN RSS"
     x-axis [rsmalloc, glibc, tcmalloc, mimalloc, jemalloc]
     y-axis "MiB" 0 --> 260
-    bar [172, 234, 127, 248, 244]
+    bar [171, 234, 127, 248, 244]
 ```
 
 ### Page-reclaim and system-time totals
@@ -150,7 +152,7 @@ These totals cover the same 21-test common set and are not included in the relat
 
 | Allocator | Minor page-reclaims | System CPU time |
 | --- | ---: | ---: |
-| RSMalloc | 77,299 | 4.375 s |
+| RSMalloc | 77,359.5 | 4.390 s |
 | glibc | 830,906.5 | 62.720 s |
 | tcmalloc | 431,870.5 | 44.455 s |
 | mimalloc | 77,815 | 4.015 s |

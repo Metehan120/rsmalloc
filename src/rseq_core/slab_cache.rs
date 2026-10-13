@@ -326,7 +326,7 @@ impl GenericCache for SlabCache {
             let list = &inner.cache[current_cpu].cache.get_unchecked(class);
             let usage_ptr = &list.usage;
 
-            if (usage_ptr.load(AtomicOrdering::Relaxed) + batch_size) > CACHE_HIGH_BLOCKS[class] {
+            if usage_ptr.load(AtomicOrdering::Relaxed) > CACHE_HIGH_BLOCKS[class] {
                 self.transfer_push_batch(class, header, tail, batch_size, current_cpu, inner);
                 return;
             }

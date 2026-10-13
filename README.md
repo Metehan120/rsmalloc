@@ -4,13 +4,13 @@ An RSEQ-based memory allocator for Rust and C applications on Linux `x86_64`. RS
 
 **Status: `0.3.0-alpha`. Alpha-quality software — not production-ready.** Performance and memory retention are workload-dependent. See [Status & Limitations](#status--limitations) before using it outside development.
 
-[crates.io](https://crates.io/crates/rsmalloc) · [Architecture](ARCHITECTURE.md) · [Release Notes](UPDATES.md) · [Roadmap](ROADMAP.md) · [Todo](TODO.md) · [Benchmarks](benchmarks/benchmarks.md) · [Contributing](CONTRIBUTING.md)
+[crates.io](https://crates.io/crates/rsmalloc) · [User and Performance Guide](book/src/introduction.md) · [Architecture](ARCHITECTURE.md) · [Release Notes](UPDATES.md) · [Roadmap](ROADMAP.md) · [Todo](TODO.md) · [Benchmarks](benchmarks/benchmarks.md) · [Contributing](CONTRIBUTING.md)
+
+The [mdBook guide](book/src/introduction.md) explains the allocation lifecycle, safe integration, tuning, and [where RSMalloc can help or fall behind](book/src/workload-fit.md). Build it locally with `mdbook build book`, or preview it with `mdbook serve book`.
 
 > **Alpha-3 ownership change:** By default, non-null pointers passed to `free` must be live RSMalloc allocations. Foreign-pointer handling is best-effort because metadata is read before ownership is checked. Enable `validate-foreign-first` for ownership checks before those reads; it is also included in `semi-hardened`. Neither mode makes arbitrary or interior pointers safe to free. See [Free ownership assumptions](#free-ownership-assumptions).
 
 **Major milestone:** The default Rust `GlobalAlloc` and C `LD_PRELOAD` configurations build on stable Rust. RSMalloc no longer keeps refill metadata or adaptive batching in allocator-owned thread-local storage: both are maintained per CPU. It still uses libc's RSEQ TLS state. Only the optional `allocator-api` interface requires nightly Rust.
-
-> **Known issue:** Linux kernel `7.0.10` appears to trigger `SIGBUS` in some workloads using RSMalloc. If you encounter unexplained `SIGBUS` crashes, try another kernel version when investigating; the symptom alone does not establish allocator corruption or a kernel bug.
 
 ## Quick Start
 

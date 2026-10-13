@@ -1,6 +1,6 @@
 target
 target-fuzzcov
 gpt-sol-audit.md
-book
+/book/book/
 .claude
 fuzz1

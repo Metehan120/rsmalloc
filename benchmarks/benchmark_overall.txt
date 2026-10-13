@@ -3,7 +3,6 @@
 # Unreleased version of rsmalloc, benchmarks are have not yet settled.
 rsmalloc alpha-3:
 # Column-wise medians across the latest 10 runs for 20 workloads.
-# z3 retains its previous ten-run medians; no new z3 measurements were supplied.
 cfrac           sys     3.0250   7440     3.015    0.000  0           259.5
 espresso        sys     2.9700   9206     2.940    0.010  0           260.5
 barnes          sys     1.6800   68224    1.670    0.000  0           686
@@ -60,7 +59,6 @@ jemalloc 5.3.1 (CachyOS build):
 # Column-wise medians across 10 runs for all 21 workloads.
 cfrac           sys     2.9400   11564    2.930    0.000  0           401
 espresso        sys     2.9900   11540    2.960    0.015  0           404
-# 1.68-1.69
 barnes          sys     1.6800   77208    1.670    0.000  0           539.5
 redis           sys     3.2200   15958    0.120    0.030  0           1177.5
 leanN           sys     6.9600   267652   15.660   0.230  0           15693

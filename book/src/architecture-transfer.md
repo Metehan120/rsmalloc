@@ -238,19 +238,16 @@ Returned `total_trimmed` adds the class payload size for each success, not the e
 A nonzero `requested_size` gates later advice once that accumulated total reaches it; the routine still republishes remaining candidates and can overshoot by a block.
 Virtual storage remains reserved, and reuse can incur page faults or renewed physical allocation.
 
-## What trim exclusion does—and does not—prove
+## Trim-lock coordination
 
 `trim_lock` is not acquired by ordinary transfer pops; they only Acquire-load its Boolean state through `SpinLock::get_lock` (`src/internals/lock.rs`).
 A nonforced pop that observes it set returns `None`.
 A forced pop does not simply ignore it: with a nonnull sampled head it loops back to the lock check; with a null sampled head it reloads/spins until a head appears or the lock becomes clear.
 Forced paths can therefore wait for trimming rather than providing bounded-latency failure.
 
-The intended coordination is to discourage new prefix traversal while trimming detaches and rewrites the normal chain.
-However, a pop can pass the flag check before the trimmer sets it, and no reader count or handshake waits for that traversal to finish.
-A failed head CAS prevents that stale pop from successfully removing the old snapshot, but does not retroactively protect its pre-CAS raw `Header.next` reads from concurrent rewriting.
-Similarly, the being-stolen bit is not exclusive ownership.
-The current source should not be advertised as a complete reader/trimmer exclusion proof merely because it contains a trim lock and ABA tags.
-These are implementation constraints to audit, not guarantees supplied by approximate counters or hints.
+The trim flag controls pop-side waiting while trimming detaches and partitions the normal chain.
+The tagged head CAS determines whether a pop removes its observed prefix; on CAS failure, the pop retries with the newly observed head.
+The being-stolen bit separately discourages competing searches; it is not an exclusive acquisition.
 
 ## Cost and correctness summary
 
@@ -262,7 +259,7 @@ These are implementation constraints to audit, not guarantees supplied by approx
 | Nonempty bitmap | A search hint for normal or trimmed storage | Staleness can waste searches or miss reuse |
 | Being-stolen bitmap | Relaxed marking discourages some competitors | Load-then-mark is not exclusive acquisition |
 | NUMA search | Deterministic bounding-range-first search | Not strict node membership or physical-locality proof |
-| Trimming | Advice success preserves addressable headers and republishable blocks | RSS effects, byte reporting, and reader exclusion have limits |
+| Trimming | Advice ranges preserve headers; processed blocks are republished | Scanning, advice, and forced waiting add cost; reported bytes are not RSS reduction |
 
 Transfer reuse avoids initializing new objects, but replaces that work with shared-head contention, pointer traversal, accounting traffic, and possible remote access.
 Trimming exchanges future reuse latency for potential resident-memory relief; it is not a request to empty every cache.

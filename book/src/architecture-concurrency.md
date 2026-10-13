@@ -7,7 +7,7 @@ RSMalloc combines several synchronization mechanisms. No single phrase such as â
 | Structure | Ownership transition or protection | What does not follow from it |
 | --- | --- | --- |
 | CPU-local slab list | CPU validation and final head-store RSEQ commit | Abort does not undo arbitrary preceding writes; usage is not updated in the same commit. |
-| Transfer list head | Pointer-plus-generation CAS | Generation tagging does not by itself protect pre-CAS raw link traversal from concurrent rewrite. |
+| Transfer list head | Pointer-plus-generation CAS | Generation tags wrap; traversal and CAS retries still cost. |
 | CPU pending extent slot | Claim by removing its pointer; return by release publication | A predictor or sampled usage count is not permission to mutate another claimant's extent. |
 | Pending overflow queue | Tagged atomic head publication/removal | Queue storage availability is not guaranteed after initialization failure. |
 | Page-arena cursor | CAS reserves a unique bump range | Growth/search still uses node locks; a reservation need not be resident. |
@@ -44,15 +44,13 @@ The following state is policy/advisory rather than an ownership authority:
 
 A stale hint can trigger a futile search or skip useful reuse. A dropped predictor update can change batching. Neither must be treated as evidence that a block exists, that a reader owns it, or that it is safe to free an address.
 
-## ABA protection is one part of a proof
+## Tagged head publication
 
 Transfer and pending heads preserve the pointer in 64 bits and carry a wrapping 64-bit generation in the other half of `AtomicU128`. Changing a head advances the generation so a stale equal pointer does not ordinarily satisfy the old head comparison. This is not infinite generation space, hazard-pointer protection, or automatic safety for every non-atomic field read.
 
-In particular, transfer pop traverses ordinary `Header.next` links before its head CAS. The slab trimmer checks/sets a flag and detaches the chain, but does not drain all readers admitted before that flag. It then rewrites links while partitioning. A losing CAS rejects stale head removal, **not the preceding raw reads**.
+Transfer pop walks a candidate prefix before attempting its tagged head CAS. The slab trimmer uses a per-list trim flag and tagged head detachment to coordinate its partitioning pass. Bitmap trimming instead claims free slot masks before issuing advice.
 
-This is a current source-level reader/rewrite race concern, not a demonstrated claim that a particular run necessarily reclaims a live application object. Describe detached ownership as the intended slab protocol, not a completed proof of reader exclusion. The bitmap trimmer's occupied-slot claim is a different mechanism and should not be used to justify slab safety.
-
-Read [transfer exclusion limits](architecture-transfer.md) and [reclamation](architecture-reclamation.md). Documentation explains this boundary; it does not repair the implementation or turn the alpha into an audited allocator.
+See [transfer trim coordination](architecture-transfer.md#trim-lock-coordination) and [reclamation](architecture-reclamation.md) for the subsystem-specific algorithms.
 
 ## Slow paths and progress
 

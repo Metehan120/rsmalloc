@@ -1,8 +1,7 @@
 # Reclamation and Pressure Relief
 
-Reclamation is intended to operate on **free allocator-owned storage**, not live
-objects. Bitmap atomic claims establish exclusion from allocation during advice;
-the slab reader/trimmer exclusion has an unresolved limitation described below.
+Reclamation targets **free allocator-owned storage**. Bitmap trimming claims
+free slots before advice; slab trimming detaches and partitions transfer lists.
 Ordinary free makes memory reusable; advice makes eligible pages reclaimable by
 the kernel; unmapping removes a mapping. These are separate events.
 The [backing-memory chapter](architecture-backing-memory.md) describes the
@@ -192,28 +191,16 @@ classes starting at `get_size_4096_class`, acquiring each transfer list's
 It adjusts normal-block accounting as part of the detach.
 
 Transfer pop consults that trim lock; the trimmer partitions the detached
-chain according to the intended exclusive-ownership protocol. A block is
-eligible only when its age strictly exceeds the
+chain. A block is eligible only when its age strictly exceeds the
 class's `TRIM_SMOOTHING` time and its flag is `Allocated`. Never-used and already
 `Reclaimed` blocks are retained rather than repeatedly advised.
 Blocks still in CPU-local caches, the separate trimmed list, or pending spans
 are not made eligible just because an explicit call says “all.”
 
 Retained blocks return in batches to transfer storage. The per-list lock is
-released before advice on the detached trim list. The intended protocol keeps
-candidates unpublished until advice completes, but detachment alone is not a
-complete proof of exclusive access.
-
-**Unresolved reader/rewrite race:** `transfer_pop_batch` checks `trim_lock`, then
-reads ordinary `Header.next` links before its head CAS. A pop can pass that flag
-check before `trim_small` sets the lock and detaches the head. The detach has no
-reader count or handshake waiting for prior traversals, and partitioning rewrites
-those same links. A failed stale head CAS does not retroactively synchronize
-its earlier raw link reads with those writes. This is an unresolved race, not
-proof that live-object advice deterministically occurs; equally, the code does
-not establish a blanket guarantee that slab advice can never reach live storage.
-See the [transfer chapter's exclusion caveat](architecture-transfer.md),
-“What trim exclusion does—and does not—prove.”
+released before advice on the detached trim list. Candidates are republished
+after their advice attempt. See [transfer trim coordination](architecture-transfer.md#trim-lock-coordination)
+for the pop-side lock checks and forced-wait behavior.
 
 Success changes the flag to `Reclaimed` and pushes to the trimmed transfer list.
 Failure or reaching the requested target pushes the block normally. Candidate
@@ -311,9 +298,8 @@ Source: `src/frontend/global_alloc2/alloc.rs` — `RSMallocCoreAPI::trim`;
 A zero result can mean no eligible pages, low capacity, a busy trim lock,
 uninitialized bitmap state, or failed advice. A positive result means accepted
 advice under the subsystem's accounting convention, not an RSS deadline.
-Trim is intended to preserve live allocations, subject to the unresolved slab
-exclusion caveat above. It does not rewind arenas, unmap bitmap regions, or
-guarantee that all free blocks are visited.
+Trim does not rewind arenas, unmap bitmap regions, or guarantee that all free
+blocks are visited.
 
 ## Lazy page trim applies to both subsystems
 
@@ -382,13 +368,12 @@ not an always-on monitor before allocator capacity crosses a startup threshold.
 Source: `src/backend/background_thread.rs` — `check_memory_pressure`,
 `relief_paths`, `ENABLE_AFTER`, `UNDER_AFTER`, `background_reclaimer_main`.
 
-## Established boundaries, intended protocol, and costs
+## Reclamation mechanisms and costs
 
 - Bitmap atomic claims exclude allocation and growth from slots during advice.
-- Slab detachment intends to isolate candidates, but the prior-reader/link-rewrite
-  race remains unresolved; it is not a complete live-storage exclusion proof.
-- Advice ranges preserve header pages and persistent arena/region reservations;
-  that geometry does not resolve the slab traversal race.
+- Slab trimming detaches normal transfer chains, partitions candidates, and
+  republishes blocks after processing.
+- Advice ranges preserve header pages and persistent arena/region reservations.
 - Dirty/history flags distinguish reuse states but are not zeroing guarantees.
 - Global try-lock serialization trades completeness for avoiding concurrent
   scans; per-list locks, CAS retries, list traversal, and syscalls still cost.

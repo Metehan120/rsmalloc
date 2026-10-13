@@ -95,7 +95,7 @@ The source has limits worth retaining alongside the intended design:
 
 - Transfer trimming can leave sampled inventory counters inaccurate even after operations finish; a counter is not exact free-list ownership.
 - Pending-queue mapping/publication failure can strand an unfinished extent's remaining refill capacity without failing the already initialized batch.
-- Tagged head CAS and a trim flag do not establish exclusive access to every pre-CAS raw link traversal. The detailed transfer chapter explains the current slab reader/link-rewrite race concern rather than claiming a complete reclamation safety proof.
+
 - Recoverable public allocation errors do not cover every internal failure: mandatory ownership metadata allocation can abort.
 - Reports are independently sampled and can allocate or lock; several counter names describe narrower instrumentation than their names suggest.
 

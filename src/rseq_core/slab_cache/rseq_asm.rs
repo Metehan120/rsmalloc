@@ -172,17 +172,13 @@ impl RseqCoreTrait for RseqCore {
             "jne 3f",
             "mov {res}, [{list}]",
             "test {res}, {res}",
-            "jz 6f",
+            "jz 5f",
             "mov {next}, [{res}]",
             // The head store is the commit: label 2 must immediately follow it.
             "mov [{list}], {next}",
 
             "2:",
             "lock dec qword ptr [{list} + {usage_offset}]",
-            "jmp 5f",
-
-            "6:",
-            // res already holds null; an empty pop must not decrement usage.
             "jmp 5f",
 
             ".balign 4",

@@ -26,6 +26,21 @@ Unsupported libc/RSEQ configurations are a bootstrap failure, not an automatic p
 | How do I reduce memory or improve throughput? | [Performance tuning](performance-tuning.md), after measuring defaults |
 | How do I judge a result or diagnose a regression? | [Benchmarking](benchmarking.md), [diagnostics](diagnostics.md), and [troubleshooting](troubleshooting.md) |
 
+## Detailed architecture
+
+Start with [How the Allocator Works](allocator-design.md) for the allocation lifecycle and source reading map, then explore the implementation by subsystem:
+
+1. [Frontends and bootstrap](architecture-bootstrap.md) — public interfaces, process-wide initialization, configuration, and startup failures.
+2. [RSEQ and CPU-local slab caches](architecture-rseq.md) — cache layouts, assembly commits, abort handling, and overflow.
+3. [Transfer caches and reclamation](architecture-transfer.md) — tagged heads, batch exchange, search hints, NUMA reuse, and trim interaction.
+4. [Refill and deferred initialization](architecture-refill.md) — predictor equations, pending spans, and claim/publication rules.
+5. [Backing memory and large allocations](architecture-backing-memory.md) — arenas, bitmap regions, direct mappings, and large-object metadata.
+6. [Ownership, alignment, and resizing](architecture-ownership.md) — headers, ownership checks, free, calloc, realloc, and fork behavior.
+7. [Reclamation and pressure relief](architecture-reclamation.md) — eligible pages, background scheduling, manual trim, and memory-pressure policy.
+8. [Concurrency and observation limits](architecture-concurrency.md) — authoritative versus advisory state, current implementation caveats, and diagnostic semantics.
+
+These chapters describe the current alpha implementation with source-path and symbol references. They explain both intended mechanisms and known limitations; they are not a correctness audit or a stable internal API specification.
+
 ## The deployment contract
 
 Use one allocator consistently for each allocation's lifetime. The native API and raw pointers require explicit ownership discipline; selecting a Rust global allocator does not make foreign FFI pointers Rust-owned. Hardening checks do not turn invalid pointers into valid ones.

@@ -3,7 +3,7 @@ use crate::utility::{NUM_SIZE_CLASSES, unlikely};
 #[path = "predictor_demand.rs"]
 mod demand;
 #[cfg(feature = "experimental-predictive-demand")]
-pub(crate) use demand::DemandSample;
+pub use demand::DemandSample;
 #[cfg(feature = "experimental-predictive-demand")]
 use demand::DemandTracker;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -24,7 +24,22 @@ pub struct AdaptiveBatching {
     demand: DemandTracker,
 }
 
+#[cfg(feature = "experimental-predictive-demand")]
+impl Default for AdaptiveBatching {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AdaptiveBatching {
+    #[cfg(feature = "experimental-predictive-demand")]
+    pub const fn new() -> Self {
+        Self {
+            state: AtomicUsize::new(0),
+            demand: DemandTracker::new(),
+        }
+    }
+
     #[inline(always)]
     const fn encode(batch: usize, low_count: u8) -> usize {
         (batch << 8) | low_count as usize
@@ -99,7 +114,7 @@ impl AdaptiveBatching {
 
     #[cfg(feature = "experimental-predictive-demand")]
     #[inline(always)]
-    pub(crate) fn begin_demand_sample(
+    pub fn begin_demand_sample(
         &self,
         now: u64,
         init: usize,

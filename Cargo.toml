@@ -75,6 +75,11 @@ harness = false
 name = "rstress"
 harness = false
 
+[[bench]]
+name = "predictor"
+harness = false
+required-features = ["experimental-predictive-demand"]
+
 [dev-dependencies]
 criterion = "0.8"
 rand = "0.10"

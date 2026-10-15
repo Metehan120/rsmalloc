@@ -86,6 +86,9 @@ pub fn get_total_cached_va() -> usize {
 mod backend;
 mod big_allocations;
 mod core_prim;
+/// Experimental refill prediction primitives; not a stable API.
+#[cfg(feature = "experimental-predictive-demand")]
+pub use core_prim::predictor as experimental_predictor;
 #[cfg(feature = "debug-print")]
 mod debug_exit_printer;
 #[cfg(feature = "debug-printer-thread")]

@@ -35,8 +35,7 @@ pub(super) fn clock_ns() -> u64 {
 }
 
 impl DemandTracker {
-    #[cfg(test)]
-    const fn new() -> Self {
+    pub(super) const fn new() -> Self {
         Self {
             model: AtomicU128::new(0),
             sample: AtomicU64::new(0),
@@ -162,7 +161,7 @@ impl DemandTracker {
     }
 }
 
-pub(crate) struct DemandSample<'a> {
+pub struct DemandSample<'a> {
     tracker: &'a DemandTracker,
     owner: u64,
     previous: u64,
@@ -181,7 +180,7 @@ impl DemandSample<'_> {
         self.demand
     }
 
-    pub(crate) fn finish(mut self, now: u64, delivered: usize, reliable: bool) {
+    pub fn finish(mut self, now: u64, delivered: usize, reliable: bool) {
         let complete =
             if self.start_empty && reliable && (1..=u16::MAX as usize).contains(&delivered) {
                 (now & TICK_MASK) | ((delivered as u64) << 46)

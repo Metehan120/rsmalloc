@@ -170,13 +170,21 @@ Alpha-3 also strengthens transfer-cache ABA protection, addresses fork and backg
 ### Opt-in confidence-based transfer batching
 
 - Added the opt-in `confidence-predictor` feature as an alternative to the original inventory-based adaptive transfer policy. It remains excluded from default features and `semi-hardened`; bulk-fill prediction and trim lifetime estimation are unchanged.
-- Packs the normal batch candidate and two saturating 0–10 scores (normal confidence and back-off evidence) into the policy `AtomicUsize`. The independent, opt-in `experimental-predictive-demand` feature adds expected-demand and previous-unused-block atomics to both transfer policies; bulk-fill predictors leave them unused. `MainCache` is 4096 bytes without the feature and 8192 bytes with it, retaining 4096-byte alignment. Policy feedback uses a single best-effort, non-retrying relaxed CAS.
+- Packs the normal batch candidate and two saturating 0–10 scores (normal confidence and back-off evidence) into the policy `AtomicUsize`. The independent, opt-in `experimental-predictive-demand` feature adds a 32-byte demand tracker to each predictor; bulk-fill predictors leave it unused. `MainCache` is 4096 bytes without the feature and 8192 bytes with it, retaining 4096-byte alignment. Policy feedback uses a single best-effort, non-retrying relaxed CAS.
 - Starts with confidence 5 and no back-off evidence. A full normal request raises confidence by one and removes one point of back-off evidence; a nonempty short return lowers confidence by one and adds two points of evidence. Empty transfer outcomes are ignored rather than training the predictor toward minimum batches.
 - Selects low-confidence mode when back-off evidence is nonzero and at least half the normal confidence. Low requests use two thirds of the bounded normal candidate, rounded down with a minimum of one for a positive candidate. Successful low requests drain evidence without lowering the stored normal candidate or increasing normal confidence, preventing repeated back-off from compounding into permanent batch shrinkage. Short returns reduce the candidate to the obtained count; full normal feedback grows at confidence 8 or above by one eighth of the candidate (at least one block), bounded by sampled inventory and the per-class limit. With `experimental-predictive-demand`, it instead eases toward lower demand by one eighth of the gap, or grows by one eighth of expected demand. Inventory is historical feedback, not a reservation or a guarantee of current availability.
 - Added independent `PREDICTOR_BATCHING` limits of `CACHE_HIGH_BLOCKS[class] + 1`, allowing a transfer refill to fill an empty CPU cache to its per-class high-water mark after returning one block to the caller. The original transfer policy and bulk refills retain `ITERATIONS` limits.
-- Added the opt-in `experimental-predictive-demand` feature, independent of `confidence-predictor` and disabled by default. It profiles only the refilling size class's RSEQ cache occupancy on every refill, not on allocation/free cache-hit or overflow paths. Occupancy below the previous unused-block sample doubles demand; otherwise it halves demand, bounded by one and the class transfer limit. It stores `demand.saturating_sub(cached)` as the next raw unused-block sample. No other classes are scanned. Demand feeds the existing prediction rather than imposing a hard request cap. Disabled builds omit the demand fields, sampling, and arithmetic. No clocks, cursors, or per-pop counters are used; enabling it may affect overall allocator performance.
+- The independent, opt-in `experimental-predictive-demand` feature supplies a next-demand forecast to either transfer policy; it remains disabled by default. With the original policy, the target is the arithmetic mean of expected demand and one quarter of sampled inventory, clamped to class limits. Quarter-gap batch smoothing remains in place. The completion-based forecasting mechanism is described below.
 - With `predictor-debug` and `experimental-predictive-demand`, both policies log `expected_demand`; confidence builds additionally log `is_low`, recording the selected mode before supply feedback.
 - This policy may affect overall allocator performance: throughput, latency, and memory usage can improve or regress depending on the workload. Its additional prediction cost does not translate one-to-one into allocation overhead, since the policy runs on refills and changes batch sizes and refill frequency. Benchmark representative workloads before enabling it.
+
+### Completion-based predictive demand
+
+- Replaced the earlier occupancy-based doubling/halving heuristic with direct demand forecasting in `src/core_prim/predictor_demand.rs`. An observation estimates blocks consumed over a 50 µs horizon: `previous_delivery * 50_000 / depletion_interval_ns`. The interval runs from the previous refill's completion to the current refill's start, excluding the current refill's own work.
+- Forecasts the next demand as the latest observation plus its change from the previous observation, with the trend bounded to approximately half the latest observation in either direction. The first observation has no trend. Forecasts are bounded by the class transfer limit and a 64 KiB block-stride budget, with a one-block minimum. This branch uses bounded extrapolation, not the learned three-parameter model from `experiments`.
+- Checks the 50 µs recomputation gate at every refill completion, including successful transfer refills and bulk fallback. Accepted completions record actual delivered blocks even when recomputation is skipped, so the next observation uses the latest delivery. Forecast recomputation is `#[inline(never)]`; no allocation/free cache-hit bookkeeping, per-pop counters, background polling, or scans of other classes are added. Feature-disabled builds omit the tracker and sampling work.
+- Requires an empty cache at sample start and checks the completion CPU and cached remainder before accepting a delivery. Generation-tagged sample ownership rejects overlapping refills, and a drop guard releases abandoned samples. These checks filter unreliable observations; concurrent frees and migration away and back can still affect the estimate.
+- Depletion intervals of at least 100 ms reset the forecast history to its initial state. Preload child reset clears demand history, sample ownership, and the recomputation timestamp while preserving generation counters.
 
 ### Instruction and codegen optimization
 
@@ -189,6 +197,8 @@ Alpha-3 also strengthens transfer-cache ABA protection, addresses fork and backg
 ### Small branch/overhead cleanups
 
 - Removed a now-redundant bounds check in `Radix::get` (`radix_tree.rs`) — `chunk_idx` is already guaranteed in range by its callers.
+- Simplified the RSEQ pop empty-list exit to jump directly to the shared exit label, removing the redundant intermediate label and jump without decrementing usage for an empty pop.
+- Changed slab batch admission to test current occupancy against the high-water mark rather than current occupancy plus the incoming batch. A batch can therefore be admitted when the cache is at or below the mark even if it crosses the mark; an already-overfull cache routes the batch to transfer storage.
 
 ### Fuzzing
 
@@ -196,8 +206,15 @@ Alpha-3 also strengthens transfer-cache ABA protection, addresses fork and backg
 - Added `RS_FUZZ_TYPE` modes to the concurrent target so fuzz runs can concentrate on small allocations, the 4-64 MiB segmented-bitmap band, mixed boundary cases, or the wider full range without maintaining separate targets.
 - Removed `tests/loom_transfer.rs` in favor of the above — direct fuzzing over the real transfer-cache/RSEQ paths in place of a `loom`-modeled subset of the same logic.
 
+### User guide and architecture documentation
+
+- Added an mdBook under `book/`, linked from the README, with integration guides for Rust global allocation, native/raw APIs, and `LD_PRELOAD`, plus configuration, diagnostics, benchmarking, security, and troubleshooting guidance.
+- Added detailed architecture chapters covering bootstrap, RSEQ caches, transfer storage, deferred refill initialization, backing memory, large allocations, ownership and resizing, reclamation, and concurrency. The introduction and book navigation link to these chapters.
+- Documented workload fit and failure modes, including where CPU-local caching and cross-thread reuse can help and where local fast-path cost or retained memory can outweigh those benefits. Build the guide with `mdbook build book`.
+
 ### Benchmarks
 
+- Refreshed alpha-3 measurements using column-wise medians across ten runs and updated the overview and detailed comparison tables/charts. The current comparison covers 21 workloads across five allocators, including refreshed ten-run `z3` results; removed the older `rbstressN` entries. Separate column medians need not describe one actual run, and these tables do not establish performance of the ML experiment.
 - Added `size_class_matching_*` cases to `book_speed`'s `alloc_free` group, covering both fixed repeated sizes and a genuinely randomized-size variant, for measuring `match_size_class` dispatch cost in isolation.
 - Added `malloc_only` and `free_only` benchmark groups using `iter_custom` to separate untimed setup/teardown from the timed operation, instead of only measuring paired `malloc`+`free` round trips.
 

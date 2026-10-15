@@ -1,7 +1,7 @@
 // Predictor bookkeeping only, not allocator throughput or forecast accuracy.
-// Synthetic timestamps isolate sampling/training from clock-read overhead.
+// Sampling/training use synthetic timestamps; elapsed_clock measures the real clock separately.
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
-use rsmalloc::experimental_predictor::AdaptiveBatching;
+use rsmalloc::experimental_predictor::{AdaptiveBatching, demand_clock_ns};
 use std::hint::black_box;
 
 const INIT: usize = 128;
@@ -24,6 +24,11 @@ fn seeded() -> AdaptiveBatching {
 fn bench_predictor(c: &mut Criterion) {
     let mut group = c.benchmark_group("predictor");
     group.throughput(Throughput::Elements(1));
+
+    black_box(demand_clock_ns());
+    group.bench_function("elapsed_clock", |b| {
+        b.iter(|| black_box(demand_clock_ns()));
+    });
 
     let predictor = seeded();
     group.bench_function("forecast_read", |b| {

@@ -14,7 +14,7 @@ pub static mut BULK_FILL_PREDICTOR_INIT_BATCH: usize = 384;
 
 #[cfg(feature = "experimental-predictive-demand")]
 #[inline]
-pub(crate) fn demand_clock_ns() -> u64 {
+pub fn demand_clock_ns() -> u64 {
     demand::clock_ns()
 }
 

@@ -55,5 +55,4 @@ pub trait Lock {
     fn try_lock(&self) -> Self::LockError<Self::Guard<'_, Self::Out>>;
     fn spin_until_unlock(&self);
     fn get_lock(&self) -> Self::LockState;
-    fn unlock(&self);
 }

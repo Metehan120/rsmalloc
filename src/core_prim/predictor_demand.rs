@@ -13,7 +13,7 @@ const BUSY: u64 = 1 << 63;
 const GENERATION_MASK: u64 = OVERLAP - 1;
 const IDLE_NS: u64 = 100_000_000;
 const HORIZON_NS: u64 = 50_000;
-const PREDICTION_INTERVAL_NS: u64 = 200_000;
+const PREDICTION_INTERVAL_NS: u64 = 50_000;
 const BYTE_BUDGET: usize = 64 * 1024;
 const INITIALIZED: u64 = 1 << 32;
 

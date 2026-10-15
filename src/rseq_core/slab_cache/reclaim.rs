@@ -83,6 +83,9 @@ impl SlabCache {
                     let old_next = (*next).next;
                     let life_time = (*next).life_time;
 
+                    // These blocks are already free. Allocated means the payload
+                    // has been used, not that a caller still owns it. Skip fresh
+                    // never-used blocks and blocks already marked reclaimed.
                     if stamp.saturating_sub(life_time) > avg_life
                         && (*next).flags == Flags::Allocated
                     {
@@ -110,6 +113,8 @@ impl SlabCache {
                         }
                     }
 
+                    // Zero stamps do not contribute to the lifetime estimate.
+                    // Sample both retained blocks and trim candidates.
                     if life_time != 0 {
                         lifetime_sum = lifetime_sum.saturating_add(stamp.saturating_sub(life_time));
                         lifetime_samples += 1;
@@ -142,6 +147,8 @@ impl SlabCache {
                     TOTAL_TRIMMED_BLOCKS.fetch_add(1, Relaxed);
                     let next = (*trim_list).next;
                     let mut did_trim = false;
+                    // Zero means no byte limit. Otherwise finish whole blocks,
+                    // so the final successful trim can exceed the requested size.
                     if requested_size == 0 || total_trimmed < requested_size {
                         #[cfg(feature = "debug-exact")]
                         let mut start_of = HardwareFeature::new_cycle_clock();
@@ -161,7 +168,11 @@ impl SlabCache {
                         #[cfg(feature = "debug-exact")]
                         TOTAL_TRIMMED_TIME.fetch_add(elapsed as usize, Relaxed);
                     }
+                    // Restart the age even if advice failed or the byte limit
+                    // stopped us, giving this candidate a cooldown before retry.
                     (*trim_list).life_time = stamp;
+                    // Publish only after advice and header updates are done.
+                    // Successful trims use the separate reclaimed-block list.
                     if did_trim {
                         self.transfer_push_single_trimmed(class, trim_list, cpu, inner);
                     } else {
@@ -194,6 +205,8 @@ impl SlabCache {
         let user_start = header + Header::SIZE;
         let user_end = user_start + size;
 
+        // Discard only full pages inside the payload: round the start up and
+        // the end down, keeping the header and any shared edge pages intact.
         let page_start = (user_start + PAGE_SIZE - 1) & PAGE_MASK;
         let page_end = user_end & PAGE_MASK;
 
@@ -202,6 +215,8 @@ impl SlabCache {
         }
         let length = page_end - page_start;
 
+        // LinuxFree allows delayed reclaim; LinuxDontNeed discards immediately.
+        // Success means the advice was accepted, not that RSS fell by `size`.
         let advice = if cfg!(feature = "lazy-page-trim") {
             Advice::LinuxFree
         } else {
@@ -212,6 +227,8 @@ impl SlabCache {
 }
 
 impl TransferCache {
+    // The caller holds trim_lock until the detached chain has been partitioned
+    // and retained blocks republished. Only the normal list is detached here.
     unsafe fn detach_normal_for_trim(&self) -> *mut Header {
         let mut list = self.list.load(Acquire);
         loop {

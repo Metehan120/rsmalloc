@@ -172,12 +172,16 @@ impl RseqCoreTrait for RseqCore {
             "jne 3f",
             "mov {res}, [{list}]",
             "test {res}, {res}",
+            // Empty list: return null without changing the head or count.
             "jz 5f",
             "mov {next}, [{res}]",
-            // The head store is the commit: label 2 must immediately follow it.
+            // Updating the head makes the pop final. Label 2 must come right
+            // after this store so Linux cannot abort a pop that already took a block.
             "mov [{list}], {next}",
 
             "2:",
+            // The block is ours now. Update the count outside the RSEQ section;
+            // this must be atomic because we can move to another CPU after the pop.
             "lock dec qword ptr [{list} + {usage_offset}]",
             "jmp 5f",
 
@@ -186,6 +190,8 @@ impl RseqCoreTrait for RseqCore {
             // RSEQ abort signature, matches glibc/linux rseq convention.
             ".long 0x53053053",
             "3:",
+            // Aborted or CPU check failed: return -1 so the caller can retry.
+            // Unlike an empty list, this does not mean the cache has no blocks.
             "mov {res}, -1",
             "5:",
 

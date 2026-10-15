@@ -1,18 +1,27 @@
 use crate::utility::{NUM_SIZE_CLASSES, unlikely};
 #[cfg(feature = "experimental-predictive-demand")]
-use std::sync::atomic::AtomicU32;
+#[path = "predictor_demand.rs"]
+mod demand;
+#[cfg(feature = "experimental-predictive-demand")]
+pub(crate) use demand::DemandSample;
+#[cfg(feature = "experimental-predictive-demand")]
+use demand::DemandTracker;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub const DEFAULT_BATCH: usize = 128;
 pub static mut PREDICTOR_INIT_BATCH: usize = DEFAULT_BATCH;
 pub static mut BULK_FILL_PREDICTOR_INIT_BATCH: usize = 384;
 
+#[cfg(feature = "experimental-predictive-demand")]
+#[inline]
+pub(crate) fn demand_clock_ns() -> u64 {
+    demand::clock_ns()
+}
+
 pub struct AdaptiveBatching {
     state: AtomicUsize,
     #[cfg(feature = "experimental-predictive-demand")]
-    demand: AtomicUsize,
-    #[cfg(feature = "experimental-predictive-demand")]
-    unused: AtomicU32,
+    demand: DemandTracker,
 }
 
 impl AdaptiveBatching {
@@ -85,30 +94,25 @@ impl AdaptiveBatching {
     #[cfg(feature = "experimental-predictive-demand")]
     #[inline(always)]
     pub fn expected_demand(&self, init: usize) -> usize {
-        let demand = self.demand.load(Ordering::Relaxed);
-        if unlikely(demand == 0) { init } else { demand }
+        self.demand.expected(init)
     }
 
     #[cfg(feature = "experimental-predictive-demand")]
     #[inline(always)]
-    pub fn update_demand(&self, cached: usize, init: usize, max: usize) {
-        let old = self.demand.load(Ordering::Relaxed);
-        let demand = if unlikely(old == 0) {
-            init.clamp(1, max)
-        } else {
-            old
-        };
-        let unused = self.unused.load(Ordering::Relaxed) as usize;
-        let next = if cached < unused {
-            (demand * 2).min(max)
-        } else {
-            (demand / 2).max(1)
-        };
-        if next != old {
-            self.demand.store(next, Ordering::Relaxed);
-        }
-        self.unused
-            .store(demand.saturating_sub(cached) as u32, Ordering::Relaxed);
+    pub(crate) fn begin_demand_sample(
+        &self,
+        now: u64,
+        init: usize,
+        max: usize,
+        stride: usize,
+        cache_empty: bool,
+    ) -> DemandSample<'_> {
+        self.demand.begin(now, init, max, stride, cache_empty)
+    }
+
+    #[cfg(all(feature = "experimental-predictive-demand", feature = "preload"))]
+    pub(crate) fn reset_demand_after_fork(&self) {
+        self.demand.reset_after_fork();
     }
 
     #[cfg(feature = "confidence-predictor")]
@@ -285,3 +289,44 @@ impl EmaSmoothing {
 
 pub static mut TRIM_SMOOTHING: [EmaSmoothing; NUM_SIZE_CLASSES] =
     [const { EmaSmoothing::new() }; NUM_SIZE_CLASSES];
+
+#[cfg(all(test, feature = "experimental-predictive-demand"))]
+mod learned_demand_tests {
+    use super::*;
+
+    fn trained(delivered: usize) -> AdaptiveBatching {
+        let predictor: AdaptiveBatching = unsafe { std::mem::zeroed() };
+        predictor
+            .begin_demand_sample(0, 128, 1024, 1, true)
+            .finish(0, delivered, true);
+        predictor
+            .begin_demand_sample(1000, 128, 1024, 1, true)
+            .finish(1000, delivered, true);
+        predictor
+    }
+
+    #[test]
+    fn learned_forecast_reaches_existing_transfer_policy() {
+        let lower = trained(2);
+        let higher = trained(20);
+        assert_eq!(lower.expected_demand(128), 100);
+        assert_eq!(higher.expected_demand(128), 1000);
+        #[cfg(not(feature = "confidence-predictor"))]
+        {
+            lower.update_transfer(128, 64, 1024);
+            higher.update_transfer(128, 64, 1024);
+        }
+        #[cfg(feature = "confidence-predictor")]
+        {
+            lower.update_transfer_feedback(128, 1024, 128, 128, false, 1024);
+            higher.update_transfer_feedback(128, 1024, 128, 128, false, 1024);
+        }
+        assert!(lower.batch(128, 1024) < higher.batch(128, 1024));
+    }
+
+    #[test]
+    fn learned_state_preserves_selected_per_cpu_layout() {
+        assert_eq!(size_of::<AdaptiveBatching>(), 64);
+        assert_eq!(size_of::<crate::rseq_core::slab_cache::MainCache>(), 8192);
+    }
+}

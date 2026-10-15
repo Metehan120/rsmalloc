@@ -82,6 +82,8 @@ unsafe extern "C" fn fork_child() {
     BIG_MAP.reset_lock_on_fork();
     SEGMENTED_BITMAP_BACKEND.reset_locks_on_fork();
     fallback_reinit_on_fork();
+    #[cfg(feature = "experimental-predictive-demand")]
+    crate::rseq_core::slab_cache::SLAB_CACHE.reset_demand_after_fork();
     if let Some(guard) = TRIM_ATFORK_GUARD.take() {
         drop(guard);
     }

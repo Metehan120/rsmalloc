@@ -177,7 +177,13 @@ macro_rules! bulk_refill {
 }
 
 #[inline(never)]
-pub unsafe fn refill(class: usize, cpu_id: usize, fill_demand: usize) -> UnsafePointer<Header> {
+pub unsafe fn refill(
+    class: usize,
+    cpu_id: usize,
+    fill_demand: usize,
+    #[cfg(feature = "experimental-predictive-demand")]
+    demand_sample: crate::core_prim::predictor::DemandSample<'_>,
+) -> UnsafePointer<Header> {
     let bulk_batch = bulk_refill!(class, cpu_id);
 
     if let Ok((start, tail, count)) = bulk_fill(class, cpu_id, bulk_batch) {
@@ -208,6 +214,8 @@ pub unsafe fn refill(class: usize, cpu_id: usize, fill_demand: usize) -> UnsafeP
             false,
         );
 
+        #[cfg(feature = "experimental-predictive-demand")]
+        SLAB_CACHE.finish_refill_demand(demand_sample, cpu_id, class, count);
         maybe_start_background_reclaimer();
 
         return result;
@@ -225,9 +233,9 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
         REFILLS_BY_CLASS[class].fetch_add(1, Ordering::Relaxed);
     }
 
-    let cpu_id = get_rseq().cpu_id_start as usize;
+    let cpu_id = std::ptr::read_volatile(&get_rseq().cpu_id_start) as usize;
     #[cfg(feature = "experimental-predictive-demand")]
-    SLAB_CACHE.profile_refill_demand(cpu_id, class);
+    let demand_sample = SLAB_CACHE.profile_refill_demand(cpu_id, class);
 
     #[cfg(not(feature = "confidence-predictor"))]
     let cache_batch = refill!(class, cpu_id);
@@ -241,9 +249,7 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
         feature = "predictor-debug",
         feature = "experimental-predictive-demand"
     ))]
-    let expected_demand = SLAB_CACHE
-        .transfer_predictor(cpu_id, class)
-        .expected_demand(PREDICTOR_INIT_BATCH);
+    let expected_demand = demand_sample.demand();
 
     let transfer_result = SLAB_CACHE.try_pop(class, cache_batch, cpu_id);
     if let Some(transfer_cache) = transfer_result {
@@ -299,10 +305,18 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
             true,
         );
 
+        #[cfg(feature = "experimental-predictive-demand")]
+        SLAB_CACHE.finish_refill_demand(demand_sample, cpu_id, class, transfer_cache.total);
         return one;
     }
 
-    refill(class, cpu_id, cache_batch)
+    refill(
+        class,
+        cpu_id,
+        cache_batch,
+        #[cfg(feature = "experimental-predictive-demand")]
+        demand_sample,
+    )
 }
 
 // In hardened builds, verify that a pointer popped from allocator-managed

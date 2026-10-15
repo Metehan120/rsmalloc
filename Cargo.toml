@@ -31,7 +31,7 @@ check-owned-on-alloc = []
 validate-foreign-first = []
 # Opt-in confidence-based transfer batching; may affect overall allocator performance.
 confidence-predictor = []
-# Opt-in refill-only demand prediction; may affect overall allocator performance.
+# Opt-in direct next-demand forecasting from completed refill observations.
 experimental-predictive-demand = []
 
 # Debug options

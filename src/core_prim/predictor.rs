@@ -1,18 +1,27 @@
 use crate::utility::{NUM_SIZE_CLASSES, unlikely};
 #[cfg(feature = "experimental-predictive-demand")]
-use std::sync::atomic::AtomicU32;
+#[path = "predictor_demand.rs"]
+mod demand;
+#[cfg(feature = "experimental-predictive-demand")]
+pub(crate) use demand::DemandSample;
+#[cfg(feature = "experimental-predictive-demand")]
+use demand::DemandTracker;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub const DEFAULT_BATCH: usize = 128;
 pub static mut PREDICTOR_INIT_BATCH: usize = DEFAULT_BATCH;
 pub static mut BULK_FILL_PREDICTOR_INIT_BATCH: usize = 384;
 
+#[cfg(feature = "experimental-predictive-demand")]
+#[inline]
+pub(crate) fn demand_clock_ns() -> u64 {
+    crate::global_vals::get_clock().elapsed().as_nanos() as u64
+}
+
 pub struct AdaptiveBatching {
     state: AtomicUsize,
     #[cfg(feature = "experimental-predictive-demand")]
-    demand: AtomicUsize,
-    #[cfg(feature = "experimental-predictive-demand")]
-    unused: AtomicU32,
+    demand: DemandTracker,
 }
 
 impl AdaptiveBatching {
@@ -56,6 +65,15 @@ impl AdaptiveBatching {
         }
     }
 
+    #[cfg(all(
+        feature = "experimental-predictive-demand",
+        not(feature = "confidence-predictor")
+    ))]
+    #[inline(always)]
+    fn demand_transfer_target(demand: usize, available: usize, max: usize) -> usize {
+        (((available >> 2) + demand) >> 1).clamp(1, max)
+    }
+
     #[cfg(not(feature = "confidence-predictor"))]
     #[inline(always)]
     pub fn update_transfer(&self, init_batch: usize, available: usize, max: usize) {
@@ -63,7 +81,7 @@ impl AdaptiveBatching {
         let (batch, _) = Self::decode(old, init_batch);
         let batch = batch.clamp(1, max);
         #[cfg(feature = "experimental-predictive-demand")]
-        let target = (((available >> 2) + self.expected_demand(init_batch)) >> 1).clamp(1, max);
+        let target = Self::demand_transfer_target(self.expected_demand(init_batch), available, max);
         #[cfg(not(feature = "experimental-predictive-demand"))]
         let target = (available >> 2).clamp(1, max);
         let next = if target > batch {
@@ -85,30 +103,25 @@ impl AdaptiveBatching {
     #[cfg(feature = "experimental-predictive-demand")]
     #[inline(always)]
     pub fn expected_demand(&self, init: usize) -> usize {
-        let demand = self.demand.load(Ordering::Relaxed);
-        if unlikely(demand == 0) { init } else { demand }
+        self.demand.expected(init)
     }
 
     #[cfg(feature = "experimental-predictive-demand")]
     #[inline(always)]
-    pub fn update_demand(&self, cached: usize, init: usize, max: usize) {
-        let old = self.demand.load(Ordering::Relaxed);
-        let demand = if unlikely(old == 0) {
-            init.clamp(1, max)
-        } else {
-            old
-        };
-        let unused = self.unused.load(Ordering::Relaxed) as usize;
-        let next = if cached < unused {
-            (demand * 2).min(max)
-        } else {
-            (demand / 2).max(1)
-        };
-        if next != old {
-            self.demand.store(next, Ordering::Relaxed);
-        }
-        self.unused
-            .store(demand.saturating_sub(cached) as u32, Ordering::Relaxed);
+    pub(crate) fn begin_demand_sample(
+        &self,
+        now: u64,
+        init: usize,
+        max: usize,
+        block_stride: usize,
+        cache_empty: bool,
+    ) -> DemandSample<'_> {
+        self.demand.begin(now, init, max, block_stride, cache_empty)
+    }
+
+    #[cfg(all(feature = "experimental-predictive-demand", feature = "preload"))]
+    pub(crate) fn reset_demand_after_fork(&self) {
+        self.demand.reset_after_fork();
     }
 
     #[cfg(feature = "confidence-predictor")]

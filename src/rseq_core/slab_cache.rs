@@ -482,18 +482,58 @@ impl SlabCache {
 
     #[cfg(feature = "experimental-predictive-demand")]
     #[inline(never)]
-    pub unsafe fn profile_refill_demand(&self, cpu_id: usize, refill_class: usize) {
+    pub(crate) unsafe fn profile_refill_demand(
+        &self,
+        cpu_id: usize,
+        refill_class: usize,
+    ) -> crate::core_prim::predictor::DemandSample<'_> {
+        use crate::utility::{Alignment, SIZE_CLASSES};
         let cpu = &self.get_inner().cache[cpu_id];
         let cached = cpu.cache[refill_class].usage.load(AtomicOrdering::Relaxed);
         #[cfg(feature = "confidence-predictor")]
         let max = crate::utility::PREDICTOR_BATCHING[refill_class];
         #[cfg(not(feature = "confidence-predictor"))]
         let max = crate::utility::ITERATIONS[refill_class];
-        cpu.transfer_batching[refill_class].update_demand(
-            cached,
+        cpu.transfer_batching[refill_class].begin_demand_sample(
+            crate::core_prim::predictor::demand_clock_ns(),
             crate::core_prim::predictor::PREDICTOR_INIT_BATCH,
             max,
+            (SIZE_CLASSES[refill_class] + crate::Header::SIZE).align_to(16),
+            cached == 0,
+        )
+    }
+
+    #[cfg(feature = "experimental-predictive-demand")]
+    pub(crate) unsafe fn finish_refill_demand(
+        &self,
+        sample: crate::core_prim::predictor::DemandSample<'_>,
+        cpu_id: usize,
+        class: usize,
+        delivered: usize,
+    ) {
+        // Endpoint checks reject obvious migration or a diverted remainder;
+        // unrelated frees and migration away and back can still hide changes.
+        let cached = self.get_inner().cache[cpu_id].cache[class]
+            .usage
+            .load(AtomicOrdering::Relaxed);
+        let reliable = read_volatile(&get_rseq().cpu_id_start) as usize == cpu_id
+            && cached >= delivered.saturating_sub(1);
+        sample.finish(
+            crate::core_prim::predictor::demand_clock_ns(),
+            delivered,
+            reliable,
         );
+    }
+
+    #[cfg(all(feature = "experimental-predictive-demand", feature = "preload"))]
+    pub(crate) unsafe fn reset_demand_after_fork(&self) {
+        for cpu_id in 0..NCPU {
+            let cpu = &self.get_inner().cache[cpu_id];
+            for class in 0..NUM_SIZE_CLASSES {
+                cpu.transfer_batching[class].reset_demand_after_fork();
+                cpu.bulk_fill_batching[class].reset_demand_after_fork();
+            }
+        }
     }
 
     #[inline(always)]

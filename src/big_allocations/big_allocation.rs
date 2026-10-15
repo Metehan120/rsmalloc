@@ -10,7 +10,7 @@ use crate::{
     BIG_MAGIC, BigAllocMeta, Flags, Header, RS_DISABLE_THP, RSMallocError, SEGMENTED_BITMAP_INIT,
     backend::background_thread::DISABLE_SEGMENTED_BITMAP,
     big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND,
-    core_prim::wrappers::UnsafePointer,
+    core_prim::wrappers::MaybeNull,
     internals::{big_meta_map::BIG_MAP, binder::NumaBind, radix_tree::RADIX},
     record_mmap_call,
     rseq_core::{rseq_offsets::get_rseq, slab_cache::SLAB_CACHE},
@@ -41,13 +41,13 @@ pub unsafe fn direct_mapping_size(size: usize) -> Option<usize> {
 }
 
 #[inline(never)]
-pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
+pub unsafe fn big_malloc(size: usize, aligned: bool) -> MaybeNull<Header> {
     let Some(requested_total) = size.checked_add(Header::SIZE) else {
-        return UnsafePointer::NULL;
+        return MaybeNull::NULL;
     };
 
     let Some(aligned_total) = estimate_and_align_2mb(requested_total) else {
-        return UnsafePointer::NULL;
+        return MaybeNull::NULL;
     };
 
     let mut registered = false;
@@ -89,7 +89,7 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
             flags = Flags::NotAllocated;
             actual_ptr = pointer as *mut u8;
         } else {
-            return UnsafePointer::NULL;
+            return MaybeNull::NULL;
         }
     }
 
@@ -131,7 +131,7 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
         },
     );
 
-    UnsafePointer::new(actual_ptr as *mut Header).walk_header()
+    MaybeNull::new(actual_ptr as *mut Header).walk_header()
 }
 
 #[inline(never)]

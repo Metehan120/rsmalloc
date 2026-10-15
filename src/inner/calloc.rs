@@ -4,7 +4,7 @@ use std::{alloc::Layout, os::raw::c_void};
 use crate::inner::preload::libc_int::set_nomem;
 use crate::{
     Flags, Header, RSMallocError,
-    core_prim::wrappers::UnsafePointer,
+    core_prim::wrappers::MaybeNull,
     inner::alloc::rs_alloc_no_flag,
     internals::big_meta_map::BIG_META_MAP,
     utility::{SIZE_CLASSES, match_size_class, unlikely},
@@ -36,7 +36,7 @@ macro_rules! calloc_zero {
 }
 
 #[inline(never)]
-unsafe fn calc_and_get(size: Layout, nmem: usize) -> Option<(UnsafePointer<Header>, usize)> {
+unsafe fn calc_and_get(size: Layout, nmem: usize) -> Option<(MaybeNull<Header>, usize)> {
     let size = size.size();
     let total_size = match nmem.checked_mul(size) {
         Some(s) => s,
@@ -58,19 +58,19 @@ unsafe fn calc_and_get(size: Layout, nmem: usize) -> Option<(UnsafePointer<Heade
 }
 
 #[inline(always)]
-pub unsafe fn rs_calloc(size: usize, zero_size: usize) -> UnsafePointer<Header> {
+pub unsafe fn rs_calloc(size: usize, zero_size: usize) -> MaybeNull<Header> {
     let layout = match Layout::array::<u8>(size) {
         Ok(layout) => layout,
         Err(_) => {
             #[cfg(feature = "preload")]
             set_nomem();
-            return UnsafePointer::NULL;
+            return MaybeNull::NULL;
         }
     };
 
     let (ptr, effective_size) = match calc_and_get(layout, zero_size) {
         Some(ptr) => ptr,
-        None => return UnsafePointer::NULL,
+        None => return MaybeNull::NULL,
     };
 
     let mut header = ptr.get_actual_header().apply_safe();

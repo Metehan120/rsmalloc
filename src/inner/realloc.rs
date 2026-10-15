@@ -12,7 +12,7 @@ use crate::{
         big_allocation::{direct_mapping_size, estimate_and_align_2mb},
         segmented_bitmap::{BIG_SEGMENTED_BITMAP_MAX_ORDER, SEGMENTED_BITMAP_BACKEND},
     },
-    core_prim::wrappers::{SafePointer, UnsafePointer},
+    core_prim::wrappers::{MaybeNull, Owned},
     inner::{
         align::memalign_inner,
         alloc::{rs_alloc, usable_size},
@@ -23,7 +23,7 @@ use crate::{
 };
 
 #[inline]
-unsafe fn allocate_replacement(size: usize, alignment: usize) -> UnsafePointer<Header> {
+unsafe fn allocate_replacement(size: usize, alignment: usize) -> MaybeNull<Header> {
     if alignment <= 16 {
         rs_alloc(size, false)
     } else {
@@ -32,13 +32,13 @@ unsafe fn allocate_replacement(size: usize, alignment: usize) -> UnsafePointer<H
 }
 
 unsafe fn replace_allocation(
-    old_ptr: UnsafePointer<Header>,
-    new_ptr: UnsafePointer<Header>,
+    old_ptr: MaybeNull<Header>,
+    new_ptr: MaybeNull<Header>,
     copy_size: usize,
-) -> UnsafePointer<Header> {
+) -> MaybeNull<Header> {
     // allocation failure must leave the original allocation untouched
     if new_ptr.is_null() {
-        return UnsafePointer::NULL;
+        return MaybeNull::NULL;
     }
 
     copy_nonoverlapping(
@@ -51,10 +51,10 @@ unsafe fn replace_allocation(
 }
 
 unsafe fn small_realloc(
-    ptr: SafePointer<Header>,
+    ptr: Owned<Header>,
     new_size: usize,
     new_alignment: usize,
-) -> UnsafePointer<Header> {
+) -> MaybeNull<Header> {
     let payload_ptr = ptr;
     let header_ptr = payload_ptr.get_actual_header();
 
@@ -122,15 +122,15 @@ unsafe fn small_realloc(
 }
 
 unsafe fn big_realloc(
-    ptr: SafePointer<Header>,
+    ptr: Owned<Header>,
     new_size: usize,
     new_alignment: usize,
-) -> UnsafePointer<Header> {
+) -> MaybeNull<Header> {
     let old_ptr = ptr.cast_usize();
     let old_mapping = (old_ptr - Header::SIZE) as *mut c_void;
     let old_meta = match BIG_META_MAP.get(old_ptr) {
         Some(meta) => meta,
-        None => return UnsafePointer::NULL,
+        None => return MaybeNull::NULL,
     };
 
     if new_size <= old_meta.size {
@@ -161,10 +161,10 @@ unsafe fn big_realloc(
     }
 
     let Some(new_total) = new_size.checked_add(Header::SIZE) else {
-        return UnsafePointer::NULL;
+        return MaybeNull::NULL;
     };
     let Some(aligned_new) = estimate_and_align_2mb(new_total) else {
-        return UnsafePointer::NULL;
+        return MaybeNull::NULL;
     };
 
     if is_in_segmented_bitmap && old_mapped_size >= aligned_new {
@@ -193,7 +193,7 @@ unsafe fn big_realloc(
             };
 
             let _ = BIG_META_MAP.replace(old_ptr, new_meta);
-            return UnsafePointer::new(new_addr as *mut Header).walk_header();
+            return MaybeNull::new(new_addr as *mut Header).walk_header();
         }
     } else {
         let mut current_addr = old_mapping as usize;
@@ -234,7 +234,7 @@ unsafe fn big_realloc(
                     };
                     let _ = BIG_META_MAP.replace(old_ptr, new_meta);
 
-                    return UnsafePointer::new(current_addr as *mut Header).walk_header();
+                    return MaybeNull::new(current_addr as *mut Header).walk_header();
                 }
             } else {
                 break;
@@ -255,10 +255,10 @@ fn observed_alignment(addr: usize) -> usize {
 }
 
 unsafe fn aligned_realloc(
-    ptr: UnsafePointer<Header>,
+    ptr: MaybeNull<Header>,
     new_size: usize,
     new_alignment: usize,
-) -> UnsafePointer<Header> {
+) -> MaybeNull<Header> {
     let old_usable = usable_size(ptr.cast());
     if new_size <= old_usable && observed_alignment(ptr.cast_usize()) >= new_alignment {
         return ptr;
@@ -270,13 +270,13 @@ unsafe fn aligned_realloc(
 
 #[inline(always)]
 pub unsafe fn rs_realloc(
-    ptr: UnsafePointer<Header>,
+    ptr: MaybeNull<Header>,
     new_size: usize,
     #[cfg(not(feature = "preload"))] new_alignment: Option<usize>,
-) -> UnsafePointer<Header> {
+) -> MaybeNull<Header> {
     #[cfg(not(feature = "preload"))]
     if new_alignment.is_some_and(|alignment| !alignment.is_power_of_two()) {
-        return UnsafePointer::NULL;
+        return MaybeNull::NULL;
     }
 
     if ptr.is_null() {
@@ -289,7 +289,7 @@ pub unsafe fn rs_realloc(
 
     if new_size == 0 {
         rs_free(ptr);
-        return UnsafePointer::NULL;
+        return MaybeNull::NULL;
     }
 
     let ptr_addr = ptr.cast_usize();
@@ -328,7 +328,7 @@ pub unsafe fn rs_realloc(
 
     #[cfg(feature = "preload")]
     {
-        UnsafePointer::new(crate::inner::fallback::realloc_fallback(
+        MaybeNull::new(crate::inner::fallback::realloc_fallback(
             ptr.cast_as_ptr() as *mut c_void,
             new_size,
         ) as *mut Header)
@@ -345,7 +345,7 @@ pub unsafe fn rs_realloc(
             .log_and_abort();
         }
 
-        UnsafePointer::NULL
+        MaybeNull::NULL
     }
 }
 
@@ -356,14 +356,14 @@ mod tests {
     use super::*;
     use crate::inner::align::memalign_inner;
 
-    unsafe fn fill_pattern(ptr: &UnsafePointer<Header>, len: usize, seed: u8) {
+    unsafe fn fill_pattern(ptr: &MaybeNull<Header>, len: usize, seed: u8) {
         let base = ptr.cast_as_ptr::<u8>();
         for i in 0..len {
             *base.add(i) = seed.wrapping_add((i as u8).wrapping_mul(13));
         }
     }
 
-    unsafe fn assert_pattern(ptr: &UnsafePointer<Header>, len: usize, seed: u8) {
+    unsafe fn assert_pattern(ptr: &MaybeNull<Header>, len: usize, seed: u8) {
         let base = ptr.cast_as_ptr::<u8>();
         for i in 0..len {
             let expected = seed.wrapping_add((i as u8).wrapping_mul(13));
@@ -374,11 +374,11 @@ mod tests {
     #[test]
     fn realloc_null_allocates() {
         unsafe {
-            let p = rs_realloc(UnsafePointer::NULL, 256);
+            let p = rs_realloc(MaybeNull::NULL, 256);
             assert!(!p.is_null());
             rs_free(p);
 
-            let z = rs_realloc(UnsafePointer::NULL, 0);
+            let z = rs_realloc(MaybeNull::NULL, 0);
             assert!(!z.is_null());
             rs_free(z);
         }
@@ -393,7 +393,7 @@ mod tests {
             let out = rs_realloc(p, 0);
             assert!(out.is_null());
 
-            let out2 = rs_realloc(UnsafePointer::NULL, 0);
+            let out2 = rs_realloc(MaybeNull::NULL, 0);
             assert!(!out2.is_null());
             rs_free(out2);
         }
@@ -471,7 +471,7 @@ mod tests {
             let out = rs_realloc(p, huge_size);
             assert!(out.is_null());
 
-            let old_again = UnsafePointer::new(old_addr as *mut Header);
+            let old_again = MaybeNull::new(old_addr as *mut Header);
             assert_pattern(&old_again, old_size, seed);
             rs_free(old_again);
         }

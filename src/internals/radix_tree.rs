@@ -1,7 +1,7 @@
 use crate::{
     RSMallocError,
     backend::page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR},
-    core_prim::wrappers::UnsafePointer,
+    core_prim::wrappers::MaybeNull,
     internals::fork_lock::SpinLock,
     record_mmap_call,
     traits::Lock,
@@ -36,7 +36,7 @@ const MAX_ADDR: usize = 1usize << 56;
 const RADIX_MAX_CHUNKS: usize = 1 << (L0_BITS + L1_BITS + L2_BITS + L3_BITS);
 
 pub struct Radix {
-    pub l0: UnsafePointer<AtomicUsize>,
+    pub l0: MaybeNull<AtomicUsize>,
     alloc_lock: SpinLock<()>,
 }
 
@@ -70,7 +70,7 @@ impl Radix {
         let ptr = Self::map_memory(L0_SIZE * size_of::<AtomicUsize>()) as *mut AtomicUsize;
         Self {
             alloc_lock: SpinLock::new(()),
-            l0: UnsafePointer::new(ptr),
+            l0: MaybeNull::new(ptr),
         }
     }
 
@@ -262,7 +262,7 @@ impl RadixTree {
     pub const unsafe fn new_const() -> Self {
         Self {
             nodes: Radix {
-                l0: UnsafePointer::new(null_mut()),
+                l0: MaybeNull::new(null_mut()),
                 alloc_lock: SpinLock::new(()),
             },
         }

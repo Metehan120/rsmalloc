@@ -1,5 +1,4 @@
 use std::{
-    mem::forget,
     os::raw::c_void,
     ptr::null_mut,
     sync::atomic::Ordering::{Acquire, Relaxed},
@@ -18,7 +17,10 @@ use crate::{
         SMALL_TRIM_THRESHOLD, TOTAL_CACHED_VA,
     },
     internals::{atomics::AtomicOrdering, lock::LockGuard},
-    rseq_core::{aba::Tagging, slab_cache::SlabCache},
+    rseq_core::{
+        aba::Tagging,
+        slab_cache::{SlabCache, TransferCache},
+    },
     traits::Lock,
     utility::{ITERATIONS, NUM_SIZE_CLASSES, SIZE_CLASSES, get_size_4096_class},
 };
@@ -49,49 +51,18 @@ impl SlabCache {
         for cpu in 0..NCPU {
             for class in get_size_4096_class()..NUM_SIZE_CLASSES {
                 let main_list = self.get_list(cpu, class);
-                forget(main_list.trim_lock.lock());
-
-                let output = {
-                    let mut list = main_list.list.load(Acquire);
-                    loop {
-                        let pack = Tagging.untag_ptr(list);
-
-                        if pack.current_header.is_null() {
-                            break null_mut();
-                        }
-
-                        let current_size = main_list
-                            .size
-                            .normal_blocks
-                            .load(AtomicOrdering::TransferFetchLoad);
-                        match main_list.list.compare_exchange(
-                            list,
-                            Tagging.tag_ptr(null_mut(), pack.old_packed),
-                            Acquire,
-                            Relaxed,
-                        ) {
-                            Ok(_) => {
-                                main_list
-                                    .size
-                                    .normal_blocks
-                                    .fetch_sub(current_size, AtomicOrdering::TransferFetchOp);
-                                break pack.current_header;
-                            }
-                            Err(new) => list = new,
-                        }
-                    }
-                };
+                let trim_guard = main_list.trim_lock.lock();
+                let output = main_list.detach_normal_for_trim();
 
                 if output.is_null() {
                     if !cfg!(feature = "trim-aggressively") {
                         TRIM_SMOOTHING[class].update_refill(100, 1, 100);
                     }
-                    main_list.trim_lock.unlock();
                     continue;
                 }
 
-                let mut avg: u32 = 0;
-                let mut total = 0;
+                let mut lifetime_sum: u32 = 0;
+                let mut lifetime_samples = 0;
                 #[cfg(feature = "debug-exact")]
                 let mut total_popped = 0;
 
@@ -101,6 +72,7 @@ impl SlabCache {
                 let mut push_list = null_mut();
                 let stamp = CURRENT_STAMP.load(Relaxed);
                 let avg_life = TRIM_SMOOTHING[class].time(100) as u32;
+                let return_batch_limit = ITERATIONS[class] + ITERATIONS[class] / 2;
 
                 let mut next = output;
                 while !next.is_null() {
@@ -110,7 +82,7 @@ impl SlabCache {
                     }
                     let old_next = (*next).next;
                     let life_time = (*next).life_time;
-                    let mut is_push = false;
+
                     if stamp.saturating_sub(life_time) > avg_life
                         && (*next).flags == Flags::Allocated
                     {
@@ -123,26 +95,24 @@ impl SlabCache {
                             push_list_start = next;
                         }
                         total_push += 1;
-                        is_push = true;
+                        if total_push == return_batch_limit {
+                            self.transfer_push_batch(
+                                class,
+                                push_list,
+                                push_list_start,
+                                total_push,
+                                cpu,
+                                inner,
+                            );
+                            total_push = 0;
+                            push_list = null_mut();
+                            push_list_start = null_mut();
+                        }
                     }
 
                     if life_time != 0 {
-                        avg = avg.saturating_add(stamp.saturating_sub(life_time));
-                        total += 1;
-                    }
-
-                    if total_push == ITERATIONS[class] + ITERATIONS[class] / 2 && is_push {
-                        self.transfer_push_batch(
-                            class,
-                            push_list,
-                            push_list_start,
-                            total_push,
-                            cpu,
-                            inner,
-                        );
-                        total_push = 0;
-                        push_list = null_mut();
-                        push_list_start = null_mut();
+                        lifetime_sum = lifetime_sum.saturating_add(stamp.saturating_sub(life_time));
+                        lifetime_samples += 1;
                     }
 
                     next = old_next;
@@ -159,11 +129,11 @@ impl SlabCache {
                     );
                 }
 
-                main_list.trim_lock.unlock();
+                drop(trim_guard);
 
                 crate::global_vals::record_transfer_pop!(class, total_popped);
-                if total > 0 {
-                    let new_avg = (avg / total).clamp(1, 100);
+                if lifetime_samples > 0 {
+                    let new_avg = (lifetime_sum / lifetime_samples).clamp(1, 100);
                     TRIM_SMOOTHING[class].update_refill(new_avg as usize, 1, 100);
                 }
 
@@ -232,10 +202,42 @@ impl SlabCache {
         }
         let length = page_end - page_start;
 
-        if cfg!(feature = "lazy-page-trim") {
-            madvise(page_start as *mut c_void, length, Advice::LinuxFree).is_ok()
+        let advice = if cfg!(feature = "lazy-page-trim") {
+            Advice::LinuxFree
         } else {
-            madvise(page_start as *mut c_void, length, Advice::LinuxDontNeed).is_ok()
+            Advice::LinuxDontNeed
+        };
+        madvise(page_start as *mut c_void, length, advice).is_ok()
+    }
+}
+
+impl TransferCache {
+    unsafe fn detach_normal_for_trim(&self) -> *mut Header {
+        let mut list = self.list.load(Acquire);
+        loop {
+            let pack = Tagging.untag_ptr(list);
+            if pack.current_header.is_null() {
+                return null_mut();
+            }
+
+            let count = self
+                .size
+                .normal_blocks
+                .load(AtomicOrdering::TransferFetchLoad);
+            match self.list.compare_exchange(
+                list,
+                Tagging.tag_ptr(null_mut(), pack.old_packed),
+                Acquire,
+                Relaxed,
+            ) {
+                Ok(_) => {
+                    self.size
+                        .normal_blocks
+                        .fetch_sub(count, AtomicOrdering::TransferFetchOp);
+                    return pack.current_header;
+                }
+                Err(observed) => list = observed,
+            }
         }
     }
 }

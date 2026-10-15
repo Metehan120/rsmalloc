@@ -3,7 +3,7 @@ use std::os::raw::{c_int, c_void};
 use crate::{
     Header,
     big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND,
-    core_prim::wrappers::UnsafePointer,
+    core_prim::wrappers::MaybeNull,
     inner::{
         alloc::{rs_alloc, usable_size},
         preload::libc_int::set_nomem,
@@ -22,7 +22,7 @@ pub unsafe extern "C" fn malloc(size: usize) -> *mut c_void {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn malloc_usable_size(ptr: *mut c_void) -> usize {
-    usable_size(UnsafePointer::new(ptr as *mut Header)) as usize
+    usable_size(MaybeNull::new(ptr as *mut Header)) as usize
 }
 
 #[unsafe(no_mangle)]

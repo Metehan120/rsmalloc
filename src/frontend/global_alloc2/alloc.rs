@@ -15,7 +15,7 @@ use crate::{
     GLOBAL_ALLOC_ONCE, Header,
     backend::bootstrap::main_bootstrap,
     big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND,
-    core_prim::wrappers::UnsafePointer,
+    core_prim::wrappers::MaybeNull,
     inner::{
         align::memalign_inner,
         alloc::{rs_alloc, usable_size},
@@ -89,7 +89,7 @@ impl RSMalloc {
     }
 
     #[inline(never)]
-    unsafe fn memalign_non_inline(align: usize, size: usize) -> UnsafePointer<Header> {
+    unsafe fn memalign_non_inline(align: usize, size: usize) -> MaybeNull<Header> {
         memalign_inner(align, size, false)
     }
 
@@ -133,7 +133,7 @@ impl RSMalloc {
     ) -> Result<NonNull<[u8]>, AllocError> {
         self.init();
         let pointer = rs_realloc(
-            UnsafePointer::new(pointer.as_ptr()).cast(),
+            MaybeNull::new(pointer.as_ptr()).cast(),
             new_layout.size().max(1),
             Some(new_layout.align()),
         );
@@ -156,13 +156,13 @@ unsafe impl GlobalAlloc for RSMalloc {
 
     #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, _: Layout) {
-        rs_free(UnsafePointer::new(ptr as *mut Header));
+        rs_free(MaybeNull::new(ptr as *mut Header));
     }
 
     #[inline]
     unsafe fn realloc(&self, ptr: *mut u8, _: Layout, new_size: usize) -> *mut u8 {
         unsafe { self.init() };
-        rs_realloc(UnsafePointer::new(ptr as *mut Header), new_size, None).cast_as_ptr()
+        rs_realloc(MaybeNull::new(ptr as *mut Header), new_size, None).cast_as_ptr()
     }
 
     #[inline]
@@ -195,7 +195,7 @@ unsafe impl std::alloc::Allocator for RSMalloc {
 
     #[inline]
     unsafe fn deallocate(&self, pointer: NonNull<u8>, _: Layout) {
-        rs_free(UnsafePointer::new(pointer.as_ptr()).cast());
+        rs_free(MaybeNull::new(pointer.as_ptr()).cast());
     }
 
     #[inline]
@@ -283,13 +283,13 @@ unsafe impl AllocationAPI for RSMalloc {
 
     #[inline]
     unsafe fn deallocate(&self, pointer: *mut u8) {
-        rs_free(UnsafePointer::new(pointer).cast());
+        rs_free(MaybeNull::new(pointer).cast());
     }
 
     #[inline]
     unsafe fn usable_size(&self, pointer: NonNull<u8>) -> Result<usize, AllocationError> {
         self.init();
-        let size = usable_size(UnsafePointer::new(pointer.as_ptr()).cast());
+        let size = usable_size(MaybeNull::new(pointer.as_ptr()).cast());
         if size != 0 {
             return Ok(size);
         }
@@ -308,7 +308,7 @@ unsafe impl AllocationAPI for RSMalloc {
         }
 
         let size = new_size.bytes();
-        let pointer = rs_realloc(UnsafePointer::new(pointer).cast(), size, None);
+        let pointer = rs_realloc(MaybeNull::new(pointer).cast(), size, None);
         if size == 0 || !pointer.is_null() {
             return Ok(pointer.cast_as_ptr());
         }
@@ -331,7 +331,7 @@ unsafe impl AllocationAPI for RSMalloc {
 
         let size = new_size.bytes();
         let pointer = rs_realloc(
-            UnsafePointer::new(pointer).cast(),
+            MaybeNull::new(pointer).cast(),
             size,
             Some(new_alignment.get()),
         );
@@ -369,7 +369,7 @@ impl RSMallocCoreAPI for RSMalloc {
     unsafe fn rs_usable_size(&self, pointer: NonNull<u8>) -> Option<usize> {
         unsafe { self.init() };
 
-        let usable = unsafe { usable_size(UnsafePointer::new(pointer.as_ptr()).cast()) };
+        let usable = unsafe { usable_size(MaybeNull::new(pointer.as_ptr()).cast()) };
         (usable != 0).then_some(usable)
     }
 

@@ -62,12 +62,12 @@ still reaches `posix_align_inner`'s validation.
 `find_original_ptr` unaligned-reads the tag at `p-TAG_SIZE`. A match causes an unaligned read of the raw
 payload pointer at `p-OFFSET_SIZE`. With `validate-foreign-first`, that recovered address must also pass radix
 ownership or the allocator aborts for possible prefix injection. There is no exact start/offset check or
-stored requested alignment in this prefix. The `SafePointer` wrapper is not a checked-pointer abstraction: its
+stored requested alignment in this prefix. The `Owned` wrapper is not a checked-pointer abstraction: its
 dereference implementation directly dereferences the raw pointer.
 
 Source: `src/inner/align.rs` — `posix_align_inner`, `memalign_inner`; `src/inner/free.rs` —
 `find_original_ptr`; `src/global_vals.rs` — `OFFSET_SIZE`, `TAG_SIZE`; `src/core_prim/wrappers.rs` —
-`SafePointer`, `UnsafePointer`.
+`Owned`, `MaybeNull`.
 
 ## Radix: 4 KiB granularity over a bounded address space
 

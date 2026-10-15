@@ -6,7 +6,7 @@ use crate::{
     ALIGN_TAG, BIG_MAGIC, CURRENT_STAMP, FREED_MAGIC, Header, MAGIC, OFFSET_SIZE, RSMallocError,
     TAG_SIZE,
     big_allocations::big_allocation::big_free,
-    core_prim::wrappers::{SafePointer, UnsafePointer},
+    core_prim::wrappers::{MaybeNull, Owned},
     internals::radix_tree::{RADIX, valid_user_addr},
     rseq_core::slab_cache::SLAB_CACHE,
     traits::GenericCache,
@@ -29,7 +29,7 @@ unsafe fn zero_small_payload(header_ptr: *mut Header, class: usize) {
 }
 
 #[inline(always)]
-pub unsafe fn find_original_ptr(ptr: UnsafePointer<Header>) -> UnsafePointer<Header> {
+pub unsafe fn find_original_ptr(ptr: MaybeNull<Header>) -> MaybeNull<Header> {
     let mut header_search_ptr = ptr;
     let tag_loc = (header_search_ptr.cast_usize()).wrapping_sub(TAG_SIZE) as *const usize;
 
@@ -45,7 +45,7 @@ pub unsafe fn find_original_ptr(ptr: UnsafePointer<Header>) -> UnsafePointer<Hea
             );
         }
 
-        header_search_ptr = UnsafePointer::new(presumed_original_ptr as *mut Header);
+        header_search_ptr = MaybeNull::new(presumed_original_ptr as *mut Header);
     }
 
     header_search_ptr
@@ -55,7 +55,7 @@ pub unsafe fn find_original_ptr(ptr: UnsafePointer<Header>) -> UnsafePointer<Hea
 pub static RS_FREE_CALLS_DEBUG: AtomicUsize = AtomicUsize::new(0);
 
 #[inline(always)]
-pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
+pub unsafe fn rs_free(ptr: MaybeNull<Header>) {
     if unlikely(ptr.is_null()) {
         return;
     }
@@ -108,7 +108,7 @@ pub unsafe fn rs_free(ptr: UnsafePointer<Header>) {
 
 #[cold]
 #[inline(never)]
-unsafe fn cold_path(header: SafePointer<Header>, ptr: UnsafePointer<Header>) {
+unsafe fn cold_path(header: Owned<Header>, ptr: MaybeNull<Header>) {
     #[cfg(not(feature = "validate-foreign-first"))]
     if !RADIX.is_owned_noninline_no_validation(ptr.cast_usize()) {
         #[cfg(feature = "preload")]

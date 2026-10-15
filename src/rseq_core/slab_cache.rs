@@ -20,7 +20,7 @@ use crate::{
     Header, MetaData, NCPU, RSMallocError,
     core_prim::{
         predictor::AdaptiveBatching,
-        wrappers::{SafePointer, UnsafePointer},
+        wrappers::{MaybeNull, Owned},
     },
     internals::{
         atomics::{AtomicOrdering, AtomicUsize},
@@ -50,7 +50,7 @@ pub struct SizeList {
 }
 
 pub struct RseqCache {
-    list: UnsafePointer<Header>,
+    list: MaybeNull<Header>,
     usage: AtomicUsize,
 }
 
@@ -81,7 +81,7 @@ pub struct Bitmap {
 }
 
 pub struct SlabCacheInner {
-    cache: SafePointer<MainCache>,
+    cache: Owned<MainCache>,
     numa: NumaTopology,
     pub is_numa: bool,
     bitmap: Bitmap,
@@ -109,7 +109,7 @@ impl SlabCache {
     pub const fn new() -> Self {
         Self {
             inner: UnsafeCell::new(SlabCacheInner {
-                cache: SafePointer::NULL,
+                cache: Owned::NULL,
                 numa: NumaTopology {
                     cpu_to_node: null_mut(),
                     ncpu: 0,
@@ -152,7 +152,7 @@ impl SlabCache {
                 .log_and_abort()
             });
 
-            inner.cache = SafePointer::from(list as *mut MainCache);
+            inner.cache = Owned::from(list as *mut MainCache);
 
             if let Some(numa) = parse_numa_topology(ncpu) {
                 inner.numa = numa;
@@ -385,7 +385,7 @@ impl GenericCache for SlabCache {
     }
 
     #[inline(always)]
-    unsafe fn pop(&self, class: usize) -> UnsafePointer<Header> {
+    unsafe fn pop(&self, class: usize) -> MaybeNull<Header> {
         let inner = self.get_inner();
         let rseq = get_rseq();
 
@@ -398,7 +398,7 @@ impl GenericCache for SlabCache {
                 continue;
             }
 
-            return UnsafePointer::new(result.get());
+            return MaybeNull::new(result.get());
         }
     }
 }

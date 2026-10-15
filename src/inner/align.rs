@@ -3,7 +3,7 @@ use std::{os::raw::c_void, ptr::null_mut};
 use rustix::io::Errno;
 
 use crate::{
-    Header, OFFSET_SIZE, TAG_SIZE, core_prim::wrappers::UnsafePointer, inner::alloc::rs_alloc,
+    Header, OFFSET_SIZE, TAG_SIZE, core_prim::wrappers::MaybeNull, inner::alloc::rs_alloc,
 };
 
 #[inline(always)]
@@ -47,7 +47,7 @@ pub unsafe fn memalign_inner(
     alignment: usize,
     size: usize,
     skip_checks: bool,
-) -> UnsafePointer<Header> {
+) -> MaybeNull<Header> {
     let mut ptr: *mut c_void = null_mut();
     let adjusted_alignment = alignment.max(size_of::<*mut c_void>());
 
@@ -57,13 +57,13 @@ pub unsafe fn memalign_inner(
             use crate::inner::preload::libc_int::__errno_location;
             *__errno_location() = Errno::INVAL.raw_os_error();
         }
-        return UnsafePointer::NULL;
+        return MaybeNull::NULL;
     }
 
     let success = posix_align_inner(&mut ptr, adjusted_alignment, size);
 
     if success == 0 {
-        UnsafePointer::new(ptr as *mut Header)
+        MaybeNull::new(ptr as *mut Header)
     } else {
         #[cfg(feature = "preload")]
         {
@@ -71,6 +71,6 @@ pub unsafe fn memalign_inner(
             *__errno_location() = success;
         }
 
-        UnsafePointer::NULL
+        MaybeNull::NULL
     }
 }

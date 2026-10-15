@@ -11,7 +11,7 @@ use crate::{
     big_allocations::big_allocation::big_malloc,
     core_prim::{
         predictor::{BULK_FILL_PREDICTOR_INIT_BATCH, PREDICTOR_INIT_BATCH},
-        wrappers::UnsafePointer,
+        wrappers::MaybeNull,
     },
     inner::free::find_original_ptr,
     internals::{big_meta_map::BIG_META_MAP, radix_tree::RADIX},
@@ -137,7 +137,7 @@ unsafe fn take_one_from_batch(
     #[cfg(feature = "debug")] wanted: usize,
     #[cfg(feature = "debug")] cpu_id: usize,
     #[cfg(feature = "debug")] can_probe_more: bool,
-) -> UnsafePointer<Header> {
+) -> MaybeNull<Header> {
     let first = start;
 
     #[cfg(feature = "debug-printer-thread")]
@@ -154,7 +154,7 @@ unsafe fn take_one_from_batch(
     }
 
     (*first).next = null_mut();
-    UnsafePointer::new(first)
+    MaybeNull::new(first)
 }
 
 #[cfg(not(feature = "confidence-predictor"))]
@@ -183,7 +183,7 @@ pub unsafe fn refill(
     fill_demand: usize,
     #[cfg(feature = "experimental-predictive-demand")]
     demand_sample: crate::core_prim::predictor::DemandSample<'_>,
-) -> UnsafePointer<Header> {
+) -> MaybeNull<Header> {
     let bulk_batch = bulk_refill!(class, cpu_id);
 
     if let Ok((start, tail, count)) = bulk_fill(class, cpu_id, bulk_batch) {
@@ -221,12 +221,12 @@ pub unsafe fn refill(
         return result;
     }
 
-    UnsafePointer::NULL
+    MaybeNull::NULL
 }
 
 #[unsafe(link_section = ".text.hot")]
 #[inline(never)]
-pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
+pub unsafe fn fill(class: usize) -> MaybeNull<Header> {
     #[cfg(feature = "debug")]
     {
         TOTAL_REFILL_CALLS.fetch_add(1, Ordering::Relaxed);
@@ -342,7 +342,7 @@ macro_rules! is_owned {
 pub static RS_ALLOC_CALLS_DEBUG: AtomicUsize = AtomicUsize::new(0);
 
 #[inline(always)]
-unsafe fn rs_alloc_inner<const FLAG: bool>(size: usize, aligned: bool) -> UnsafePointer<Header> {
+unsafe fn rs_alloc_inner<const FLAG: bool>(size: usize, aligned: bool) -> MaybeNull<Header> {
     #[cfg(feature = "preload")]
     ONCE.call_once(|| crate::inner::preload::bootstrap::bootstrap());
 
@@ -360,7 +360,7 @@ unsafe fn rs_alloc_inner<const FLAG: bool>(size: usize, aligned: bool) -> Unsafe
             if unlikely(class.is_null()) {
                 #[cfg(feature = "preload")]
                 set_nomem();
-                return UnsafePointer::NULL;
+                return MaybeNull::NULL;
             }
 
             class
@@ -389,17 +389,17 @@ unsafe fn rs_alloc_inner<const FLAG: bool>(size: usize, aligned: bool) -> Unsafe
 }
 
 #[inline(always)]
-pub unsafe fn rs_alloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
+pub unsafe fn rs_alloc(size: usize, aligned: bool) -> MaybeNull<Header> {
     rs_alloc_inner::<true>(size, aligned)
 }
 
 #[inline(always)]
-pub unsafe fn rs_alloc_no_flag(size: usize, aligned: bool) -> UnsafePointer<Header> {
+pub unsafe fn rs_alloc_no_flag(size: usize, aligned: bool) -> MaybeNull<Header> {
     rs_alloc_inner::<false>(size, aligned)
 }
 
 #[inline(always)]
-pub unsafe fn usable_size(ptr: UnsafePointer<Header>) -> usize {
+pub unsafe fn usable_size(ptr: MaybeNull<Header>) -> usize {
     if ptr.is_null() {
         return 0;
     }

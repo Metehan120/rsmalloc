@@ -5,7 +5,7 @@ use crate::big_allocations::segmented_bitmap::{
     BIG_SEGMENTED_BITMAP_MAX_ORDER, BIG_SEGMENTED_BITMAP_MIN_ORDER, SEGMENTED_BITMAP_BACKEND,
 };
 use crate::core_prim::predictor::DEFAULT_BATCH;
-use crate::core_prim::wrappers::UnsafePointer;
+use crate::core_prim::wrappers::MaybeNull;
 use crate::inner::align::memalign_inner;
 use crate::inner::alloc::{rs_alloc, usable_size};
 use crate::inner::calloc::{rs_calloc, zero};
@@ -538,7 +538,7 @@ impl RSMalloc {
 }
 
 #[inline(never)]
-unsafe fn memalign_non_inline(align: usize, size: usize) -> UnsafePointer<Header> {
+unsafe fn memalign_non_inline(align: usize, size: usize) -> MaybeNull<Header> {
     memalign_inner(align, size, false)
 }
 
@@ -572,7 +572,7 @@ unsafe impl GlobalAlloc for RSMalloc {
     /// `ptr` must have been allocated by this allocator with a compatible `layout`.
     #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, _: Layout) {
-        rs_free(UnsafePointer::new(ptr as *mut Header));
+        rs_free(MaybeNull::new(ptr as *mut Header));
     }
 
     /// Reallocates memory.
@@ -588,7 +588,7 @@ unsafe impl GlobalAlloc for RSMalloc {
     unsafe fn realloc(&self, ptr: *mut u8, _: Layout, new_size: usize) -> *mut u8 {
         self.init();
 
-        rs_realloc(UnsafePointer::new(ptr as *mut Header), new_size, None).cast_as_ptr()
+        rs_realloc(MaybeNull::new(ptr as *mut Header), new_size, None).cast_as_ptr()
     }
 
     /// Allocates zeroed memory.
@@ -771,12 +771,7 @@ impl RSMalloc {
         new_alignment: Option<usize>,
     ) -> *mut u8 {
         self.init();
-        rs_realloc(
-            UnsafePointer::new(ptr as *mut Header),
-            new_size,
-            new_alignment,
-        )
-        .cast_as_ptr()
+        rs_realloc(MaybeNull::new(ptr as *mut Header), new_size, new_alignment).cast_as_ptr()
     }
 
     /// Frees memory allocated by rsmalloc's Rust-facing malloc-style API.
@@ -788,7 +783,7 @@ impl RSMalloc {
     /// may abort or corrupt allocator state depending on configuration.
     #[inline]
     pub unsafe fn rs_free(&self, ptr: *mut u8) {
-        rs_free(UnsafePointer::new(ptr as *mut Header));
+        rs_free(MaybeNull::new(ptr as *mut Header));
     }
 
     /// Advises the kernel that cold free pages may be reclaimed.
@@ -834,7 +829,7 @@ impl RSMalloc {
     /// configured foreign-pointer behavior.
     #[inline]
     pub unsafe fn rs_usable_size(&self, ptr: *mut u8) -> Size {
-        let size = usable_size(UnsafePointer::new(ptr as *mut Header));
+        let size = usable_size(MaybeNull::new(ptr as *mut Header));
         if size == 0 {
             Size::NotRS
         } else {
@@ -1161,9 +1156,9 @@ pub const RSMALLOC_SEGMENTED_BITMAP_NUM_ORDERS: usize =
     BIG_SEGMENTED_BITMAP_MAX_ORDER - BIG_SEGMENTED_BITMAP_MIN_ORDER + 1;
 
 #[cfg(any(feature = "debug", doc))]
-unsafe fn alloc_usize_array(count: usize) -> UnsafePointer<Header> {
+unsafe fn alloc_usize_array(count: usize) -> MaybeNull<Header> {
     let Some(bytes) = count.checked_mul(core::mem::size_of::<usize>()) else {
-        return UnsafePointer::NULL;
+        return MaybeNull::NULL;
     };
 
     rs_alloc(bytes, false)
@@ -1206,7 +1201,7 @@ pub struct RSMallocStats {
 
     pub rseq_cpu_count: usize,
     pub rseq_cpu_cached_bytes: *mut usize,
-    rseq_cpu_buffer: UnsafePointer<Header>,
+    rseq_cpu_buffer: MaybeNull<Header>,
     pub rseq_cpu_total_cached_bytes: usize,
     pub rseq_cpu_min_cached_bytes: usize,
     pub rseq_cpu_max_cached_bytes: usize,
@@ -1267,7 +1262,7 @@ impl Drop for RSMallocStats {
             return;
         }
 
-        unsafe { rs_free(UnsafePointer::new(self.rseq_cpu_buffer.as_ptr())) };
+        unsafe { rs_free(MaybeNull::new(self.rseq_cpu_buffer.as_ptr())) };
     }
 }
 

@@ -1,6 +1,6 @@
 use crate::v2::alloc::RSMalloc;
 #[cfg(any(feature = "debug", doc))]
-use crate::{Header, core_prim::wrappers::UnsafePointer, inner::alloc::rs_alloc};
+use crate::{Header, core_prim::wrappers::MaybeNull, inner::alloc::rs_alloc};
 
 #[cfg(any(feature = "debug", doc))]
 use crate::big_allocations::segmented_bitmap::{
@@ -318,9 +318,9 @@ const RSMALLOC_SEGMENTED_BITMAP_NUM_ORDERS: usize =
     BIG_SEGMENTED_BITMAP_MAX_ORDER - BIG_SEGMENTED_BITMAP_MIN_ORDER + 1;
 
 #[cfg(any(feature = "debug", doc))]
-unsafe fn alloc_usize_array(count: usize) -> UnsafePointer<Header> {
+unsafe fn alloc_usize_array(count: usize) -> MaybeNull<Header> {
     let Some(bytes) = count.checked_mul(core::mem::size_of::<usize>()) else {
-        return UnsafePointer::NULL;
+        return MaybeNull::NULL;
     };
 
     rs_alloc(bytes, false)
@@ -363,7 +363,7 @@ pub struct RSMallocStats {
 
     pub rseq_cpu_count: usize,
     pub rseq_cpu_cached_bytes: *mut usize,
-    rseq_cpu_buffer: UnsafePointer<Header>,
+    rseq_cpu_buffer: MaybeNull<Header>,
     pub rseq_cpu_total_cached_bytes: usize,
     pub rseq_cpu_min_cached_bytes: usize,
     pub rseq_cpu_max_cached_bytes: usize,
@@ -425,8 +425,8 @@ impl Drop for RSMallocStats {
         }
 
         unsafe {
-            use crate::{core_prim::wrappers::UnsafePointer, inner::free::rs_free};
-            rs_free(UnsafePointer::new(self.rseq_cpu_buffer.as_ptr()))
+            use crate::{core_prim::wrappers::MaybeNull, inner::free::rs_free};
+            rs_free(MaybeNull::new(self.rseq_cpu_buffer.as_ptr()))
         };
     }
 }

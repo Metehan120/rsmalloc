@@ -2,7 +2,7 @@ use std::num::NonZero;
 
 use crate::{
     big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND,
-    core_prim::wrappers::UnsafePointer,
+    core_prim::wrappers::MaybeNull,
     inner::{
         align::memalign_inner, alloc::rs_alloc, calloc::rs_calloc, free::rs_free,
         realloc::rs_realloc,
@@ -73,7 +73,7 @@ impl<'a> RawInterface for RSMallocRaw<'a> {
     }
 
     unsafe fn rs_free(&self, ptr: *mut u8) {
-        rs_free(UnsafePointer::new(ptr).cast());
+        rs_free(MaybeNull::new(ptr).cast());
     }
 
     unsafe fn rs_aligned(&self, alignment: usize, size: usize) -> *mut u8 {
@@ -88,7 +88,7 @@ impl<'a> RawInterface for RSMallocRaw<'a> {
         new_alignment: Option<usize>,
     ) -> *mut u8 {
         self.global.manual_init();
-        rs_realloc(UnsafePointer::new(old).cast(), new_size, new_alignment).cast_as_ptr()
+        rs_realloc(MaybeNull::new(old).cast(), new_size, new_alignment).cast_as_ptr()
     }
 
     unsafe fn rs_zeroed(&self, size: usize) -> *mut u8 {

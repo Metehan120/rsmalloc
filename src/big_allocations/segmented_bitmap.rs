@@ -29,7 +29,7 @@ use crate::{
         background_thread::maybe_start_background_reclaimer,
         page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR},
     },
-    core_prim::{predictor::EMA_ALPHA, wrappers::SafePointer},
+    core_prim::{predictor::EMA_ALPHA, wrappers::Owned},
     global_vals::{BIG_TRIM_THRESHOLD, SMALL_TRIM_THRESHOLD, TOTAL_CACHED_VA},
     inner::alloc::MAX_REFILL_RETRIES,
     internals::{
@@ -97,7 +97,7 @@ impl HintLane {
 struct Node {
     head: AtomicPtr<Region>,
     growth: SpinLock<()>,
-    lanes: SafePointer<HintLane>,
+    lanes: Owned<HintLane>,
 }
 
 impl Node {
@@ -105,7 +105,7 @@ impl Node {
         Self {
             head: AtomicPtr::new(null_mut()),
             growth: SpinLock::new(()),
-            lanes: SafePointer::from(lanes),
+            lanes: Owned::from(lanes),
         }
     }
 
@@ -187,10 +187,10 @@ impl Region {
 
 #[repr(C, align(64))]
 struct State {
-    nodes: SafePointer<Node>,
+    nodes: Owned<Node>,
     node_count: usize,
     lane_count: usize,
-    active_ids: SafePointer<u16>,
+    active_ids: Owned<u16>,
     active_count: usize,
     thp: bool,
     is_numa: bool,
@@ -284,10 +284,10 @@ impl SegmentedBitmapAllocator {
                 nodes.add(id).write(Node::new(node_lanes));
             }
             state.write(State {
-                nodes: SafePointer::from(nodes),
+                nodes: Owned::from(nodes),
                 node_count: count,
                 lane_count,
-                active_ids: SafePointer::from(numa.node_ids),
+                active_ids: Owned::from(numa.node_ids),
                 active_count: numa.nnodes,
                 thp,
                 is_numa: inner.is_numa,

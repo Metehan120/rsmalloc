@@ -29,7 +29,7 @@ The hot paths use unchecked class indexing and assume valid CPU IDs and complete
 
 | Type or field | Contents and role |
 | --- | --- |
-| `RseqCache.list` | `UnsafePointer<Header>` local free-list head; changed by RSEQ, not a tagged CAS |
+| `RseqCache.list` | `MaybeNull<Header>` local free-list head; changed by RSEQ, not a tagged CAS |
 | `RseqCache.usage` | Atomic block count used for capacity policy and debug reporting |
 | `MainCache.cache` | One local `RseqCache` per `NUM_SIZE_CLASSES` |
 | `MainCache.mail` | One shared `TransferCache` per class |
@@ -42,7 +42,7 @@ The hot paths use unchecked class indexing and assume valid CPU IDs and complete
 Its asserted size is 4096 bytes normally and 8192 bytes with `experimental-predictive-demand`; `TransferCache` has 64-byte alignment.
 These are actual source layout constraints, not a claim that every local class occupies its own cache line.
 `RseqCache` itself has no explicit C layout annotation: the assembly derives the usage displacement with `offset_of!`, rather than hardcoding its Rust field offset.
-`UnsafePointer` is transparent (`src/core_prim/wrappers.rs`).
+`MaybeNull` is transparent (`src/core_prim/wrappers.rs`).
 
 ```mermaid
 flowchart TD

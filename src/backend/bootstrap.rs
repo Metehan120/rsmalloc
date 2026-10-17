@@ -17,7 +17,7 @@ use crate::{
         SEGMENTED_BITMAP_ATTEMPT_HUGE, SEGMENTED_BITMAP_MAX_CACHE, SMALL_TRIM_THRESHOLD, get_clock,
     },
     inner::alloc::MAX_REFILL_RETRIES,
-    internals::radix_tree::{RADIX, RadixTree},
+    internals::radix_tree::RADIX,
     result_handling::RSMallocError,
     rseq_core::{
         rseq_offsets::{__rseq_offset, __rseq_size},
@@ -164,7 +164,7 @@ pub unsafe fn main_bootstrap(config: BootstrapConfig) {
     }
 
     prepared.apply();
-    RADIX = RadixTree::new();
+    RADIX.init();
     SLAB_CACHE.ensure_cache();
 
     let numa = SLAB_CACHE.get_numa_and_inner().0;

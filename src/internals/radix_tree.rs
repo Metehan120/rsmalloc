@@ -10,10 +10,11 @@ use crate::{
 
 use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 use std::{
+    cell::UnsafeCell,
     hint::cold_path,
     ptr::null_mut,
     sync::atomic::{
-        AtomicU64, AtomicUsize,
+        AtomicBool, AtomicU64, AtomicUsize,
         Ordering::{self, Acquire, Release},
     },
 };
@@ -36,7 +37,8 @@ const MAX_ADDR: usize = 1usize << 56;
 const RADIX_MAX_CHUNKS: usize = 1 << (L0_BITS + L1_BITS + L2_BITS + L3_BITS);
 
 pub struct Radix {
-    pub l0: MaybeNull<AtomicUsize>,
+    l0: UnsafeCell<MaybeNull<AtomicUsize>>,
+    initialized: AtomicBool,
     alloc_lock: SpinLock<()>,
 }
 
@@ -66,12 +68,43 @@ impl Radix {
         }
     }
 
-    pub unsafe fn new() -> Self {
-        let ptr = Self::map_memory(L0_SIZE * size_of::<AtomicUsize>()) as *mut AtomicUsize;
+    const fn new_const() -> Self {
         Self {
+            l0: UnsafeCell::new(MaybeNull::NULL),
+            initialized: AtomicBool::new(false),
             alloc_lock: SpinLock::new(()),
-            l0: MaybeNull::new(ptr),
         }
+    }
+
+    #[cfg(test)]
+    pub unsafe fn new() -> Self {
+        let radix = Self::new_const();
+        radix.init();
+        radix
+    }
+
+    #[cold]
+    #[inline(never)]
+    unsafe fn init(&self) {
+        if self.initialized.load(Acquire) {
+            return;
+        }
+        let _guard = self.alloc_lock.lock();
+        if self.initialized.load(Ordering::Relaxed) {
+            return;
+        }
+        let ptr = Self::map_memory(L0_SIZE * size_of::<AtomicUsize>()) as *mut AtomicUsize;
+        *self.l0.get() = MaybeNull::new(ptr);
+        // Readers must observe publication before touching the cell. The root
+        // stays mapped and is never replaced after this store.
+        self.initialized.store(true, Release);
+    }
+
+    // The caller has observed initialization, either through bootstrap's gate
+    // or an acquire load of initialized. The published root cannot be null.
+    #[inline(always)]
+    unsafe fn root(&self) -> *mut AtomicUsize {
+        (*self.l0.get()).as_ptr()
     }
 
     #[inline(always)]
@@ -141,7 +174,7 @@ impl Radix {
         }
         let (i0, i1, i2, i3) = Self::split(chunk_idx);
         let lock = &self.alloc_lock;
-        let l1 = Self::get_or_alloc(self.l0.as_ptr(), i0, L1_SIZE, lock);
+        let l1 = Self::get_or_alloc(self.root(), i0, L1_SIZE, lock);
         let l2 = Self::get_or_alloc(l1, i1, L2_SIZE, lock);
         let l3 = Self::get_or_alloc_l3(l2, i2, lock);
 
@@ -161,11 +194,12 @@ impl Radix {
 
     #[inline(always)]
     unsafe fn set_range(&self, start_idx: usize, end_idx: usize, val: bool) {
+        let root = self.root();
         let mut chunk_idx = start_idx;
         loop {
             let (i0, i1, i2, i3) = Self::split(chunk_idx);
             let lock = &self.alloc_lock;
-            let l1 = Self::get_or_alloc(self.l0.as_ptr(), i0, L1_SIZE, lock);
+            let l1 = Self::get_or_alloc(root, i0, L1_SIZE, lock);
             let l2 = Self::get_or_alloc(l1, i1, L2_SIZE, lock);
             let l3 = Self::get_or_alloc_l3(l2, i2, lock);
 
@@ -215,14 +249,23 @@ impl Radix {
         }
     }
 
+    #[cfg(test)]
     #[inline(always)]
     pub unsafe fn get(&self, chunk_idx: usize) -> bool {
+        if unlikely(!self.initialized.load(Acquire)) {
+            return false;
+        }
+        Self::get_from_root(self.root(), chunk_idx)
+    }
+
+    #[inline(always)]
+    unsafe fn get_from_root(root: *mut AtomicUsize, chunk_idx: usize) -> bool {
         if unlikely(chunk_idx >= RADIX_MAX_CHUNKS) {
             return false;
         }
         let (i0, i1, i2, i3) = Self::split(chunk_idx);
 
-        let l1 = (*self.l0.as_ptr().add(i0)).load(Acquire) as *mut AtomicUsize;
+        let l1 = (*root.add(i0)).load(Acquire) as *mut AtomicUsize;
         if l1.is_null() {
             return false;
         }
@@ -261,17 +304,20 @@ unsafe impl Sync for RadixTree {}
 impl RadixTree {
     pub const unsafe fn new_const() -> Self {
         Self {
-            nodes: Radix {
-                l0: MaybeNull::new(null_mut()),
-                alloc_lock: SpinLock::new(()),
-            },
+            nodes: Radix::new_const(),
         }
     }
 
+    #[cfg(test)]
     pub unsafe fn new() -> Self {
         Self {
             nodes: Radix::new(),
         }
+    }
+
+    #[inline(never)]
+    pub unsafe fn init(&self) {
+        self.nodes.init();
     }
 
     #[cfg(feature = "preload")]
@@ -319,9 +365,10 @@ impl RadixTree {
 
     #[inline(always)]
     pub unsafe fn is_owned_inner<const VALIDATE: bool>(&self, addr: usize) -> bool {
-        if unlikely(self.nodes.l0.is_null()) {
+        if unlikely(!self.nodes.initialized.load(Acquire)) {
             return false;
         }
+        let root = self.nodes.root();
 
         if unlikely(!Self::valid_user_addr(addr)) && VALIDATE {
             RSMallocError::InvalidPointer {
@@ -330,7 +377,7 @@ impl RadixTree {
             .log_and_abort();
         }
 
-        self.nodes.get(addr / CHUNK_SIZE)
+        Radix::get_from_root(root, addr / CHUNK_SIZE)
     }
 
     #[inline(always)]
@@ -346,7 +393,7 @@ impl RadixTree {
 
     #[cfg(feature = "debug")]
     pub unsafe fn report(&self) -> RadixReport {
-        if self.nodes.l0.is_null() {
+        if !self.nodes.initialized.load(Acquire) {
             return RadixReport {
                 l1_nodes: 0,
                 l2_nodes: 0,
@@ -356,13 +403,14 @@ impl RadixTree {
             };
         }
 
+        let root = self.nodes.root();
         let mut l1_nodes = 0usize;
         let mut l2_nodes = 0usize;
         let mut leaves = 0usize;
         let mut owned_chunks = 0usize;
 
         for i0 in 0..L0_SIZE {
-            let l1 = (*self.nodes.l0.as_ptr().add(i0)).load(Acquire) as *mut AtomicUsize;
+            let l1 = (*root.add(i0)).load(Acquire) as *mut AtomicUsize;
             if l1.is_null() {
                 continue;
             }
@@ -413,7 +461,7 @@ pub const fn valid_user_addr(addr: usize) -> bool {
     addr < MAX_ADDR
 }
 
-pub static mut RADIX: RadixTree = unsafe { RadixTree::new_const() };
+pub static RADIX: RadixTree = unsafe { RadixTree::new_const() };
 
 #[cfg(test)]
 mod tests {

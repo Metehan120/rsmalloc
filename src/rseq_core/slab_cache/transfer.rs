@@ -219,6 +219,8 @@ impl SlabCache {
         loop {
             let pack = Tagging.untag_ptr(old);
 
+            // This node is ours until publication succeeds. On failure, only
+            // the observed head changes; relink our node before trying again.
             (*header).next = pack.current_header;
             match list_ptr.compare_exchange(
                 old,
@@ -253,6 +255,8 @@ impl SlabCache {
         class: usize,
         cpu_id: usize,
     ) {
+        // The bitmap is a search hint, not ownership of either list. Clear it
+        // first, then recheck both heads so a concurrent push is not overlooked.
         self.clear_class_hint(inner, class, cpu_id);
 
         if !Tagging
@@ -289,13 +293,21 @@ impl SlabCache {
         'retry: loop {
             let mut pack = Tagging.untag_ptr(old);
 
+            // The trimmer privately owns the chain it detached, not every
+            // block pushed during the trim phase. Pushes can still publish work.
             if list.trim_lock.get_lock() {
                 if !force {
+                    // Ordinary callers skip this cache rather than wait for trimming.
                     return None;
                 } else if !pack.current_header.is_null() {
+                    // This head was sampled before the flag. It may belong to
+                    // the trimmer's chain; wait out the trim phase before walking it.
                     continue 'retry;
                 }
 
+                // Starting from an empty snapshot, a forced caller polls for
+                // newly published blocks or the end of trimming. Finding a head
+                // still requires the normal tagged CAS below to claim its blocks.
                 loop {
                     old = list_ptr.load(Ordering::Acquire);
                     pack = Tagging.untag_ptr(old);
@@ -311,6 +323,8 @@ impl SlabCache {
 
             if pack.current_header.is_null() {
                 if eq(list_ptr, normal_ptr) {
+                    // Prefer normal blocks; consult reclaimed blocks only when
+                    // this normal-head snapshot is empty. Each list has its own count.
                     (list_ptr, size_ptr) = (trimmed_ptr, &list.size.trimmed_blocks);
                     old = list_ptr.load(Ordering::Acquire);
                     continue;
@@ -351,6 +365,8 @@ impl SlabCache {
                         cpu_id,
                     });
                 }
+                // A changed head/tag invalidates the candidate: the next loop
+                // must walk again rather than reuse the old tail and count.
                 Err(new_head) => old = new_head,
             }
 

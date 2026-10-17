@@ -24,10 +24,10 @@ unsafe fn mbind_node(ptr: *mut c_void, len: usize, node_id: u16, mode: usize) ->
         Sysno::mbind,
         ptr as usize,
         len,
-        mode,
+        mode | MPOL_F_STATIC_NODES,
         &mask as *const usize as usize,
         maxnode,
-        MPOL_F_STATIC_NODES
+        0usize
     )
     .is_ok()
 }

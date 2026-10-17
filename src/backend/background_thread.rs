@@ -65,7 +65,7 @@ pub unsafe fn spawn(entry: unsafe fn() -> !) -> bool {
     };
 
     std::thread::Builder::new()
-        .name("rsmalloc-trimmer".into())
+        .name("rs-maintenance".into())
         .stack_size(64 * 1024)
         .spawn(move || unsafe {
             entry();

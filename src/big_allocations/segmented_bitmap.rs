@@ -71,6 +71,7 @@ static CAS_RETRIES: AtomicUsize = AtomicUsize::new(0);
 mod segment;
 use segment::{SEGMENT_BYTES, SLOT_BYTES, Segment};
 
+// Reserved region and metadata bytes, not a measurement of resident memory.
 pub static SEGMENTED_BITMAP_TOTAL_CACHED_VA: AtomicUsize = AtomicUsize::new(0);
 pub const BIG_SEGMENTED_BITMAP_MIN_ORDER: usize = 22;
 pub const BIG_SEGMENTED_BITMAP_MAX_ORDER: usize = 26;
@@ -78,8 +79,13 @@ pub const SEGMENTED_BITMAP_NUM_ORDERS: usize =
     BIG_SEGMENTED_BITMAP_MAX_ORDER - BIG_SEGMENTED_BITMAP_MIN_ORDER + 1;
 const PAGE_SIZE: usize = 4096;
 const MAX_LANES: usize = 96;
+// (block base, absolute byte order, previous contents state, Segment pointer).
+// The last field becomes the `segmented_bitmap_region` token in big metadata;
+// despite that field's name, it identifies a Segment, not its enclosing Region.
 type Allocation = (usize, usize, Flags, usize);
 
+// A recent successful segment per size order. Lanes spread hint writes across
+// CPUs; they neither reserve slots nor guarantee that the segment still has room.
 #[repr(C, align(64))]
 struct HintLane {
     orders: [AtomicPtr<Segment>; SEGMENTED_BITMAP_NUM_ORDERS],
@@ -93,6 +99,8 @@ impl HintLane {
     }
 }
 
+// One NUMA node's region list and hint lanes. The growth lock protects adding
+// regions, not allocations inside existing segments.
 #[repr(C, align(64))]
 struct Node {
     head: AtomicPtr<Region>,
@@ -112,6 +120,7 @@ impl Node {
     #[inline(always)]
     unsafe fn alloc(&self, order: usize, lane: usize) -> Option<Allocation> {
         let hint = &self.lanes[lane].orders[order];
+        // The hint is only the first probe; Segment::alloc must still claim slots.
         let preferred = hint.load(Ordering::Acquire);
         if !preferred.is_null()
             && let Some((addr, flags)) = (*preferred).alloc(order)
@@ -137,6 +146,8 @@ impl Node {
         let mut region = self.head.load(Ordering::Acquire);
         while let Some(region_ref) = region.as_ref() {
             let count = region_ref.segment_count;
+            // Different lanes start at different segments to avoid all scanners
+            // fighting over the first segment. Still inspect the whole region.
             let mut index = lane % count;
             for _ in 0..count {
                 let segment = region_ref.segments().add(index);
@@ -162,12 +173,16 @@ impl Node {
     }
 
     /// The caller holds growth, or is constructing an unpublished node table.
+    // Initialize the descriptor and its segments before the release publication.
+    // Once visible, next and the region's geometry stay unchanged.
     unsafe fn publish(&self, region: *mut Region) {
         (*region).next = self.head.load(Ordering::Relaxed);
         self.head.store(region, Ordering::Release);
     }
 }
 
+// Metadata allocation: [Region][Segment; segment_count]. `base` points to a
+// separate contiguous payload range; it is not the address of this descriptor.
 #[repr(C, align(64))]
 struct Region {
     next: *mut Region,
@@ -185,6 +200,8 @@ impl Region {
     }
 }
 
+// Node IDs index the node table directly; active_ids separately lists actual
+// NUMA nodes for fallback scans. Hint lanes are stored after the node table.
 #[repr(C, align(64))]
 struct State {
     nodes: Owned<Node>,
@@ -201,6 +218,8 @@ impl State {
         &self.nodes[id]
     }
 
+    // Each head is sampled independently. A concurrent new region may be missed
+    // by this pass, but existing descriptors remain valid throughout traversal.
     unsafe fn regions(&self) -> impl Iterator<Item = &Region> {
         (0..self.node_count).flat_map(move |id| {
             let mut next = self.node(id).head.load(Ordering::Acquire);
@@ -234,6 +253,8 @@ impl SegmentedBitmapAllocator {
             .max(SEGMENT_BYTES)
     }
 
+    // Match the initial reservation's accounting, including metadata and page
+    // rounding. Bootstrap uses this to keep its initial region below the trigger.
     pub(crate) fn initial_cached_bytes(
         size: usize,
         node_count: usize,
@@ -277,6 +298,8 @@ impl SegmentedBitmapAllocator {
             let Some(mem) = reserve(bytes, 0, true, inner.is_numa) else {
                 return;
             };
+            // One metadata reservation holds [State][Node table][all hint lanes].
+            // None of these addresses becomes visible through self.state yet.
             let state = mem.cast::<State>();
             let nodes = mem.cast::<u8>().add(size_of::<State>()).cast::<Node>();
             let lanes = nodes.cast::<u8>().add(node_bytes).cast::<HintLane>();
@@ -303,6 +326,8 @@ impl SegmentedBitmapAllocator {
                 let _ = munmap(mem, bytes);
                 return;
             };
+            // Only the starting NUMA node gets an initial region. Other nodes
+            // acquire regions lazily when their first local allocation needs one.
             (*state).node(id).publish(region);
             add_segmented_bitmap_cached_va(bytes);
             self.state.store(state, Ordering::Release);
@@ -319,6 +344,8 @@ impl SegmentedBitmapAllocator {
         let order = size.max(SLOT_BYTES).next_power_of_two().trailing_zeros() as usize
             - BIG_SEGMENTED_BITMAP_MIN_ORDER;
 
+        // Null means optional backend initialization did not complete successfully;
+        // the caller can fall back to direct mappings rather than dereference it.
         let state = self.state.load(Ordering::Acquire).as_ref()?;
         let id = if (node_id as usize) < state.node_count {
             node_id as usize
@@ -344,6 +371,8 @@ impl SegmentedBitmapAllocator {
         let node = state.node(id);
         {
             let _growth = node.growth.lock();
+            // Another thread may have grown this node while we waited. Recheck
+            // existing segments under the lock before reserving another 64 MiB.
             if let Some(block) = node.alloc(order, lane) {
                 return Some(block);
             }
@@ -361,6 +390,8 @@ impl SegmentedBitmapAllocator {
             }
         }
 
+        // Remote reuse is a fallback after local growth fails, not the normal
+        // path taken merely because the preferred node's existing regions are full.
         for index in 0..state.active_count {
             let remote = state.active_ids[index] as usize;
             if remote != id
@@ -378,6 +409,8 @@ impl SegmentedBitmapAllocator {
         if !(BIG_SEGMENTED_BITMAP_MIN_ORDER..=BIG_SEGMENTED_BITMAP_MAX_ORDER).contains(&order) {
             return;
         }
+        // The token records the exact segment that supplied the allocation,
+        // including allocations borrowed from another NUMA node.
         if let Some(segment) = (region as *const Segment).as_ref() {
             segment.free(
                 addr,
@@ -397,16 +430,21 @@ impl SegmentedBitmapAllocator {
         if !(BIG_SEGMENTED_BITMAP_MIN_ORDER..BIG_SEGMENTED_BITMAP_MAX_ORDER).contains(&order) {
             return None;
         }
+        // Grow only into the free right-hand buddy; Segment::grow also requires
+        // the existing block to be the left half, so its address cannot change.
         let segment = (region as *const Segment).as_ref()?;
         segment
             .grow(addr, order - BIG_SEGMENTED_BITMAP_MIN_ORDER)
             .then_some((addr, order + 1))
     }
 
+    // Explicit trimming bypasses the cached-byte and age gates, but still trims
+    // only free dirty slots. Zero requested bytes means an unbounded pass.
     pub unsafe fn trim(&self, requested: usize) -> usize {
         self.trim_inner(requested, true)
     }
 
+    // Background trimming keeps the byte threshold and per-slot age checks.
     pub unsafe fn trim_old(&self, requested: usize) -> usize {
         self.trim_inner(requested, false)
     }
@@ -421,6 +459,8 @@ impl SegmentedBitmapAllocator {
         let Some(state) = self.state.load(Ordering::Acquire).as_ref() else {
             return 0;
         };
+        // Serialize trim passes with slab reclamation. This does not stop normal
+        // allocation: each candidate range must also be claimed in its bitmap.
         let LockGuard::Free(_guard) = GLOBAL_TRIM_LOCK.try_lock() else {
             return 0;
         };
@@ -475,6 +515,8 @@ impl SegmentedBitmapAllocator {
     }
 }
 
+// Metadata always uses the page backend. Payload regions smaller than ARENA_SIZE
+// use it too; larger regions get their own mapping and optional NUMA preference.
 unsafe fn reserve(bytes: usize, node: u16, metadata: bool, is_numa: bool) -> Option<*mut c_void> {
     if metadata || bytes < ARENA_SIZE {
         return PAGE_ALLOCATOR.alloc(Some(node), bytes);
@@ -515,6 +557,8 @@ fn region_metadata_size(region_bytes: usize) -> Option<usize> {
         .checked_align_to(PAGE_SIZE)
 }
 
+// Construct privately: reserve payload and descriptor storage, initialize every
+// segment, and register payload ownership before the caller publishes the region.
 unsafe fn create_region(bytes: usize, node: u16, state: &State) -> Option<*mut Region> {
     let count = bytes / SEGMENT_BYTES;
     let metadata_bytes = region_metadata_size(bytes)?;
@@ -559,6 +603,8 @@ struct TrimStats {
 impl TrimStats {
     fn finish(&self, previous: u32) {
         if self.samples != 0 {
+            // CURRENT_STAMP uses 100 ms ticks: 10..85 means 1..8.5 seconds.
+            // Smooth the observed ages so one pass does not replace the policy.
             let average = (self.ages / self.samples).clamp(10, 85);
             let blended = (EMA_ALPHA * average as f32 + (1.0 - EMA_ALPHA) * previous as f32)
                 .round()
@@ -580,10 +626,14 @@ fn trim_segment(
     stats: &mut TrimStats,
     mut advise: impl FnMut(usize, usize) -> bool,
 ) {
+    // This snapshot selects candidates only. A later claim_trim CAS must prove
+    // they are still free and dirty before advice can touch their payload pages.
     let snapshot = segment.snapshot();
     let allocated = snapshot as u16;
     let trimmed_or_used = (snapshot >> 32) as u16;
     let never_allocated = !allocated & !trimmed_or_used;
+    // Untouched slots need no advice. Count them as long-lived samples instead
+    // of age-zero frees, so an almost-unused region does not encourage rapid trim.
     stats.ages += never_allocated.count_ones() as u64 * 85;
     stats.samples += never_allocated.count_ones() as u64;
 
@@ -605,6 +655,9 @@ fn trim_segment(
         if !segment.claim_trim(mask) {
             continue;
         }
+        // claim_trim temporarily sets busy bits, excluding allocations/growth.
+        // Re-read ages after claiming: a candidate could have been reused and
+        // freed again between the initial snapshot and our successful claim.
         let mut eligible = 0u16;
         for index in slot..slot + count {
             let age = segment.age(index, now);
@@ -614,23 +667,31 @@ fn trim_segment(
                 eligible |= 1 << index;
             }
         }
+        // Return young slots without clearing dirty state or changing their age.
+        // Only the eligible subset remains privately held for advice below.
         segment.finish_trim(mask & !eligible, false, None);
         while eligible != 0 {
             let start = eligible.trailing_zeros() as usize;
             let mut count = (eligible >> start).trailing_ones() as usize;
             if requested != 0 {
+                // This request is the budget remaining on entry to this segment.
+                // Trim whole 4 MiB slots, so the final range may exceed it.
                 let remaining = requested.saturating_sub(stats.bytes - initial_bytes);
                 count = count.min(remaining.div_ceil(SLOT_BYTES).max(1));
             }
             let range = (((1u32 << count) - 1) << start) as u16;
             let bytes = count * SLOT_BYTES;
             let success = advise(segment.base() + start * SLOT_BYTES, bytes);
+            // Release the temporary claim only after advice completes. Success
+            // clears dirty bits; failure keeps them for a later retry. Both paths
+            // refresh timestamps, and neither clears the ever-used history.
             segment.finish_trim(range, success, Some(now));
             eligible &= !range;
             if success {
                 stats.bytes += bytes;
             }
             if requested != 0 && stats.bytes - initial_bytes >= requested {
+                // Release every still-claimed slot before ending a budgeted pass.
                 segment.finish_trim(eligible, false, None);
                 return;
             }
@@ -683,6 +744,9 @@ impl SegmentedBitmapAllocator {
             for index in 0..region.segment_count {
                 let word = (*region.segments().add(index)).snapshot();
                 let mut free = !(word as u16);
+                // Partition this free-slot snapshot into the largest aligned
+                // blocks that fit. These are reusable shapes, not a record of
+                // the sizes previously allocated, and are not reserved by reporting.
                 while free != 0 {
                     let slot = free.trailing_zeros() as usize;
                     let order = (0..SEGMENTED_BITMAP_NUM_ORDERS)

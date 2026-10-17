@@ -45,6 +45,52 @@ fn allocations_report_requested_size_and_alignment() {
 }
 
 #[test]
+fn boundary_allocations_remain_isolated_while_live() {
+    let allocator = RSMalloc::new_default();
+    // Representative class edges and the 2 MiB slab/large-allocation cutoff.
+    for boundary in [16, 128, 4096, 2 * 1024 * 1024] {
+        for alignment in [16, 256] {
+            let blocks = [boundary - 1, boundary, boundary + 1].map(|size| {
+                let layout = Layout::from_size_align(size, alignment).unwrap();
+                let block = allocator.allocate(layout).unwrap();
+                assert_eq!(block.len(), size);
+                assert_eq!(block.cast::<u8>().as_ptr() as usize % alignment, 0);
+                (block, layout)
+            });
+            unsafe {
+                for (index, (block, layout)) in blocks.iter().enumerate() {
+                    block
+                        .cast::<u8>()
+                        .as_ptr()
+                        .write_bytes(0x51 + index as u8, layout.size());
+                    let start = block.cast::<u8>().as_ptr() as usize;
+                    let end = start + layout.size();
+                    for (other, other_layout) in &blocks[..index] {
+                        let other_start = other.cast::<u8>().as_ptr() as usize;
+                        assert!(end <= other_start || other_start + other_layout.size() <= start);
+                    }
+                }
+                for (index, (block, _)) in blocks.iter().enumerate() {
+                    assert!(block.as_ref().iter().all(|&b| b == 0x51 + index as u8));
+                }
+                let (middle, layout) = blocks[1];
+                allocator.deallocate(middle.cast(), layout);
+                let replacement = allocator.allocate_zeroed(layout).unwrap();
+                assert_eq!(replacement.len(), layout.size());
+                assert_eq!(replacement.cast::<u8>().as_ptr() as usize % alignment, 0);
+                assert!(replacement.as_ref().iter().all(|&b| b == 0));
+                for index in [0, 2] {
+                    let (block, layout) = blocks[index];
+                    assert!(block.as_ref().iter().all(|&b| b == 0x51 + index as u8));
+                    allocator.deallocate(block.cast(), layout);
+                }
+                allocator.deallocate(replacement.cast(), layout);
+            }
+        }
+    }
+}
+
+#[test]
 fn zeroed_allocations_cover_the_reported_block() {
     let allocator = RSMalloc::new_default();
     for alignment in [1, 16, 256] {
@@ -116,46 +162,58 @@ fn resize_moves_for_incompatible_alignment_including_equal_size() {
 #[test]
 fn grow_zeroed_clears_retained_capacity_from_old_logical_size() {
     let allocator = RSMalloc::new_default();
-    let original = Layout::from_size_align(512, 16).unwrap();
-    let small = Layout::from_size_align(63, 16).unwrap();
-    let grown_layout = Layout::from_size_align(257, 16).unwrap();
-    unsafe {
-        let block = allocator.allocate(original).unwrap();
-        block
-            .cast::<u8>()
-            .as_ptr()
-            .write_bytes(0xac, original.size());
-        let shrunk = allocator.shrink(block.cast(), original, small).unwrap();
-        let grown = allocator
-            .grow_zeroed(shrunk.cast(), small, grown_layout)
-            .unwrap();
-        assert_eq!(grown.cast::<u8>(), shrunk.cast());
-        assert!(grown.as_ref()[..small.size()].iter().all(|&b| b == 0xac));
-        assert!(grown.as_ref()[small.size()..].iter().all(|&b| b == 0));
-        allocator.deallocate(grown.cast(), grown_layout);
+    for (backing_alignment, small_alignment) in [(16, 16), (256, 32), (4096, 256)] {
+        let original = Layout::from_size_align(512, backing_alignment).unwrap();
+        let small = Layout::from_size_align(63, small_alignment).unwrap();
+        let grown_layout = Layout::from_size_align(257, backing_alignment).unwrap();
+        unsafe {
+            let block = allocator.allocate(original).unwrap();
+            block
+                .cast::<u8>()
+                .as_ptr()
+                .write_bytes(0xac, original.size());
+            let shrunk = allocator.shrink(block.cast(), original, small).unwrap();
+            let grown = allocator
+                .grow_zeroed(shrunk.cast(), small, grown_layout)
+                .unwrap();
+            assert_eq!(grown.cast::<u8>(), shrunk.cast());
+            assert_eq!(grown.len(), grown_layout.size());
+            assert_eq!(grown.cast::<u8>().as_ptr() as usize % backing_alignment, 0);
+            assert!(grown.as_ref()[..small.size()].iter().all(|&b| b == 0xac));
+            assert!(grown.as_ref()[small.size()..].iter().all(|&b| b == 0));
+            allocator.deallocate(grown.cast(), grown_layout);
+        }
     }
 }
 
 #[test]
-fn grow_zeroed_preserves_prefix_when_alignment_requires_moving() {
+fn grow_zeroed_preserves_prefix_when_moving() {
     let allocator = RSMalloc::new_default();
-    let old_layout = Layout::from_size_align(63, 16).unwrap();
-    unsafe {
-        let block = allocator.allocate(old_layout).unwrap();
-        let ptr = block.cast::<u8>();
-        ptr.as_ptr().write_bytes(0x71, old_layout.size());
-        let alignment = 1usize << ((ptr.as_ptr() as usize).trailing_zeros() + 1);
-        let new_layout = Layout::from_size_align(8192, alignment).unwrap();
-        let grown = allocator.grow_zeroed(ptr, old_layout, new_layout).unwrap();
-        assert_ne!(grown.cast::<u8>(), ptr);
-        assert_eq!(grown.cast::<u8>().as_ptr() as usize % alignment, 0);
-        assert!(
-            grown.as_ref()[..old_layout.size()]
-                .iter()
-                .all(|&b| b == 0x71)
-        );
-        assert!(grown.as_ref()[old_layout.size()..].iter().all(|&b| b == 0));
-        allocator.deallocate(grown.cast(), new_layout);
+    for (old_alignment, new_size, new_alignment) in [
+        (16, 8192, None),
+        (16, 2 * 1024 * 1024 + 1, Some(256)),
+        (4096, 2 * 1024 * 1024 + 1, Some(16)),
+    ] {
+        let old_layout = Layout::from_size_align(63, old_alignment).unwrap();
+        unsafe {
+            let block = allocator.allocate(old_layout).unwrap();
+            let ptr = block.cast::<u8>();
+            ptr.as_ptr().write_bytes(0x71, old_layout.size());
+            let alignment = 1usize << ((ptr.as_ptr() as usize).trailing_zeros() + 1);
+            let alignment = new_alignment.unwrap_or(alignment);
+            let new_layout = Layout::from_size_align(new_size, alignment).unwrap();
+            let grown = allocator.grow_zeroed(ptr, old_layout, new_layout).unwrap();
+            assert_ne!(grown.cast::<u8>(), ptr);
+            assert_eq!(grown.len(), new_layout.size());
+            assert_eq!(grown.cast::<u8>().as_ptr() as usize % alignment, 0);
+            assert!(
+                grown.as_ref()[..old_layout.size()]
+                    .iter()
+                    .all(|&b| b == 0x71)
+            );
+            assert!(grown.as_ref()[old_layout.size()..].iter().all(|&b| b == 0));
+            allocator.deallocate(grown.cast(), new_layout);
+        }
     }
 }
 
@@ -201,12 +259,17 @@ fn failed_growth_preserves_original_block() {
                 .grow(block.cast(), old_layout, impossible)
                 .is_err()
         );
+        assert!(block.as_ref().iter().all(|&b| b == 0xd3));
+        block
+            .cast::<u8>()
+            .as_ptr()
+            .write_bytes(0x6b, old_layout.size());
         assert!(
             allocator
                 .grow_zeroed(block.cast(), old_layout, impossible)
                 .is_err()
         );
-        assert!(block.as_ref().iter().all(|&b| b == 0xd3));
+        assert!(block.as_ref().iter().all(|&b| b == 0x6b));
         allocator.deallocate(block.cast(), old_layout);
     }
 }

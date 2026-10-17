@@ -4,7 +4,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum HelperErrors {
     #[error("{alignment} is not a nonzero power-of-two alignment")]
-    NotALignOfTwo { alignment: usize },
+    InvalidAlignment { alignment: usize },
 }
 
 /// Default alignment of allocations.
@@ -35,13 +35,13 @@ impl Alignment {
         {
             return Ok(nonzero);
         }
-        Err(HelperErrors::NotALignOfTwo { alignment })
+        Err(HelperErrors::InvalidAlignment { alignment })
     }
 }
 
 pub const fn need_align_of<T>(multiple_of: usize) -> Result<bool, HelperErrors> {
     if !multiple_of.is_power_of_two() {
-        return Err(HelperErrors::NotALignOfTwo {
+        return Err(HelperErrors::InvalidAlignment {
             alignment: multiple_of,
         });
     }

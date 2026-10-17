@@ -234,6 +234,20 @@ impl SegmentedBitmapAllocator {
             .max(SEGMENT_BYTES)
     }
 
+    pub(crate) fn initial_cached_bytes(
+        size: usize,
+        node_count: usize,
+        ncpu: usize,
+    ) -> Option<usize> {
+        let region_bytes = Self::normalize_region_size(size);
+        region_bytes
+            .checked_add(region_metadata_size(region_bytes)?)?
+            .checked_add(state_metadata_size(
+                node_count.max(1),
+                Self::lane_count(ncpu),
+            )?)
+    }
+
     #[inline(always)]
     fn lane_count(ncpu: usize) -> usize {
         ncpu.clamp(1, MAX_LANES)
@@ -257,17 +271,7 @@ impl SegmentedBitmapAllocator {
             let Some(node_bytes) = size_of::<Node>().checked_mul(count) else {
                 return;
             };
-            let Some(lane_bytes) = count
-                .checked_mul(lane_count)
-                .and_then(|lanes| lanes.checked_mul(size_of::<HintLane>()))
-            else {
-                return;
-            };
-            let Some(bytes) = size_of::<State>()
-                .checked_add(node_bytes)
-                .and_then(|bytes| bytes.checked_add(lane_bytes))
-                .and_then(|bytes| bytes.checked_align_to(PAGE_SIZE))
-            else {
+            let Some(bytes) = state_metadata_size(count, lane_count) else {
                 return;
             };
             let Some(mem) = reserve(bytes, 0, true, inner.is_numa) else {
@@ -493,12 +497,27 @@ unsafe fn reserve(bytes: usize, node: u16, metadata: bool, is_numa: bool) -> Opt
     None
 }
 
-unsafe fn create_region(bytes: usize, node: u16, state: &State) -> Option<*mut Region> {
-    let count = bytes / SEGMENT_BYTES;
-    let metadata_bytes = count
+fn state_metadata_size(node_count: usize, lane_count: usize) -> Option<usize> {
+    let node_bytes = node_count.checked_mul(size_of::<Node>())?;
+    let lane_bytes = node_count
+        .checked_mul(lane_count)?
+        .checked_mul(size_of::<HintLane>())?;
+    size_of::<State>()
+        .checked_add(node_bytes)?
+        .checked_add(lane_bytes)?
+        .checked_align_to(PAGE_SIZE)
+}
+
+fn region_metadata_size(region_bytes: usize) -> Option<usize> {
+    (region_bytes / SEGMENT_BYTES)
         .checked_mul(size_of::<Segment>())?
         .checked_add(size_of::<Region>())?
-        .checked_align_to(PAGE_SIZE)?;
+        .checked_align_to(PAGE_SIZE)
+}
+
+unsafe fn create_region(bytes: usize, node: u16, state: &State) -> Option<*mut Region> {
+    let count = bytes / SEGMENT_BYTES;
+    let metadata_bytes = region_metadata_size(bytes)?;
     let data = reserve(bytes, node, false, state.is_numa)?;
     let Some(metadata) = reserve(metadata_bytes, node, true, state.is_numa) else {
         let _ = munmap(data, bytes);

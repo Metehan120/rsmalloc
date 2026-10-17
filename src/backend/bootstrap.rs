@@ -5,7 +5,9 @@ use crate::{
         },
         page_allocator::{ARENA_SIZE, MIN_ARENA_SIZE, PAGE_ALLOCATOR},
     },
-    big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND,
+    big_allocations::segmented_bitmap::{
+        BIG_SEGMENTED_BITMAP_MAX_ORDER, SEGMENTED_BITMAP_BACKEND, SegmentedBitmapAllocator,
+    },
     core_prim::{
         predictor::PREDICTOR_INIT_BATCH,
         random::{init_align, init_magic},
@@ -21,6 +23,7 @@ use crate::{
         rseq_offsets::{__rseq_offset, __rseq_size},
         slab_cache::SLAB_CACHE,
     },
+    utility::Alignment,
 };
 
 pub struct BootstrapConfig {
@@ -75,6 +78,62 @@ impl BootstrapConfig {
             foreign_pointer_abort,
         }
     }
+
+    fn prepare(mut self) -> Option<PreparedBootstrapConfig> {
+        self.arena_size = self.arena_size.max(MIN_ARENA_SIZE).checked_align_to(4096)?;
+        self.segmented_bitmap_max_cache = self
+            .segmented_bitmap_max_cache
+            .checked_next_power_of_two()?
+            .max(1 << BIG_SEGMENTED_BITMAP_MAX_ORDER);
+        self.segmented_bitmap_disable_percentage =
+            self.segmented_bitmap_disable_percentage.min(100);
+        self.segmented_bitmap_enable_percentage = self
+            .segmented_bitmap_enable_percentage
+            .min(self.segmented_bitmap_disable_percentage);
+        self.segmented_bitmap_attempt_huge &= !self.disable_thp;
+        Some(PreparedBootstrapConfig { settings: self })
+    }
+}
+
+struct PreparedBootstrapConfig {
+    settings: BootstrapConfig,
+}
+
+impl PreparedBootstrapConfig {
+    fn big_trim_threshold(&self, node_count: usize, ncpu: usize) -> Option<usize> {
+        let footprint = SegmentedBitmapAllocator::initial_cached_bytes(
+            self.settings.segmented_bitmap_max_cache,
+            node_count,
+            ncpu,
+        )?
+        .checked_add(1)?;
+        Some(self.settings.big_trim_threshold.max(footprint))
+    }
+
+    unsafe fn apply(&self) {
+        let config = &self.settings;
+        ARENA_SIZE = config.arena_size;
+        MAX_REFILL_RETRIES = config.max_refill;
+        PREDICTOR_INIT_BATCH = config.init_batch;
+        SEGMENTED_BITMAP_MAX_CACHE = config.segmented_bitmap_max_cache;
+        SEGMENTED_BITMAP_ATTEMPT_HUGE = config.segmented_bitmap_attempt_huge;
+        DISABLE_TRIM_THREAD = config.disable_trimmer;
+        DISABLE_RELIEF = config.disable_relief;
+        // Subsystem initialization may check whether to start the worker.
+        // Keep both thresholds unreachable until all bootstrap work is done.
+        SMALL_TRIM_THRESHOLD = usize::MAX;
+        BIG_TRIM_THRESHOLD = usize::MAX;
+        SEGMENTED_BITMAP_DISABLE_PERCENTAGE = config.segmented_bitmap_disable_percentage;
+        SEGMENTED_BITMAP_ENABLE_PERCENTAGE = config.segmented_bitmap_enable_percentage;
+        RS_DISABLE_THP = config.disable_thp;
+
+        #[cfg(not(feature = "preload"))]
+        {
+            crate::global_vals::FOREIGN_POINTER_ABORT = config.foreign_pointer_abort;
+        }
+        #[cfg(feature = "preload")]
+        let _ = config.foreign_pointer_abort;
+    }
 }
 
 #[inline(never)]
@@ -83,62 +142,52 @@ pub unsafe fn main_bootstrap(config: BootstrapConfig) {
         RSMallocError::RseqUnavailable.log_and_abort();
     }
 
+    let prepared = config.prepare().unwrap_or_else(|| {
+        RSMallocError::Bootstrap {
+            reason: "arena size alignment or segmented bitmap region size overflowed",
+        }
+        .log_and_abort()
+    });
+
     #[cfg(feature = "debug")]
     {
         crate::START_TIME = Some(std::time::Instant::now());
     }
-
     get_clock();
 
-    ARENA_SIZE = config.arena_size.max(MIN_ARENA_SIZE);
-    MAX_REFILL_RETRIES = config.max_refill;
-    PREDICTOR_INIT_BATCH = config.init_batch;
+    if prepared.settings.random_magic {
+        init_magic();
+        init_align();
+        while ALIGN_TAG == 0 {
+            init_align();
+        }
+    }
 
+    prepared.apply();
     RADIX = RadixTree::new();
     SLAB_CACHE.ensure_cache();
 
-    let node_count = SLAB_CACHE.get_numa_and_inner().0.nranges;
-    PAGE_ALLOCATOR.init(node_count);
-
-    SEGMENTED_BITMAP_MAX_CACHE = config.segmented_bitmap_max_cache;
-
-    SEGMENTED_BITMAP_ATTEMPT_HUGE = config.segmented_bitmap_attempt_huge;
-    DISABLE_TRIM_THREAD = config.disable_trimmer;
-    SMALL_TRIM_THRESHOLD = config.small_trim_threshold;
-    if config.big_trim_threshold < 1024 * 1024 * 128 {
-        panic!("incorrect size for big_trim_threshold, minimum should be 128mb")
-    }
-    BIG_TRIM_THRESHOLD = config.big_trim_threshold;
-    DISABLE_RELIEF = config.disable_relief;
-
-    SEGMENTED_BITMAP_DISABLE_PERCENTAGE = config.segmented_bitmap_disable_percentage;
-    SEGMENTED_BITMAP_ENABLE_PERCENTAGE = config.segmented_bitmap_enable_percentage;
-    RS_DISABLE_THP = config.disable_thp;
-
-    #[cfg(not(feature = "preload"))]
-    {
-        crate::global_vals::FOREIGN_POINTER_ABORT = config.foreign_pointer_abort;
-    }
-
-    #[cfg(feature = "preload")]
-    let _ = config.foreign_pointer_abort;
+    let numa = SLAB_CACHE.get_numa_and_inner().0;
+    let big_trim_threshold = prepared
+        .big_trim_threshold(numa.nranges, numa.ncpu)
+        .unwrap_or_else(|| {
+            RSMallocError::Bootstrap {
+                reason: "segmented bitmap initial footprint or big trim threshold overflowed",
+            }
+            .log_and_abort()
+        });
+    PAGE_ALLOCATOR.init(numa.nranges);
 
     SEGMENTED_BITMAP_BACKEND.init(
-        SEGMENTED_BITMAP_MAX_CACHE,
-        SEGMENTED_BITMAP_ATTEMPT_HUGE && !RS_DISABLE_THP,
+        prepared.settings.segmented_bitmap_max_cache,
+        prepared.settings.segmented_bitmap_attempt_huge,
     );
 
     #[cfg(feature = "preload")]
     crate::core_prim::fork::register_fork_handlers();
 
-    if config.random_magic {
-        init_magic();
-        init_align();
-
-        if ALIGN_TAG == 0 {
-            while ALIGN_TAG == 0 {
-                init_align();
-            }
-        }
-    };
+    // Restore the effective thresholds last. Worker startup stays lazy: a
+    // later refill/growth checks them after the caller's initialization gate.
+    SMALL_TRIM_THRESHOLD = prepared.settings.small_trim_threshold;
+    BIG_TRIM_THRESHOLD = big_trim_threshold;
 }

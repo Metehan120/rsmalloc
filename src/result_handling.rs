@@ -6,6 +6,8 @@ use crate::Header;
 
 #[derive(Debug, Error)]
 pub enum RSMallocError {
+    #[error("bootstrap failed: {reason}")]
+    Bootstrap { reason: &'static str },
     #[error("out of memory while allocating {size} bytes in {subsystem}")]
     OutOfMemory {
         subsystem: &'static str,
@@ -34,6 +36,29 @@ impl RSMallocError {
     #[inline(never)]
     pub fn log_and_abort(&self) -> ! {
         match self {
+            Self::Bootstrap { reason } => {
+                // Initialization may be incomplete; avoid allocating or locking Rust's stderr.
+                for bytes in [
+                    b"[rsmalloc error] bootstrap failed: ".as_slice(),
+                    reason.as_bytes(),
+                    b"\n".as_slice(),
+                ] {
+                    let mut remaining = bytes;
+                    while !remaining.is_empty() {
+                        match unsafe {
+                            syscalls::syscall!(
+                                syscalls::Sysno::write,
+                                2usize,
+                                remaining.as_ptr() as usize,
+                                remaining.len()
+                            )
+                        } {
+                            Ok(written) if written > 0 => remaining = &remaining[written..],
+                            _ => break,
+                        }
+                    }
+                }
+            }
             Self::OutOfMemory {
                 errno: Some(errno), ..
             }

@@ -187,16 +187,6 @@ mod preload {
         fn get_lock(&self) -> bool {
             self.state.load(Ordering::Acquire) != 0
         }
-
-        fn unlock(&self) {
-            if self
-                .state
-                .compare_exchange(HELD, 0, Ordering::Release, Ordering::Relaxed)
-                .is_err()
-            {
-                std::process::abort();
-            }
-        }
     }
 
     #[cfg(test)]

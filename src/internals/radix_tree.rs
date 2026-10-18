@@ -453,7 +453,7 @@ impl RadixTree {
 
     #[inline(always)]
     const fn valid_user_addr(addr: usize) -> bool {
-        addr < MAX_ADDR
+        valid_user_addr(addr)
     }
 }
 

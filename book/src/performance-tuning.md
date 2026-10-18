@@ -26,7 +26,7 @@ Evaluate absolute refill counts and their cost, not just a predictor miss percen
 
 `with_max_refill_retries` controls retry policy used by refill/backing reservations. More attempts may help transient failures, but cost slow-path work and cannot repair unsupported RSEQ or guarantee allocation success. It does not remove ordinary cache-hit overhead.
 
-`confidence-predictor` and `experimental-predictive-demand` are opt-in policies. Test each independently before combining them, including their memory and latency effects. Demand feedback runs at refill time, not every cache hit; enabled builds also carry additional per-CPU state. Neither is part of `semi-hardened`.
+`confidence-predictor` and `experimental-predictive-demand` are opt-in policies. Test each independently before combining them, including their memory and latency effects. Demand feedback runs at refill time, not every cache hit; enabled builds also carry additional per-CPU state. Neither is part of `extra-checks`.
 
 ## Arena and region sizing
 
@@ -55,7 +55,7 @@ Slab trimming requires complete reclaimable payload pages. Tiny-class retention 
 
 `trim-aggressively` tightens idle-class eligibility. `lazy-page-trim` uses `MADV_FREE` rather than immediate discard for both slab and segmented-bitmap payload pages, including explicit and relief-triggered bitmap trimming. It can preserve reuse but delay RSS reduction until kernel reclaim. Benchmark burst/idle/burst sequences to expose the tradeoff.
 
-Manual core trimming can be appropriate between phases; see [native/core APIs](native-api.md#core-operations-initialization-and-best-effort-trim). `All` is an unbounded best-effort pass, not proof that all freed memory was returned. Big trim thresholds below **128 MiB** panic during bootstrap.
+Manual core trimming can be appropriate between phases; see [native/core APIs](native-api.md#core-operations-initialization-and-best-effort-trim). `All` is an unbounded best-effort pass, not proof that all freed memory was returned. Bootstrap sets the effective big trim threshold to `max(requested, initial_cached_bytes + 1)`, not a fixed 128 MiB rejection floor. The footprint includes the normalized initial region, page-rounded region metadata, and page-rounded state/node/hint tables. Footprint or `+ 1` overflow logs `RSMallocError::Bootstrap` and aborts. See `src/backend/bootstrap.rs` — `PreparedBootstrapConfig::big_trim_threshold`; `src/big_allocations/segmented_bitmap.rs` — `initial_cached_bytes`.
 
 Disabling periodic background trimming does not disable manual trimming or all worker activity: enabled relief can still need the worker. Only try disabling it when retained memory is acceptable and measured background interference matters. Avoid trimming on every request.
 

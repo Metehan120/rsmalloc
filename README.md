@@ -8,7 +8,7 @@ An RSEQ-based memory allocator for Rust and C applications on Linux `x86_64`. RS
 
 The [mdBook guide](book/src/introduction.md) explains the allocation lifecycle, safe integration, tuning, and [where RSMalloc can help or fall behind](book/src/workload-fit.md). Build it locally with `mdbook build book`, or preview it with `mdbook serve book`.
 
-> **Alpha-3 ownership change:** By default, non-null pointers passed to `free` must be live RSMalloc allocations. Foreign-pointer handling is best-effort because metadata is read before ownership is checked. Enable `validate-foreign-first` for ownership checks before those reads; it is also included in `semi-hardened`. Neither mode makes arbitrary or interior pointers safe to free. See [Free ownership assumptions](#free-ownership-assumptions).
+> **Alpha-3 ownership change:** By default, non-null pointers passed to `free` must be live RSMalloc allocations. Foreign-pointer handling is best-effort because metadata is read before ownership is checked. Enable `validate-foreign-first` for ownership checks before those reads; it is also included in `extra-checks`. Neither mode makes arbitrary or interior pointers safe to free. See [Free ownership assumptions](#free-ownership-assumptions).
 
 **Major milestone:** The default Rust `GlobalAlloc` and C `LD_PRELOAD` configurations build on stable Rust. RSMalloc no longer keeps refill metadata or adaptive batching in allocator-owned thread-local storage: both are maintained per CPU. It still uses libc's RSEQ TLS state. Only the optional `allocator-api` interface requires nightly Rust.
 
@@ -297,7 +297,7 @@ All features are **disabled by default**. Enable only what you need with `--feat
 | `page-backend-no-huge-page` | Discourages huge pages for slab arenas. May reduce RSS at the cost of more TLB pressure. |
 | `page-backend-huge-page` | Requests huge pages for slab arenas. Ignored when `page-backend-no-huge-page` is also enabled. |
 
-`confidence-predictor` and `experimental-predictive-demand` work independently or together. Neither is included in `semi-hardened`. They may improve or worsen throughput, latency, and memory usage—benchmark your workload before enabling them. The demand policy is experimental; disabled builds omit its state and sampling entirely.
+`confidence-predictor` and `experimental-predictive-demand` work independently or together. Neither is included in `extra-checks`. They may improve or worsen throughput, latency, and memory usage—benchmark your workload before enabling them. The demand policy is experimental; disabled builds omit its state and sampling entirely.
 
 For example, to try both in a preload build:
 
@@ -305,11 +305,11 @@ For example, to try both in a preload build:
 cargo build --release --features preload,confidence-predictor,experimental-predictive-demand
 ```
 
-### Hardening and advanced settings
+### Additional checks and advanced settings
 
 | Feature | What it does |
 |---|---|
-| `semi-hardened` | Enables `extended-header`, `check-owned-on-alloc`, `zero-small-on-free`, and `validate-foreign-first`. |
+| `extra-checks` | Enables `extended-header`, `check-owned-on-alloc`, `zero-small-on-free`, and `validate-foreign-first`. Adds checks and small-free zeroing; does not make RSMalloc a hardened allocator. |
 | `extended-header` | Uses wider allocation headers. |
 | `check-owned-on-alloc` | Checks ownership before returning allocations. Adds an ownership lookup. |
 | `validate-foreign-first` | Checks ownership before metadata reads during free, including recovered aligned pointers. Adds ownership lookups. |
@@ -323,7 +323,7 @@ cargo build --release --features preload,confidence-predictor,experimental-predi
 
 **Only free live pointers owned by RSMalloc.** By default, free checks that non-null input addresses are below `2^56`, then reads alignment and header metadata before ownership classification. The address-range check does not prove that memory is mapped, owned, or an allocation boundary. Foreign-pointer fallback/policy is best-effort: a foreign or invalid pointer can fault or be misclassified before reaching it.
 
-`validate-foreign-first` checks input ownership before those metadata reads and checks recovered aligned-allocation bases before reading their headers. A non-owned recovered base aborts as possible metadata injection. The feature is disabled by default and included in `semi-hardened`.
+`validate-foreign-first` checks input ownership before those metadata reads and checks recovered aligned-allocation bases before reading their headers. A non-owned recovered base aborts as possible metadata injection. The feature is disabled by default and included in `extra-checks`.
 
 The ownership radix tracks **4 KiB regions**, not individual allocation boundaries. These checks do not make arbitrary pointers, interior pointers, double frees, or use-after-free safe. Without the feature, aligned free relies on valid alignment metadata and does not ownership-check the recovered base. See [ARCHITECTURE.md](ARCHITECTURE.md) and [SECURITY.md](SECURITY.md) for the detailed assumptions.
 

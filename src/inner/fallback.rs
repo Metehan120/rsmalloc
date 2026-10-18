@@ -26,6 +26,7 @@ fn get_symbol(name: &[u8], init: &OnceLock<*mut c_void>) -> *mut c_void {
     *init.get_or_init(|| unsafe { dlsym(RTLD_NEXT, name.as_ptr() as *const c_char) })
 }
 
+#[inline(never)]
 pub unsafe fn free_fallback(ptr: *mut c_void) {
     if ptr.is_null() {
         return;
@@ -40,6 +41,7 @@ pub unsafe fn free_fallback(ptr: *mut c_void) {
     func(ptr);
 }
 
+#[inline(never)]
 pub unsafe fn realloc_fallback(ptr: *mut c_void, size: usize) -> *mut c_void {
     let sym = get_symbol(b"realloc\0", &REALLOC_FALLBACK);
     if sym.is_null() {
@@ -50,6 +52,7 @@ pub unsafe fn realloc_fallback(ptr: *mut c_void, size: usize) -> *mut c_void {
     func(ptr, size)
 }
 
+#[inline(never)]
 pub unsafe fn malloc_usable_size_fallback(ptr: *mut c_void) -> usize {
     if ptr.is_null() {
         return 0;

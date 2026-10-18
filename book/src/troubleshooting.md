@@ -114,7 +114,7 @@ Preserve the original reproducer. Capture the signal or allocator error, fault a
 
 For magic mismatches, double-free reports, foreign-pointer failures, or recovered-aligned-base rejection, audit API ownership and lifetimes first: FFI/plugin boundaries, interior pointers, stale pointers, matching layouts, and buffer writes into metadata. Such reports can also expose an allocator bug; do not assume the caller is always at fault.
 
-The default free path reads metadata before ownership validation and can fault before foreign-pointer fallback. A controlled `validate-foreign-first` or `semi-hardened` reproduction can add evidence, but its radix checks are page-granular, not proof of a valid live allocation. Do not disable magic checks to keep a corrupt process running. Diagnostic/hardening changes can alter timing; preserve results from both builds.
+The default free path reads metadata before ownership validation and can fault before foreign-pointer fallback. A controlled `validate-foreign-first` or `extra-checks` reproduction can add evidence, but its radix checks are page-granular, not proof of a valid live allocation. Do not disable magic checks to keep a corrupt process running. Diagnostic/hardening changes can alter timing; preserve results from both builds.
 
 ### Unexplained SIGBUS
 

@@ -87,10 +87,12 @@ Despite its name, `PerCacheLimit` specifies the **initial segmented-bitmap regio
 | Maximum refill retries | 3. |
 | Minimum slab arena setting | 256 MiB by default; initialization enforces at least 256 KiB. `ArenaSize::new` accepts zero or multiples of 4 KiB. |
 | Initial segmented-bitmap region | 64 MiB. Not an RSS or total-cache limit. |
-| Background trim thresholds | 10 MiB small / 512 MiB segmented-bitmap cached virtual address space. Big thresholds below 128 MiB panic at bootstrap. |
+| Background trim thresholds | 10 MiB small / 512 MiB segmented-bitmap cached virtual address space requested; bootstrap uses `max(requested, initial_cached_bytes + 1)` for the big threshold. |
 | THP | General support enabled; segmented-bitmap forcing disabled. Advice is not a promise of huge pages. |
 | Memory-pressure relief | Disabled; default disable/re-enable thresholds are 85% / 80%. |
 | Protection settings | Bootstrap-randomized magic values and aligned-allocation tag; foreign-pointer policy is abort when that path is reached. |
+
+The initial bitmap footprint includes the normalized initial region, page-rounded region metadata, and page-rounded state/node/hint tables. Lower big-threshold requests are raised to this footprint-dependent minimum. Footprint or `+ 1` overflow logs `RSMallocError::Bootstrap` and aborts. Source: `src/backend/bootstrap.rs` — `PreparedBootstrapConfig::big_trim_threshold`; `src/big_allocations/segmented_bitmap.rs` — `initial_cached_bytes`.
 
 Trimming reclaims eligible cached pages on a best-effort basis; dropping containers does not promise immediate return of all cached memory to the kernel. Avoid changing security-sensitive settings as routine tuning. Those settings require `expose-security-critical-settings` and unsafe acknowledgement, and foreign-pointer checks do not make invalid frees safe. See [Performance Tuning](performance-tuning.md) and [Security and Reliability](security.md).
 

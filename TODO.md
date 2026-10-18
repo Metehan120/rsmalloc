@@ -17,4 +17,4 @@
 
 14. Alpha-3: Rewrite Buddy with a better scalable design - PoC Segmented Bitmap allocator
 15. Beta-2: arm64 support
-16. Alpha-3: Lock-free page allocator
+16. Alpha-3: Lock-free page allocator - Done

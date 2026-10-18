@@ -76,6 +76,15 @@ those bits into `8 / 12 / 12 / 12` levels. L0 has 256 pointer entries; L1 and L2
 entries per node. L3 is a bitmap of 4096 bits (64 `AtomicU64` words), not 4096 pointers. One leaf therefore
 classifies 16 MiB of address space using 512 bitmap bytes.
 
+`RADIX` is an immutable static; its root pointer lives in `UnsafeCell<MaybeNull<AtomicUsize>>`.
+`Radix::init` uses the existing `alloc_lock` and double-checks `initialized` (Acquire before locking,
+Relaxed under the lock), writes the root, then Release-stores `initialized = true`. Readers observe
+publication through an Acquire load of that flag or bootstrap's initialization gate before accessing the
+cell. Early ownership queries return false. The published root stays mapped and is never replaced, so
+initialized paths use `root()` without redundant root-null checks. Fork handling freezes/thaws the same
+allocation lock without replacing the root. Intermediate table entries remain atomic and retain their
+existing lazy-publication protocol.
+
 Missing intermediate nodes are allocated lazily under one `alloc_lock`, with a second check after locking.
 Zero-filled page/mmap memory supplies empty entries. Parent pointers are Release-stored and Acquire-loaded.
 Bitmap registration uses Release `fetch_or`, clearing uses Release `fetch_and`, and lookup uses Acquire. An
@@ -87,7 +96,7 @@ than returning a recoverable bulk-refill error.
 `RadixTree::set` rejects zero sizes, overflow, and endpoints outside its bound; it marks every chunk
 intersecting the inclusive byte range. `set_single_big` only changes the chunk containing one address.
 `is_owned_inner` returns false before initialization. Its validating variant aborts on out-of-range addresses
-after initialization; the nonvalidating variant returns false through the bounded `get` path.
+after initialization; the nonvalidating variant returns false through the bounded `get_from_root` traversal.
 
 Registration deliberately varies by backing type:
 
@@ -103,7 +112,8 @@ big mapping intentionally registers only its header/payload-start chunk. Region 
 object's free. Metadata pages are not automatically registered just because they back radix nodes or map
 entries.
 
-Source: `src/internals/radix_tree.rs` — constants, `map_memory`, `get_or_alloc`, `set_range`,
+Source: `src/internals/radix_tree.rs` — `RADIX`, constants, `Radix::{init,root}`, `map_memory`,
+`get_or_alloc`, `set_range`, `RadixTree::{lock_for_fork,reset_lock_on_fork}`,
 `RadixTree::{set,set_single_big,is_owned_inner}`; `src/rseq_core/bulk_fill.rs` — `alloc_metadata`;
 `src/big_allocations/big_allocation.rs` — `big_malloc`, `big_free`; `src/big_allocations/segmented_bitmap.rs`
 — `create_region`.

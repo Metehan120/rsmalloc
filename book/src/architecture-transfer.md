@@ -200,7 +200,7 @@ Predictor changes do not occur on every local cache hit.
 Default `AdaptiveBatching::update_transfer` in `src/core_prim/predictor.rs` targets one quarter of sampled `available`, clamped to `[1, ITERATIONS[class]]`.
 It moves one quarter of the gap toward that target, with a minimum movement of one.
 Updates use a best-effort weak relaxed CAS, so competing or spurious failures can discard policy updates without retry.
-With `experimental-predictive-demand`, the target also incorporates refill-time occupancy feedback.
+With `experimental-predictive-demand`, the target also incorporates a completion-based demand forecast derived from delivered blocks and depletion time. See [the demand model](architecture-refill.md#experimental-demand-completion-based-bounded-trend) for its bounded trend, caps, and finish-time gate.
 With `confidence-predictor`, `transfer_batch` and `update_transfer_feedback` instead use requested/obtained counts, supply, and confidence history; the maximum is `PREDICTOR_BATCHING[class]`, defined as the high-water count plus one.
 That extra block permits returning one object before inserting the remainder into an empty cache, subject to the advisory admission test.
 
@@ -217,12 +217,13 @@ The global lock serializes this trim routine, including its mutable `TRIM_SMOOTH
 
 For every configured CPU and class at or above `get_size_4096_class`, it:
 
-1. Acquires `trim_lock`, deliberately forgets the RAII guard, and later unlocks explicitly.
+1. Acquires `trim_lock` and retains its RAII guard through detachment, partitioning, and retained-block publication. An empty-list exit drops the guard automatically, after the optional empty-list smoothing adjustment.
 2. Acquire-loads the normal packed head, samples `normal_blocks` before each detach CAS attempt, and CASes the head to tagged null. On success, subtracts that pre-CAS sample rather than the actual chain count. The detached chain drives traversal; publication-before-increment can make the sample incomplete and leave persistent counter drift after republishing.
 3. Partitions the detached chain. A block goes to trim candidates only if its saturating age exceeds `TRIM_SMOOTHING[class].time(100)` and `flags == Flags::Allocated`; otherwise it is retained normally.
-4. Republishes retained blocks in batches at `ITERATIONS[class] + ITERATIONS[class] / 2`, plus any final remainder, then releases the per-mailbox lock.
-5. Processes the private candidate chain after that unlock. Successful memory advice changes `flags` to `Reclaimed` and publishes to the trimmed list; unsuccessful or budget-skipped candidates go back to the normal list. Both receive the sampled lifetime stamp.
-6. Updates per-class age smoothing and the global average lifetime statistic from its observations.
+4. Republishes retained blocks in batches at `ITERATIONS[class] + ITERATIONS[class] / 2`, plus any final remainder, then explicitly drops the per-mailbox guard. It updates per-class age smoothing from nonzero lifetime samples before processing trim candidates.
+5. Processes the private candidate chain after the guard is dropped. Successful memory advice changes `flags` to `Reclaimed` and publishes to the trimmed list; unsuccessful or budget-skipped candidates go back to the normal list. Both receive the sampled lifetime stamp.
+
+After the mailbox scan, the routine updates the global average lifetime statistic from the per-class estimates.
 
 The partition reverses linkage as it builds its temporary chains; transfer storage does not promise FIFO or address-order reuse.
 `Flags::Allocated` means the normal allocation path previously marked the block, not that the detached free block is still user-owned.

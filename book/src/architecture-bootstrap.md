@@ -70,17 +70,22 @@ In preload builds, `src/inner/alloc.rs` has a separate frontend `ONCE`; `rs_allo
 `main_bootstrap` currently performs these steps:
 
 1. **Check libc RSEQ exports.** Zero `__rseq_size` or `__rseq_offset` logs `RseqUnavailable` and aborts. The allocator does not register RSEQ itself. This check is not a proof of every thread's later RSEQ state.
-2. **Initialize the time origin.** `get_clock` publishes an `Instant`; lifetime stamps use 100 ms units. Debug builds also record start time.
-3. **Install early reservation/refill policy.** Clamp arena size to `MIN_ARENA_SIZE`; set maximum retries and initial transfer batch.
-4. **Create the ownership radix.** Later slab and region registration depends on it.
-5. **Ensure the slab cache/topology table.** This maps CPU-indexed cache state and search bitmaps, parses NUMA information, and initializes the pending queue.
-6. **Initialize page-arena node state.** Node count comes from the slab topology representation.
-7. **Install remaining global settings.** Region size, trim enable/thresholds, relief thresholds, THP control, and Rust foreign-pointer policy are recorded. A big trim threshold below 128 MiB panics.
-8. **Initialize the segmented-bitmap backend.** Huge-page attempts require both its setting and general THP support.
-9. **Register preload fork handlers**, when that frontend is selected.
-10. **Randomize magic and alignment tags**, when configured; a zero alignment tag is regenerated.
+2. **Prepare checked sizes and policy.** Clamp arena size to `MIN_ARENA_SIZE` and checked-round it to 4 KiB; checked-round the initial bitmap region size to a power of two with a 64 MiB minimum. Cap relief percentages and combine bitmap huge-page policy with general THP support. Size overflow logs `RSMallocError::Bootstrap` and aborts.
+3. **Initialize the time origin.** `get_clock` publishes an `Instant`; lifetime stamps use 100 ms units. Debug builds also record start time.
+4. **Randomize magic and alignment tags**, when configured; a zero alignment tag is regenerated.
+5. **Apply the prepared policy.** Install reservation/refill, region, trim-enable, relief, THP, and Rust foreign-pointer settings, but temporarily set **both trim thresholds to `usize::MAX`** to suppress worker startup during subsystem initialization.
+6. **Create the ownership radix** with `RADIX.init()`. Later slab and region registration depends on it.
+7. **Ensure the slab cache/topology table.** This maps CPU-indexed cache state and search bitmaps, parses NUMA information, and initializes the pending queue.
+8. **Calculate the effective big trim threshold.** Use `max(requested, initial_cached_bytes + 1)`, with the footprint calculated from the normalized initial region, page-rounded region metadata, and page-rounded state/node/hint tables for the discovered topology. A lower requested threshold is raised to that minimum. Footprint or `+ 1` overflow logs `RSMallocError::Bootstrap` and aborts.
+9. **Initialize page-arena node state.** Node count comes from the slab topology representation.
+10. **Initialize the segmented-bitmap backend.** Huge-page attempts require both its setting and general THP support.
+11. **Register preload fork handlers**, when that frontend is selected.
+12. **Restore thresholds last.** Install the requested small threshold and effective big threshold. Worker startup remains lazy: a later refill/growth checks them after the caller's initialization gate.
 
-Source: `src/backend/bootstrap.rs` — `main_bootstrap`;
+Source: `src/backend/bootstrap.rs` — `BootstrapConfig::prepare`,
+`PreparedBootstrapConfig::{apply,big_trim_threshold}`, `main_bootstrap`;
+`src/big_allocations/segmented_bitmap.rs` — `initial_cached_bytes`,
+`region_metadata_size`, `state_metadata_size`;
 `src/global_vals.rs` — `get_clock`; `src/core_prim/random.rs`;
 `src/rseq_core/slab_cache.rs` — `ensure_cache`.
 
@@ -139,7 +144,7 @@ Default free classification reads presumed metadata before fallback is reached. 
 
 ## Failure and observation boundaries
 
-Public allocation failure can be recoverable null/`AllocationError`/`AllocError`, while internal mandatory metadata or bootstrap failure can abort. `RSMallocError::log_and_abort` logs then terminates; it does not return an error to every public frontend. Alpha allocation APIs are not a promise that all resource exhaustion is recoverable.
+Public allocation failure can be recoverable null/`AllocationError`/`AllocError`, while internal mandatory metadata or bootstrap failure can abort. `RSMallocError::log_and_abort` logs then terminates; it does not return an error to every public frontend. Its `Bootstrap` branch writes the static reason directly to stderr with the write syscall, avoiding allocation and Rust stderr locking while initialization may be incomplete. Alpha allocation APIs are not a promise that all resource exhaustion is recoverable.
 
 Diagnostics are another frontend on shared state. Structured reports initialize the allocator, allocate report storage, scan independently sampled state, and free their buffers on drop. Printer formatting and arena reporting can allocate or acquire locks too. `debug-exact` names additional instrumentation, not an atomic or observationally neutral snapshot.
 

@@ -63,7 +63,8 @@ trim-aggressively = []
 explicit-zero = []
 # Zeroes 16~64b sized allocations (cryptographic key sized) on free; good for security without big performance penalty
 zero-small-on-free = []
-semi-hardened = ["extended-header", "check-owned-on-alloc", "zero-small-on-free", "validate-foreign-first"]
+# Additional ownership checks, wider magic values, and small-free zeroing; not a hardened allocator.
+extra-checks = ["extended-header", "check-owned-on-alloc", "zero-small-on-free", "validate-foreign-first"]
 
 expose-security-critical-settings = []
 

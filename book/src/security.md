@@ -28,13 +28,13 @@ A foreign pointer can fault during the preceding reads, or unrelated bytes can b
 
 ### Ownership-first validation
 
-`validate-foreign-first` checks radix ownership before free reads presumed RSMalloc metadata. It also validates a recovered aligned-allocation base before reading its header; a non-owned recovered base aborts as possible metadata injection. The feature is opt-in and included in `semi-hardened`.
+`validate-foreign-first` checks radix ownership before free reads presumed RSMalloc metadata. It also validates a recovered aligned-allocation base before reading its header; a non-owned recovered base aborts as possible metadata injection. The feature is opt-in and included in `extra-checks`.
 
 The radix tracks **4 KiB regions**, not allocation boundaries or live-object identity. A pointer into an owned region can pass this check without being a valid allocation pointer. Neither mode makes arbitrary pointers, interior pointers, double frees, or use-after-free safe. Without ownership-first validation, aligned free additionally relies on valid alignment metadata when recovering the original base.
 
 Magic checks can catch some corruption and double frees; they are not complete temporal or spatial memory safety. In particular, freed-and-reused storage cannot be distinguished from a new live allocation solely by its address.
 
-## Hardening features
+## Additional checks and security features
 
 All Cargo features are disabled by default. Select protections for testing and measure their cost separately from the uninstrumented default build.
 
@@ -44,7 +44,7 @@ All Cargo features are disabled by default. Select protections for testing and m
 | `extended-header` | Wider allocation headers and magic values; not comprehensive corruption detection. | More metadata and changed allocation footprint. |
 | `check-owned-on-alloc` | Checks ownership of blocks before returning them from internal allocation paths. | Allocation-path ownership lookups. |
 | `zero-small-on-free` | Clears payloads in the 16–64 byte size classes. It does not clear all allocations or provide a general secret-erasure guarantee. | Free-path stores. |
-| `semi-hardened` | Bundles the four features above. | Combined costs; benchmark the bundle as its own configuration. |
+| `extra-checks` | Bundles the four features above. Additional checks and small-free zeroing do not make RSMalloc a hardened allocator. | Combined costs; benchmark the bundle as its own configuration. |
 | `explicit-zero` | Uses `explicit_bzero` for calloc zeroing where needed; not general zero-on-free. | Zeroing-path cost. |
 | `abort-on-rseq-failure` | Aborts when a sampled RSEQ CPU ID is `u32::MAX`. It does not supply RSEQ support or make unsupported environments safe. | An additional RSEQ-state check. |
 

@@ -11,7 +11,7 @@ The overview below is the short version. The following chapters follow the curre
 | [Frontends and bootstrap](architecture-bootstrap.md) | How do Rust and C calls converge? Which settings initialize first? What can fail before serving requests? | `src/frontend/`, `src/backend/bootstrap.rs`, `src/inner/preload/` |
 | [RSEQ and CPU-local caches](architecture-rseq.md) | What is in each cache? Which assembly store commits? What happens on migration, empty lists, and overflow? | `src/rseq_core/slab_cache.rs`, `src/rseq_core/slab_cache/rseq_asm.rs`, `src/rseq_core/rseq_offsets.rs` |
 | [Transfer reuse](architecture-transfer.md) | How are batches published, detached, hinted, stolen, and partitioned for trim? What does tagged CAS not prove? | `src/rseq_core/slab_cache/transfer.rs`, `src/rseq_core/slab_cache/reclaim.rs` |
-| [Refill and deferred initialization](architecture-refill.md) | What are the actual predictor equations? Who owns an unfinished span? How does queue failure affect capacity? | `src/core_prim/predictor.rs`, `src/rseq_core/bulk_fill.rs`, `src/rseq_core/pending_queue.rs` |
+| [Refill and deferred initialization](architecture-refill.md) | What are the actual predictor equations? Who owns an unfinished span? How does queue failure affect capacity? | `src/core_prim/predictor.rs`, `src/core_prim/predictor_demand.rs`, `src/rseq_core/bulk_fill.rs`, `src/rseq_core/pending_queue.rs` |
 | [Backing memory](architecture-backing-memory.md) | How do arenas reserve ranges and bitmap regions claim orders? When are direct mappings used? | `src/backend/page_allocator.rs`, `src/big_allocations/` |
 | [Ownership and resizing](architecture-ownership.md) | What do headers, aligned prefixes, radix bits, and exact metadata mean? How do free, calloc, realloc, and fork interact? | `src/inner/`, `src/internals/`, `src/core_prim/fork.rs` |
 | [Reclamation and relief](architecture-reclamation.md) | Which pages qualify, how are scans scheduled, what is excluded, and what does pressure relief measure? | `src/backend/background_thread.rs`, slab reclaim and bitmap trim code |
@@ -63,7 +63,7 @@ Two policies serve different jobs:
 - **Transfer batching** chooses how many already initialized blocks to request. By default it targets one quarter of the supplying list's sampled inventory, clamped to class limits, and closes one quarter of the gap at each update.
 - **Bulk-fill batching** controls fresh-block initialization independently. Per-CPU/class pending spans allow later refills to continue initialization; collisions and overflow use a shared queue.
 
-`confidence-predictor` changes transfer sizing. `experimental-predictive-demand` adds refill-time occupancy feedback. Neither is default, neither removes cache-hit costs, and either can regress performance or memory use. Advisory prediction affects policy, not correctness.
+`confidence-predictor` changes transfer sizing. `experimental-predictive-demand` adds completion-based, bounded-trend demand forecasting from accepted refill deliveries. Neither is default, neither removes cache-hit costs, and either can regress performance or memory use. Advisory prediction affects policy, not correctness.
 
 ## Backing memory and large objects
 

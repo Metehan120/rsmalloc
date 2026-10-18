@@ -261,7 +261,7 @@ Growth and shrinkage each close one quarter of the gap, with a minimum step of o
 
 ### Opt-in confidence-based transfer batching
 
-The `confidence-predictor` Cargo feature replaces only the transfer policy. It is disabled by default and is not included in `semi-hardened`; bulk-fill and lifetime predictors are unchanged. Both transfer policies can independently enable `experimental-predictive-demand`; it is disabled by default and introduces no new locks or separate allocations.
+The `confidence-predictor` Cargo feature replaces only the transfer policy. It is disabled by default and is not included in `extra-checks`; bulk-fill and lifetime predictors are unchanged. Both transfer policies can independently enable `experimental-predictive-demand`; it is disabled by default and introduces no new locks or separate allocations.
 
 The high bits store a **normal candidate**, not the last reduced request. The low byte packs normal confidence in its low nibble and back-off evidence in its high nibble. Both scores saturate in `0..=10`; zero-initialized state starts with confidence 5 and evidence 0.
 

@@ -79,10 +79,12 @@ Preload builds read `RS_*` variables once during allocator bootstrap, which can 
 | --- | --- | --- |
 | `RS_DISABLE_TRIM_THREAD` | `0` | Nonzero disables periodic background trimming, not manual trimming or all worker activity. |
 | `RS_TRIMMER_THRESHOLD` | `10485760` (10 MiB) | Cached small-allocation VA threshold for starting the worker. |
-| `RS_BIG_TRIMMER_THRESHOLD` | `536870912` (512 MiB) | Cached segmented-bitmap VA threshold for starting the worker. Values below 128 MiB panic during bootstrap. |
+| `RS_BIG_TRIMMER_THRESHOLD` | `536870912` (512 MiB) | Requested cached segmented-bitmap VA threshold for starting the worker; bootstrap raises it to at least `initial_cached_bytes + 1`. |
 | `RS_ENABLE_RELIEF` | `1` (disabled) | **Exactly zero enables relief; nonzero disables it in this alpha.** |
 | `RS_SEGMENTED_BITMAP_RELIEF_DISABLE_PERCENTAGE` | `85` | Pressure percentage disabling segmented-bitmap allocation; capped at 100. |
 | `RS_SEGMENTED_BITMAP_RELIEF_ENABLE_PERCENTAGE` | `80` | Re-enable percentage; capped at the disable threshold, with two qualifying checks required. |
+
+The effective big threshold is `max(requested, initial_cached_bytes + 1)`. The footprint includes the normalized initial region, page-rounded region metadata, and page-rounded state/node/hint tables. Lower requests are raised to that minimum; footprint or `+ 1` overflow logs `RSMallocError::Bootstrap` and aborts. Source: `src/backend/bootstrap.rs` — `PreparedBootstrapConfig::big_trim_threshold`; `src/big_allocations/segmented_bitmap.rs` — `initial_cached_bytes`.
 
 The trim thresholds measure cached **virtual address space**, not RSS and not cgroup limits. Disabling periodic trim does not prevent the worker from starting or handling enabled relief. Relief uses system-wide RAM-plus-swap usage from `sysinfo`, not `MemAvailable` or a container's memory budget. It disables segmented-bitmap allocation under pressure and trims that backend; direct mappings remain a fallback. It is not an out-of-memory prevention guarantee.
 
@@ -109,7 +111,7 @@ This shows valid syntax, not a recommended performance setting. It does not prom
 
 A safe integration pairs allocation and release in the same allocation domain. Preload has best-effort libc fallback paths for foreign pointers, but that is **not** permission to mix allocators: default free handling can read alignment/header metadata before ownership classification, so foreign or invalid pointers can fault or be misclassified before fallback.
 
-`validate-foreign-first` (also included in `semi-hardened`) adds ownership checks before those metadata reads. Ownership is tracked at 4 KiB region granularity, not at individual allocation boundaries. It does not make interior pointers, double frees, or stale pointers safe. See [Security and Reliability](security.md).
+`validate-foreign-first` (also included in `extra-checks`) adds ownership checks before those metadata reads. Ownership is tracked at 4 KiB region granularity, not at individual allocation boundaries. It does not make interior pointers, double frees, or stale pointers safe. See [Security and Reliability](security.md).
 
 Before deployment, test the real application with particular attention to:
 

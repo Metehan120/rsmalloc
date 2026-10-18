@@ -7,7 +7,7 @@ cfrac           sys     3.0250   7440     3.015    0.000  0           259.5
 espresso        sys     2.9700   9206     2.940    0.010  0           260.5
 barnes          sys     1.6800   68224    1.670    0.000  0           686
 redis           sys     2.7000   13720    0.100    0.020  0           1531.5
-leanN           sys     7.1750   270046   16.515   0.160  0           1058
+leanN           sys     7.1650   270046   16.515   0.160  0           1058
 larsonN-sized   sys     3.2505   80570    59.570   0.105  0           6665.5
 mstressN        sys     1.0400   335478   7.780    0.630  0           1415.5
 rptestN         sys     0.6355   63612    1.265    0.345  0           619
@@ -23,7 +23,7 @@ alloc-testN     sys     3.0900   25442    36.595   0.060  0           460
 
 # Architectural worst-cases
 sh6benchN       sys     0.3000   369694   2.825    0.625  0           1622.5
-sh8benchN       sys     1.5750   175248   17.680   0.400  0           1394.5
+sh8benchN       sys     1.5450   175248   17.680   0.400  0           1394.5
 xmalloc-testN   sys     0.7180   19198    57.800   1.090  0           386.5
 
 cache-scratch1  sys     0.8600   8804     0.860    0.000  0           316.5
@@ -33,27 +33,30 @@ glibc-thread    sys     1.2050   10958    23.875   0.020  0           366
 rocksdb         sys     3.2200   108778   2.950    0.545  0           949
 z3              sys     0.0500   56030    0.040    0.000  0           549.5
 
-# Old benchmark results, will be updated before Alpha-3 release
-rsmalloc alpha-2 (THP handled by kernel like most of the allocators, expected higher RSS):
-cfrac       sys   03.22 10488 3.21 0.00 0 265
-espresso    sys   03.02 10488 3.00 0.01 0 261
-barnes      sys   01.68 70332 1.67 0.00 0 769
-redis       sys   2.739 16852 0.10 0.02 0 1422
-larsonN-sized sys   3.630 89260 59.37 0.13 0 8796
-mstressN    sys   00.98 318244 7.39 0.42 0 1425
-rptestN     sys   .694 62848 1.53 0.29 0 594
-gs          sys   00.19 49908 0.18 0.00 0 1759
-lua         sys   01.01 123620 5.64 0.54 1 56916
-alloc-test1 sys   02.42 25008 2.40 0.00 0 380
-alloc-testN sys   03.34 25368 39.32 0.06 0 456
-sh6benchN   sys   00.32 369760 3.35 0.36 0 1274
-sh8benchN   sys   01.40 175288 15.43 0.45 0 1353
-xmalloc-testN sys   0.704 23404 56.60 1.74 0 426
-cache-scratch1 sys   00.87 10548 0.86 0.00 0 318
-cache-scratchN sys   00.15 10484 1.81 0.00 0 368
-glibc-simple sys   01.77 10536 1.77 0.00 0 261
-glibc-thread sys   1.438 12884 23.76 0.03 0 373
-rocksdb     sys   03.29 107456 2.92 0.65 0 851
+# Column-wise medians across 4 runs per workload for 21 workloads.
+# These use fewer runs than the alpha-3 comparison.
+rsmalloc alpha-2:
+cfrac           sys     3.2000   7490     3.190    0.000  0           268
+espresso        sys     3.0150   9268     2.985    0.020  0           282
+barnes          sys     1.6850   70458    1.670    0.000  0           732.5
+redis           sys     2.7000   13650    0.100    0.020  0           1509.5
+leanN           sys     7.1650   278596   16.445   0.160  0           1079.5
+larsonN-sized   sys     3.6150   89236    59.575   0.090  0           8825.5
+mstressN        sys     1.0500   329522   7.840    0.610  0           1576.5
+rptestN         sys     0.6420   63656    1.280    0.340  0           644
+gs              sys     0.1850   47240    0.170    0.005  0           1496
+lua             sys     0.9850   123136   5.755    0.360  0           57367
+alloc-test1     sys     2.4600   25422    2.450    0.000  0           384.5
+alloc-testN     sys     3.3100   25488    39.150   0.055  0           476
+sh6benchN       sys     0.3600   369886   3.595    0.435  0           1461
+sh8benchN       sys     1.5650   176550   17.715   0.345  0           1413.5
+xmalloc-testN   sys     0.8005   19502    57.620   0.985  0           416
+cache-scratch1  sys     0.8600   8876     0.860    0.000  0           331.5
+cache-scratchN  sys     0.1500   8894     1.770    0.000  0           382
+glibc-simple    sys     1.6950   7398     1.695    0.000  0           271.5
+glibc-thread    sys     1.4205   13040    23.870   0.015  0           384
+rocksdb         sys     3.2550   109034   2.990    0.550  0           988
+z3              sys     0.0500   58366    0.040    0.000  0           590.5
 
 jemalloc 5.3.1 (CachyOS build):
 # Column-wise medians across 10 runs for all 21 workloads.

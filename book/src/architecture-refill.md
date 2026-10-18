@@ -189,32 +189,117 @@ batch. As in default mode, a completely dry search generates no feedback.
 Source: `src/core_prim/predictor.rs` — `decode_transfer`, `transfer_batch`,
 `update_transfer_feedback`, `confidence_policy::{request,next}`.
 
-## Experimental demand is sampled only on refill
+## Experimental demand: completion-based bounded trend
 
-`experimental-predictive-demand` adds `demand: AtomicUsize` and
-`unused: AtomicU32` to each predictor. `fill` calls `profile_refill_demand`
-for the missed class, using that CPU's sampled local usage `k`.
-It does not profile every allocation or every class on each miss.
-The limit `M` is `P` with confidence, otherwise `I`.
+`experimental-predictive-demand` adds a 32-byte `DemandTracker` to each
+`AdaptiveBatching`: four `AtomicU64` words hold the packed model, sample slot,
+generation, and last successful prediction time. The model packs a previous
+observation and next forecast as `u16` counts plus a history-valid bit. This is
+a deterministic bounded-trend heuristic, not a machine-learning experiment.
+It feeds the existing default blend or confidence policy above; it does not
+replace their steps or the independent bulk initialization controller.
+
+### Sampling and accepted delivery
+
+At the start of `fill`, `profile_refill_demand` begins a `DemandSample` for
+only the missed CPU/class's transfer predictor. The guard spans transfer search
+and, on a miss, bulk refill. After either path succeeds, `take_one_from_batch`
+returns one object and attempts to cache the remainder, then
+`finish_refill_demand` finishes the sample with the **actual batch count**,
+including that first object, not the requested count or sampled inventory.
+An unsuccessful bulk refill drops the guard without recording a delivery.
+There are no added per-allocation cache-hit demand counters or all-class scans.
+
+Let `M = P` with confidence, otherwise `I`, and use the block stride `B`
+(including the header and 16-byte alignment), not payload size:
 
 ```text
-old = demand.load(Relaxed)
-d = clamp(init,1,M) if old == 0, otherwise old
-u = unused.load(Relaxed)
-next = min(2*d,M) if k < u, otherwise max(floor(d/2),1)
-if next != old: demand.store(next,Relaxed)
-unused.store(saturating_sub(d,k) as u32,Relaxed)
+C = min(max(M,1), 65535, max(floor(65536 / max(B,1)),1))
+initial = min(max(init,1), C)
 ```
 
-`unused` uses the **previous effective demand** `d`, not `next`.
-`expected_demand(init)` returns `init` when the stored demand is zero.
-These two stores are not a transaction and concurrent observations can be lost.
-All predictor reads are Relaxed. Batch controllers make one weak Relaxed CAS
-attempt, with **no retry**: a race or spurious failure drops that update.
-This is deliberate approximate policy, not a synchronization mechanism.
+Thus class policy, the `u16` count width, and a 64 KiB stride budget bound the
+forecast. A block larger than 64 KiB still permits a single-block minimum;
+this is not an unconditional 64 KiB allocation limit.
 
-Source: `src/core_prim/predictor.rs` — `update_demand`, `expected_demand`;
-`src/rseq_core/slab_cache.rs` — `profile_refill_demand`.
+A completed delivery is accepted only if sampled starting usage was zero,
+`1 <= delivered <= 65535`, and the finish-time endpoint checks pass: the
+sampled `cpu_id_start` equals the starting CPU and that CPU/class's sampled usage
+is at least `saturating_sub(delivered,1)`. A nonempty start, failed endpoint
+check, or unrepresentable count breaks the interval chain. These checks reject
+obvious migration and a diverted remainder, but unrelated frees or migration
+away and back can hide changes. Accepted delivery counts therefore do not
+establish exact consumption or reliable application demand; usage is sampled
+accounting, not a cache-hit counter or continuous residency check.
+
+### Observation, trend, and completion gate
+
+A completed sample stores actual delivered blocks and its completion time.
+For an accepted current sample with an uncontested owner and a previous
+completed delivery, define `n_prev` as that previous delivery and `t_prev`
+as its completion time. Consumption is measured up to the **current start**
+`t_start`, excluding current refill work; the forecast is computed at current
+completion `t_finish`:
+
+```text
+dt = (t_start - t_prev) modulo 2^46 nanoseconds
+if dt >= 100000000: reset model to (previous=0, next=initial, history=false)
+otherwise:
+    observed = clamp(floor(n_prev * 50000 / max(dt,1)), 1, C)
+    limit = max(floor(observed/2), 1)
+    trend = clamp(observed - previous, -limit, limit) if history else 0
+    next = clamp(observed + trend, 1, C)
+    previous = observed
+    history = true
+```
+
+The first observation establishes history without a trend correction. An
+interval of at least 100 ms instead resets to the capped initial forecast and
+clears trend history. Stored sample times retain only the low 46 clock bits;
+elapsed-time subtraction is modulo that width. This is a truncated-clock
+implementation detail, not a full-width elapsed-time guarantee across wraps.
+
+Recomputation is gated at **finish**, not start: it is eligible if no prediction
+has yet been published, or at least 50 microseconds have elapsed since the last
+successful prediction's completion. The 50-microsecond forecast horizon and
+50-microsecond recomputation interval are separate constants, not timers or
+background wakeups. A successful model CAS alone advances `last_prediction`,
+which stores the full finish timestamp plus one (zero means uninitialized).
+Even while recomputation is gated, an accepted uncontested completion replaces
+the saved delivery/time, so the next observation uses the latest interval.
+`expected_demand(init)` reads the packed forecast, falling back to `max(init,1)`
+when it is zero; that fallback itself is not the sample cap calculation.
+
+### Sample ownership versus advisory policy
+
+The sample slot contains either a completed timestamp/count or a busy generation
+with an overlap bit. A separate wrapping 62-bit generation identifies owners,
+so equal start timestamps do not identify the same sample. A contending refill
+does not wait or prevent delivery: it attempts to mark only the busy generation
+it observed as overlapping and proceeds without owning a sample. An overlapped
+owner cannot publish that completed interval; release clears only its own marked
+generation. `DemandSample` is an RAII guard: finishing disarms it, and dropping
+an unfinished owner releases its slot without inventing a delivery. A non-owner
+cannot clear another owner's slot.
+
+The initial sample load and successful claim use Acquire; completion/cleanup
+CAS operations use Release. The finish-time owner check is Relaxed. Those
+operations coordinate the tracking slot, **not block ownership or allocator
+access**. The packed model, generation counter, deadline, overlap
+marking, and forecast reads use Relaxed atomics. Model/history publish together
+with one Relaxed CAS; a lost advisory update is acceptable. Separately, the
+batch controllers make one weak Relaxed CAS attempt with **no retry**, so a
+race or spurious failure drops that policy update. Prediction is approximate
+policy, not a synchronization mechanism for free lists.
+
+Preload child recovery clears the model, sample slot, and prediction deadline,
+but preserves generation numbering so an older guard cannot match a new claim.
+
+Source: `src/core_prim/predictor_demand.rs` — `DemandTracker`, `Model::observe`,
+`update_prediction`, `DemandSample::{finish,release}`, `Drop`;
+`src/core_prim/predictor.rs` — `expected_demand`, `begin_demand_sample`;
+`src/rseq_core/slab_cache.rs` — `profile_refill_demand`, `finish_refill_demand`;
+`src/inner/alloc.rs` — `fill`, `refill`, `take_one_from_batch`.
 
 ## Bulk policy: initialization feedback and hysteresis
 

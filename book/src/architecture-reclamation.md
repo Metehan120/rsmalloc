@@ -39,7 +39,12 @@ SEGMENTED_BITMAP_TOTAL_CACHED_VA >= BIG_TRIM_THRESHOLD
 ```
 
 Defaults in `global_vals` are 10 MiB for slab capacity and 512 MiB for bitmap
-capacity. Bootstrap rejects a configured bitmap threshold below 128 MiB.
+capacity. Bootstrap sets the effective bitmap threshold to
+`max(requested, initial_cached_bytes + 1)`. The initial footprint includes the
+normalized region size, page-rounded region metadata, and page-rounded
+state/node/hint tables for the discovered topology. Lower requests are raised
+to this footprint-dependent minimum; footprint or `+ 1` overflow logs
+`RSMallocError::Bootstrap` and aborts.
 Both counters track supplied backing capacity, including storage not currently
 free. They are not measurements of resident RAM or the number of eligible pages.
 Slab bulk-fill accounting adds its logical span total; page reservation can be
@@ -53,8 +58,10 @@ keep scanning retained virtual capacity after physical pages have been released.
 Source: `src/global_vals.rs` — thresholds, `add_slab_cached_va`,
 `add_segmented_bitmap_cached_va`;
 `src/rseq_core/bulk_fill.rs` — `alloc_metadata`;
-`src/backend/bootstrap.rs` — `main_bootstrap`;
-`src/big_allocations/segmented_bitmap.rs` — `init`, `create_region`.
+`src/backend/bootstrap.rs` — `PreparedBootstrapConfig::big_trim_threshold`,
+`main_bootstrap`;
+`src/big_allocations/segmented_bitmap.rs` — `initial_cached_bytes`,
+`region_metadata_size`, `state_metadata_size`, `init`, `create_region`.
 
 ## Lazy worker startup
 
@@ -63,7 +70,12 @@ bitmap region creation. It returns when both counters are below their thresholds
 or `RECLAIM_GUARD` already indicates a worker. A compare-exchange claims startup;
 spawn failure resets the guard so a later opportunity can retry.
 
-The worker is named `rsmalloc-trimmer` and requests a 64 KiB stack. Startup blocks
+During bootstrap, both trim thresholds are temporarily `usize::MAX`; the
+requested small threshold and effective bitmap threshold are installed only
+after subsystem initialization and preload fork-handler registration. Startup
+remains lazy at a later refill/growth opportunity.
+
+The worker is named `rs-maintenance` and requests a 64 KiB stack. Startup blocks
 signals in the creating thread, except glibc internal signals 32 and 33, so the
 new thread inherits that mask; an RAII guard restores the creator's prior mask.
 Failure to obtain the mask prevents spawning. A successful worker runs forever;

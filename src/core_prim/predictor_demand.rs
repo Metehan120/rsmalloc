@@ -12,17 +12,23 @@ const OVERLAP: u64 = 1 << 62;
 const BUSY: u64 = 1 << 63;
 const GENERATION_MASK: u64 = OVERLAP - 1;
 const IDLE_NS: u64 = 100_000_000;
+// The horizon says how far ahead to forecast; the interval limits how often
+// to recompute it. Neither schedules a timer or wakes a background thread.
 const HORIZON_NS: u64 = 50_000;
 const PREDICTION_INTERVAL_NS: u64 = 50_000;
 const BYTE_BUDGET: usize = 64 * 1024;
 const INITIALIZED: u64 = 1 << 32;
 
+// Advisory state: sample ownership coordinates refills, not allocator access.
+// Contending refills can skip prediction work instead of waiting for an owner.
 #[assert_sizes(32)]
 #[repr(C)]
 pub(super) struct DemandTracker {
+    // Low 16 bits: previous observation; next 16: forecast; bit 32: history valid.
     model: AtomicU64,
     sample: AtomicU64,
     generation: AtomicU64,
+    // Full finish timestamp + 1; zero means no forecast update has completed.
     last_prediction: AtomicU64,
 }
 
@@ -54,6 +60,9 @@ impl Model {
 
     fn observe(&mut self, demand: u16, cap: usize) {
         let observed = demand as i64;
+        // Extrapolate rising/falling demand, but limit the correction to about
+        // half the latest observation so one short interval cannot dominate it.
+        // The first observation establishes history without a trend correction.
         let trend = if self.initialized {
             let limit = (observed / 2).max(1);
             (observed - self.previous as i64).clamp(-limit, limit)
@@ -95,15 +104,21 @@ impl DemandTracker {
         block_stride: usize,
         cache_empty: bool,
     ) -> DemandSample<'_> {
+        // Bound the forecast by class policy, packed-count width, and 64 KiB
+        // of block strides. A stride above 64 KiB still permits one block.
         let cap = max
             .max(1)
             .min(u16::MAX as usize)
             .min((BYTE_BUDGET / block_stride.max(1)).max(1));
         let previous = self.sample.load(Ordering::Acquire);
+        // Claim only the tracking slot. This does not stop another refill from
+        // delivering blocks; overlap makes its consumption interval ambiguous.
         let owner = if previous & BUSY != 0 {
             self.mark_overlap(previous);
             0
         } else {
+            // Use a separate token rather than a timestamp: starts can share
+            // the same clock value, but must not share a sample owner's identity.
             let generation = self
                 .generation
                 .fetch_add(1, Ordering::Relaxed)
@@ -150,14 +165,20 @@ impl DemandTracker {
         // Forecast at finish, but measure consumption only up to refill start;
         // current refill work must not lengthen the previous depletion interval.
         let elapsed = started.wrapping_sub(previous & TICK_MASK) & TICK_MASK;
+        // A long depletion interval is treated as idle history, not a useful
+        // continuation of the previous demand phase.
         if elapsed >= IDLE_NS {
             model = Model::unpack(0, init, cap);
         } else {
             let delivered = (previous >> 46) as u16;
+            // Scale the previous actual delivery into blocks per horizon.
+            // Clamp before narrowing; a zero measured interval uses 1 ns.
             let demand =
                 (delivered as u64 * HORIZON_NS / elapsed.max(1)).clamp(1, cap as u64) as u16;
             model.observe(demand, cap);
         }
+        // Publish model/history together. A lost advisory update is acceptable;
+        // only a successful publication advances the recomputation deadline.
         if self
             .model
             .compare_exchange(old, model.pack(), Ordering::Relaxed, Ordering::Relaxed)
@@ -169,6 +190,8 @@ impl DemandTracker {
         }
     }
 
+    // Mark only the busy generation we actually observed. If its owner has
+    // already released or a newer sample replaced it, leave that state alone.
     fn mark_overlap(&self, seen: u64) {
         if seen & BUSY != 0 && seen & OVERLAP == 0 {
             let _ = self.sample.compare_exchange(
@@ -182,12 +205,17 @@ impl DemandTracker {
 
     #[cfg(feature = "preload")]
     pub(super) fn reset_after_fork(&self) {
+        // Drop inherited intervals/deadlines, but preserve generation numbering
+        // so an older guard cannot match a newly claimed sample.
         self.model.store(0, Ordering::Relaxed);
         self.sample.store(0, Ordering::Relaxed);
         self.last_prediction.store(0, Ordering::Relaxed);
     }
 }
 
+// Carries the previous delivery and current start time across transfer/bulk
+// refill work. owner == 0 means this refill did not acquire the tracking slot.
+// Dropping an unfinished guard releases its slot without inventing a delivery.
 pub(crate) struct DemandSample<'a> {
     tracker: &'a DemandTracker,
     owner: u64,
@@ -207,6 +235,9 @@ impl DemandSample<'_> {
     }
 
     pub(crate) fn finish(mut self, now: u64, delivered: usize, reliable: bool) {
+        // The caller supplies delivery reliability (for example, CPU/remainder
+        // checks). A nonempty starting cache or unrepresentable delivery breaks
+        // the interval chain rather than becoming a misleading observation.
         let complete =
             if self.start_empty && reliable && (1..=u16::MAX as usize).contains(&delivered) {
                 (now & TICK_MASK) | ((delivered as u64) << 46)
@@ -214,6 +245,8 @@ impl DemandSample<'_> {
                 0
             };
         if complete != 0 && self.owner != 0 {
+            // Check the gate at completion, not at refill start. Prediction
+            // needs a previous delivery and a still-uncontested sample token.
             let last = self.tracker.last_prediction.load(Ordering::Relaxed);
             if (last == 0 || now.wrapping_sub(last.wrapping_sub(1)) >= PREDICTION_INTERVAL_NS)
                 && (self.previous >> 46) as u16 != 0
@@ -228,11 +261,15 @@ impl DemandSample<'_> {
                 );
             }
         }
+        // Even if recomputation was throttled, record this accepted delivery
+        // so the next interval uses the latest supply, not an older refill.
         self.release(complete);
     }
 
     fn release(&mut self, complete: u64) {
         let owner = self.owner;
+        // Disarm before Drop can run; a guard that never owned the slot must
+        // not clear the real owner's work.
         self.owner = 0;
         if owner == 0 {
             return;
@@ -243,6 +280,8 @@ impl DemandSample<'_> {
             .compare_exchange(owner, complete, Ordering::Release, Ordering::Relaxed)
             .is_err()
         {
+            // An overlapping refill invalidates the saved interval. Clear only
+            // our marked generation, never another refill's completed/new state.
             let _ = self.tracker.sample.compare_exchange(
                 owner | OVERLAP,
                 0,

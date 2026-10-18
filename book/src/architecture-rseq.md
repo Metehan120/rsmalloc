@@ -59,7 +59,10 @@ flowchart TD
 ```
 
 NUMA initialization tries to bind cache-record ranges with `NumaBind::bind_node` in `src/internals/binder.rs`.
-The caller does not turn binding failure into initialization failure.
+It passes `MPOL_BIND | MPOL_F_STATIC_NODES` as the Linux `mbind` mode and zero as the final migration-flags argument;
+`prefer_node` uses `MPOL_PREFERRED | MPOL_F_STATIC_NODES` with the same zero flags.
+Both use a single-word mask with only `node_id` set and `maxnode = node_id + 1`, rejecting IDs at or above `usize::BITS` without a syscall.
+The caller ignores binding failure, so this initialization step is best-effort; it neither requests migration of already-faulted pages nor bypasses cpuset/kernel restrictions.
 The cache mapping is zero-filled anonymous memory: null heads, zero counters, and zero predictor state are the initial state.
 CPU-local operation does not imply that cache-record pages or user payload pages are guaranteed physically local.
 
@@ -110,7 +113,8 @@ The wrappers sample `cpu_id_start` with `read_volatile`; assembly validates the 
 Migration between sampling and entry therefore causes failure instead of allowing publication to an unrelated CPU's local head.
 `get_cs_ptr` returns the address of `rseq_cs` for batch push; single push and pop derive field displacements with `offset_of!`.
 
-With `abort-on-rseq-failure`, `get_rseq` aborts when `cpu_id == u32::MAX`.
+With `abort-on-rseq-failure`, `get_rseq` currently aborts only when `cpu_id == u32::MAX` (the `-1` sentinel).
+It does not explicitly check the registration-failed sentinel `-2` (`u32::MAX - 1`).
 Without it, this helper does not provide a non-RSEQ fallback for an unavailable registration.
 The AArch64 thread-pointer helper is not evidence of an AArch64 local-list implementation: `rseq_asm.rs` currently contains x86-64 instructions.
 

@@ -77,8 +77,10 @@ arena, even though there is no fast-path arena-list mutex.
 
 On exhaustion, `alloc_slow` takes the node lock, rechecks whether another caller
 installed a new current arena, searches retained arenas, and finally maps a new
-one. Successful search or growth publishes the current pointer with release
-ordering.
+one. A successful reservation from a changed current arena returns directly.
+Retained-arena search reserves a range first, then release-publishes the selected
+current pointer and returns that range. Growth instead release-publishes the new
+arena before attempting its bump reservation.
 
 ```mermaid
 flowchart TD
@@ -86,12 +88,23 @@ flowchart TD
     CAS --> Result{Fits and CAS succeeds?}
     Result -- Yes --> Return[Return unique page range]
     Result -- No --> Lock[Lock node arena state]
-    Lock --> Recheck[Recheck changed current then search list]
-    Recheck --> Found{Range available?}
-    Found -- Yes --> Publish[Publish selected current arena]
+    Lock --> Changed{Current arena changed?}
+    Changed -- Yes --> Retry[Try bump reservation from changed current]
+    Retry --> Reserved{Reservation succeeded?}
+    Reserved -- Yes --> Return
+    Reserved -- No --> Search[Retire depleted current; search retained arenas]
+    Changed -- No --> Search
+    Search --> Found{Bump reservation succeeded?}
+    Found -- Yes --> Selected[Release-publish selected current arena]
+    Selected --> Return
     Found -- No --> Map[Map metadata prefix plus data arena]
-    Map --> Publish
-    Publish --> CAS
+    Map --> Mapped{Mapping succeeded?}
+    Mapped -- No --> Failure[Return None]
+    Mapped -- Yes --> Publish[Release-publish new current arena]
+    Publish --> NewCAS[Attempt bump reservation from new arena]
+    NewCAS --> NewResult{Reservation succeeded?}
+    NewResult -- Yes --> Return
+    NewResult -- No --> Failure
 ```
 
 Source: `src/backend/page_allocator.rs` — `alloc_inner`, `alloc_slow`,
@@ -123,14 +136,17 @@ Source: `src/backend/page_allocator.rs` — `new_arena_locked`, `maybe_remove`,
 `remove_arena`, `try_grow_inplace`; `src/utility.rs` — `MIN_REFILL_BYTES`;
 `src/inner/realloc.rs` — `small_realloc`.
 
-Arena mappings call `NumaBind.prefer_node`. This wraps Linux `mbind` with
-`MPOL_PREFERRED`; failure is ignored by these callers. The binder supports a
-single machine-word node mask and rejects IDs at or above `usize::BITS`.
-Preference is not strict binding, migration, or guaranteed physical placement.
-Anonymous mapping reserves virtual space; first touch and kernel policy affect
-which physical pages are actually populated.
+Arena mappings call `NumaBind.prefer_node`. The Linux `mbind` mode argument is
+`MPOL_PREFERRED | MPOL_F_STATIC_NODES`; `bind_node` instead uses
+`MPOL_BIND | MPOL_F_STATIC_NODES`. Both pass zero as the final migration-flags
+argument. The node mask is one machine word with only `node_id` set and
+`maxnode = node_id + 1`; IDs at or above `usize::BITS` return false without a
+syscall. Arena callers ignore failure, so placement is best-effort. Preference
+is not strict binding, and neither helper requests migration of already-faulted
+pages. Anonymous mapping reserves virtual space; first touch, cpuset restrictions,
+and kernel policy affect which physical pages are actually populated.
 
-Source: `src/internals/binder.rs` — `mbind_node`, `NumaBind::prefer_node`.
+Source: `src/internals/binder.rs` — `mbind_node`, `NumaBind::{prefer_node,bind_node}`.
 
 ## Segmented bitmap geometry
 
@@ -222,8 +238,11 @@ whether an allocation is valid or available.
 
 The slow search walks newest-first regions and scans each segment once, starting
 at `lane % segment_count`, skipping the already-failed preferred segment.
-The initial region size is the configured size rounded up to a power of two,
-with a 64 MiB minimum; overflow normalization falls back to one segment.
+Internally, `normalize_region_size` rounds up to a power of two with a 64 MiB
+minimum and falls back to one segment on overflow. Normal bootstrap does not
+use that fallback for an overflowing configuration: `BootstrapConfig::prepare`
+first uses `checked_next_power_of_two` and the same minimum; overflow returns
+`None` and `main_bootstrap` logs a bootstrap error and aborts.
 Only the bootstrap CPU's selected node receives an initial region.
 
 After local search fails, `expand` locks that node's growth lock and rechecks.
@@ -234,7 +253,8 @@ Published regions and segment addresses remain stable; there is no normal
 region-deletion path.
 
 Source: `src/big_allocations/segmented_bitmap.rs` — `HintLane`, `Node::alloc`,
-`alloc_slow`, `publish`, `init`, `normalize_region_size`, `expand`.
+`alloc_slow`, `publish`, `init`, `normalize_region_size`, `expand`;
+`src/backend/bootstrap.rs` — `BootstrapConfig::prepare`, `main_bootstrap`.
 
 `reserve` selects backing independently from object routing:
 

@@ -18,6 +18,7 @@ If a check cannot be run on your machine, mention that in the PR.
 ## Contribution guidelines
 
 - Keep changes focused; avoid unrelated rewrites in the same PR.
+- Summarize how the result was checked in every PR. Include relevant tests, builds, source review, or benchmarks, and state any checks that were not run or limitations of the validation.
 - Be careful around unsafe code, pointer arithmetic, metadata layout, RSEQ sections, and preload ABI behavior.
 - Prefer existing internal patterns before adding new abstractions or dependencies.
 - Document behavior changes that affect allocation, free, realloc, alignment, THP, buddy-cache behavior, or foreign-pointer handling.
@@ -39,4 +40,4 @@ For changes touching allocator internals, please include a short note covering:
 
 ## AI-assisted contributions
 
-AI-assisted contributions are allowed, but contributors should review and understand the generated code. If AI tools were used for allocator logic, mention the tool and summarize how the result was checked.
+AI-assisted contributions are welcome and follow the same contribution and validation rules as manually written code. Contributors are responsible for reviewing and understanding the submitted code, including its correctness and safety assumptions. Naming the AI tool or agent is not required.

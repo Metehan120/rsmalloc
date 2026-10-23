@@ -1,0 +1,13 @@
+label=tcmalloc
+preload_library=/lib64/libtcmalloc.so.4.6.5
+tables=8
+table_size=250000
+threads=32
+warmup_seconds=30
+run_seconds=60
+idle_seconds=15
+sample_interval=0.20
+buffer_pool_size=256M
+Linux cachyos-x8664 7.2.9-2-cachyos #1 SMP PREEMPT_DYNAMIC Fri, 09 Oct 2026 15:36:46 +0000 x86_64 GNU/Linux
+mariadbd  Ver 13.0.2-MariaDB for Linux on x86_64 (Arch Linux)
+sysbench 1.0.20-1472a05

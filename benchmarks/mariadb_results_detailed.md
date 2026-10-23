@@ -1,12 +1,12 @@
 # Detailed MariaDB benchmark results
 
-[Summary and charts](mariadb_results.md) · [Harness](mariadb/README.md)
+[Summary and charts](mariadb_results.md) · [Raw results](mariadb_results/) · [Harness](mariadb/README.md)
 
 ## Dataset and methodology
 
 Source: `/tmp/rsmalloc-mariadb-bench/results/{rsmalloc,system,tcmalloc,mimalloc,jemalloc}/`, collected **2026-10-23**. This report transcribes recorded results; no workloads were rerun to produce it.
 
-Each directory contains `environment.txt`, `workload.txt`, `warmup.txt`, `memory.csv`, `memory-summary.csv`, `maps.txt`, and `mariadb.log`. There is **one completed run per configuration**. No median, confidence interval, or repeated-run variability is available. The original files remain outside the repository; these reports preserve the aggregate results, not the complete raw time series or logs.
+Each directory contains `environment.txt`, `workload.txt`, `warmup.txt`, `memory.csv`, `memory-summary.csv`, `maps.txt`, and `mariadb.log`. There is **one completed run per configuration**. No median, confidence interval, or repeated-run variability is available. Complete raw files are preserved under [`mariadb_results/`](mariadb_results/), with separate `rsmalloc`, `system`, `tcmalloc`, `mimalloc`, and `jemalloc` directories.
 
 ### Recorded environment
 

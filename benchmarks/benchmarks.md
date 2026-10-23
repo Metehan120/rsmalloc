@@ -2,7 +2,7 @@
 
 This directory contains development benchmark snapshots for RSMalloc and several widely used allocators. See [**Detailed results: per-workload tables and time/RSS charts**](benchmarks_detailed.md) for a readable comparison of all 21 workloads. The raw measurements are in [`benchmark_overall.txt`](benchmark_overall.txt).
 
-A reproducible MariaDB/sysbench memory harness is available under [`mariadb/`](mariadb/README.md).
+For the real-world database comparison, see [**MariaDB benchmark results**](mariadb_results.md). The reproducible MariaDB/sysbench memory harness is available under [`mariadb/`](mariadb/README.md).
 
 ## Important Warning
 

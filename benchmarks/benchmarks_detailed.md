@@ -4,6 +4,8 @@
 
 A readable comparison of **21 workloads across five allocators**, with every reported metric and separate elapsed-time and memory charts. Historical alpha-2 rows are excluded.
 
+For the real-world database comparison, see [**Detailed MariaDB benchmark results**](mariadb_results_detailed.md).
+
 ## Measurement notes
 
 - These are development snapshots, **not production performance guarantees**. Test with your own workload and configuration.

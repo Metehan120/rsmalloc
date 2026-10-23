@@ -58,6 +58,7 @@
 //! This crate targets stable Rust, Linux, and `x86_64`. The optional
 //! `allocator-api` feature requires nightly while `std::alloc::Allocator` remains unstable.
 
+#![cfg_attr(feature = "allocator-api-feature-gate", feature(allocator_api))]
 #![allow(binary_asm_labels, unsafe_op_in_unsafe_fn, static_mut_refs)]
 
 use std::{

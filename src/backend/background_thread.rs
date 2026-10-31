@@ -1,7 +1,13 @@
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+use std::{
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed},
+    thread::{Thread, park_timeout},
+};
 
 use rustix::system::sysinfo;
-use syscalls::{Sysno, syscall};
+use syscalls::{
+    Sysno::{self},
+    syscall,
+};
 
 use crate::{
     AVERAGE_BLOCK_TIMES, CURRENT_STAMP, DISABLE_TRIM_THREAD,
@@ -10,11 +16,12 @@ use crate::{
     },
     global_vals::{
         BIG_TRIM_THRESHOLD, SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES, SMALL_TRIM_THRESHOLD,
-        TOTAL_CACHED_VA,
+        TOTAL_CACHED_VA, TRIM_MESSAGE,
     },
     rseq_core::slab_cache::SLAB_CACHE,
 };
 
+pub static mut THREAD: Option<Thread> = None;
 pub static RECLAIM_GUARD: AtomicBool = AtomicBool::new(false);
 
 const SIG_BLOCK: usize = 0;
@@ -64,13 +71,27 @@ pub unsafe fn spawn(entry: unsafe fn() -> !) -> bool {
         return false;
     };
 
-    std::thread::Builder::new()
+    let thread = std::thread::Builder::new()
         .name("rs-maintenance".into())
         .stack_size(64 * 1024)
         .spawn(move || unsafe {
             entry();
-        })
-        .is_ok()
+        });
+
+    let is_ok = thread.is_ok();
+    if let Ok(thread) = thread {
+        THREAD = Some(thread.thread().clone())
+    }
+    is_ok
+}
+
+pub unsafe fn maybe_unpark() -> bool {
+    if let Some(thread) = THREAD.clone() {
+        thread.unpark();
+        true
+    } else {
+        false
+    }
 }
 
 pub unsafe fn maybe_start_background_reclaimer() {
@@ -155,32 +176,38 @@ pub unsafe fn relief_paths() {
 pub unsafe fn background_reclaimer_main() -> ! {
     let mut latest_slab_stamp = 0;
     let mut latest_segmented_bitmap_stamp = 0;
-    let mut total_elapsed = 0;
+    let mut latest_relief_stamp = 0u32;
 
     loop {
         use crate::get_clock;
-        use std::{thread::sleep, time::Duration};
+        use std::time::Duration;
 
-        sleep(Duration::from_millis(100));
+        park_timeout(Duration::from_millis(100));
 
-        total_elapsed += 100;
-        if total_elapsed % 300 == 0 && !DISABLE_RELIEF {
-            relief_paths();
-        }
+        let trim = TRIM_MESSAGE.get_trim();
+        let trim_requested = trim.0.swap(false, Relaxed);
+        let size = trim.1.swap(0, Relaxed);
 
         let stamp = (get_clock().elapsed().as_millis() / 100) as u32;
+        if stamp.wrapping_sub(latest_relief_stamp) >= 3 && !DISABLE_RELIEF && !trim_requested {
+            latest_relief_stamp = stamp;
+            relief_paths();
+        }
         CURRENT_STAMP.store(stamp, Relaxed);
 
-        if stamp.saturating_sub(latest_segmented_bitmap_stamp)
+        let mut trimmed = 0;
+        if (stamp.saturating_sub(latest_segmented_bitmap_stamp)
             > SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES.load(Relaxed)
-            && !DISABLE_TRIM_THREAD
+            && !DISABLE_TRIM_THREAD)
+            || trim_requested
         {
             latest_segmented_bitmap_stamp = stamp;
-            SEGMENTED_BITMAP_BACKEND.trim_old(0);
+            trimmed = SEGMENTED_BITMAP_BACKEND.trim_old(0);
         }
 
-        if stamp.saturating_sub(latest_slab_stamp) > AVERAGE_BLOCK_TIMES.load(Relaxed).max(30)
-            && !DISABLE_TRIM_THREAD
+        if (stamp.saturating_sub(latest_slab_stamp) > AVERAGE_BLOCK_TIMES.load(Relaxed).max(30)
+            && !DISABLE_TRIM_THREAD)
+            || (trim_requested && (size == 0 || trimmed < size))
         {
             latest_slab_stamp = stamp;
             SLAB_CACHE.trim_small(0);

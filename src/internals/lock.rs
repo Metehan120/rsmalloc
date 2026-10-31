@@ -20,6 +20,7 @@ pub enum LockState {
     Free = 1,
 }
 
+#[must_use]
 #[derive(Debug, PartialEq)]
 pub enum LockGuard<G> {
     Locked,

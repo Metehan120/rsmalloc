@@ -31,6 +31,7 @@ mod raw;
 pub mod prelude {
     pub use crate::v2::alloc::RSMalloc;
     pub use crate::v2::alloc::RSMallocCoreAPI;
+    pub use crate::v2::alloc::RSTrimStatus;
     pub use crate::v2::alloc::SimpleTrimSize;
     pub use crate::v2::config::*;
 }

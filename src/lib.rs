@@ -63,7 +63,7 @@
 
 use std::{
     fmt::Debug,
-    sync::atomic::{AtomicPtr, Ordering},
+    sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering},
 };
 
 #[cfg(not(target_arch = "x86_64"))]
@@ -127,6 +127,24 @@ enum Flags {
     Allocated = 2,
     Reclaimed = 3,
     BigAlloc = 4,
+}
+
+enum Messages {
+    Trim {
+        requested: AtomicBool,
+        requested_size: AtomicUsize,
+    },
+}
+
+impl Messages {
+    const fn get_trim<'a>(&'a self) -> (&'a AtomicBool, &'a AtomicUsize) {
+        match self {
+            Messages::Trim {
+                requested,
+                requested_size,
+            } => (requested, requested_size),
+        }
+    }
 }
 
 #[repr(C, align(16))]

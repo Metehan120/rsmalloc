@@ -1,9 +1,12 @@
 use std::{
-    sync::atomic::{AtomicU32, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
     time::Instant,
 };
 
-use crate::internals::{lock::SpinLock, oncelock::OnceLock};
+use crate::{
+    Messages,
+    internals::{lock::SpinLock, oncelock::OnceLock},
+};
 
 #[cfg(not(feature = "extended-header"))]
 pub static mut MAGIC: u16 = u16::from_le_bytes(*b"RS");
@@ -200,3 +203,8 @@ pub fn get_clock() -> &'static Instant {
 
 pub const OFFSET_SIZE: usize = size_of::<usize>();
 pub const TAG_SIZE: usize = OFFSET_SIZE * 2;
+
+pub static TRIM_MESSAGE: Messages = Messages::Trim {
+    requested: AtomicBool::new(false),
+    requested_size: AtomicUsize::new(0),
+};

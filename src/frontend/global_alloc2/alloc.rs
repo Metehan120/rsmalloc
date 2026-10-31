@@ -6,6 +6,24 @@ use std::{
     ptr::NonNull,
 };
 
+/// Acknowledgement of a background trim message, not a reclamation result.
+#[must_use]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RSTrimStatus {
+    /// A message was already pending; no additional pass is queued.
+    AlreadyRequested,
+    /// A new message was posted for the existing background worker.
+    Requested,
+}
+
+pub(crate) fn request_trim(size: usize) -> RSTrimStatus {
+    if crate::frontend::post_trim_request(size) {
+        RSTrimStatus::Requested
+    } else {
+        RSTrimStatus::AlreadyRequested
+    }
+}
+
 #[cfg(any(feature = "debug", doc))]
 pub use crate::frontend::global_alloc2::debug::*;
 pub use crate::frontend::global_alloc2::raw::*;
@@ -14,7 +32,6 @@ use crate::v2::allocation_api::{AllocationAPI, AllocationError, AllocationSize};
 use crate::{
     GLOBAL_ALLOC_ONCE, Header,
     backend::bootstrap::main_bootstrap,
-    big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND,
     core_prim::wrappers::MaybeNull,
     inner::{
         align::memalign_inner,
@@ -23,7 +40,6 @@ use crate::{
         free::rs_free,
         realloc::rs_realloc,
     },
-    rseq_core::slab_cache::SLAB_CACHE,
     utility::likely,
     v2::config::Config,
 };
@@ -39,9 +55,12 @@ pub trait RSMallocCoreAPI {
 
     /// Requests a best-effort trim of eligible cached pages.
     ///
-    /// For `RSMalloc`, `Some(bytes)` reports reclaimed bytes and `None` means
-    /// nothing was reclaimed. A trim request does not invalidate live allocations;
-    /// reclamation is best-effort and may fall short of the requested amount.
+    /// For `RSMalloc`, returns [`RSTrimStatus::Requested`] or
+    /// [`RSTrimStatus::AlreadyRequested`], not a reclaimed byte count. Requests
+    /// are coalesced and processed asynchronously by the existing background
+    /// worker; this call does not start or wake it or wait for completion.
+    /// Live allocations remain valid. Reclamation is best-effort, subject to
+    /// worker eligibility gates, and may not immediately reduce RSS.
     fn trim(&self, size: Self::TrimIn) -> Self::TrimOut;
     /// Returns the usable payload size of a live rsmalloc allocation.
     ///
@@ -344,12 +363,11 @@ unsafe impl AllocationAPI for RSMalloc {
 
 /// Trim request used by [`RSMallocCoreAPI`] on [`RSMalloc`].
 pub enum SimpleTrimSize {
-    /// Requests an unbounded pass over eligible slab caches and
-    /// segmented-bitmap blocks, in that order. This is best-effort; not all
-    /// cached pages are necessarily reclaimable.
+    /// Requests an asynchronous, unbounded pass over eligible segmented-bitmap
+    /// blocks and slab caches. Not all cached pages are necessarily reclaimable.
     All,
-    /// Tries to reclaim at least this many bytes, scanning slab caches first
-    /// and segmented-bitmap blocks for any remaining amount.
+    /// Requests this best-effort byte target. The worker scans segmented-bitmap
+    /// blocks first and slab caches if the target has not been met.
     Bytes(NonZero<usize>),
 }
 
@@ -364,7 +382,7 @@ impl SimpleTrimSize {
 
 impl RSMallocCoreAPI for RSMalloc {
     type TrimIn = SimpleTrimSize;
-    type TrimOut = Option<usize>;
+    type TrimOut = RSTrimStatus;
 
     unsafe fn rs_usable_size(&self, pointer: NonNull<u8>) -> Option<usize> {
         unsafe { self.init() };
@@ -377,16 +395,7 @@ impl RSMallocCoreAPI for RSMalloc {
     fn trim(&self, size: Self::TrimIn) -> Self::TrimOut {
         unsafe { self.init() };
 
-        let requested = size.get_size();
-        let slab = unsafe { SLAB_CACHE.trim_small(requested) };
-        let segmented_bitmap = if requested == 0 || slab < requested {
-            unsafe { SEGMENTED_BITMAP_BACKEND.trim(requested.saturating_sub(slab)) }
-        } else {
-            0
-        };
-
-        let reclaimed = slab.saturating_add(segmented_bitmap);
-        (reclaimed > 0).then_some(reclaimed)
+        request_trim(size.get_size())
     }
 
     /// Initializes the allocator manually.

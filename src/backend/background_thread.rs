@@ -1,8 +1,5 @@
 use std::{
-    sync::{
-        OnceLock,
-        atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed},
-    },
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed},
     thread::{Thread, park_timeout},
 };
 
@@ -24,7 +21,7 @@ use crate::{
     rseq_core::slab_cache::SLAB_CACHE,
 };
 
-pub static THREAD: OnceLock<Thread> = OnceLock::new();
+pub static mut THREAD: Option<Thread> = None;
 pub static RECLAIM_GUARD: AtomicBool = AtomicBool::new(false);
 
 const SIG_BLOCK: usize = 0;
@@ -83,13 +80,13 @@ pub unsafe fn spawn(entry: unsafe fn() -> !) -> bool {
 
     let is_ok = thread.is_ok();
     if let Ok(thread) = thread {
-        let _ = THREAD.set(thread.thread().clone());
+        THREAD = Some(thread.thread().clone());
     }
     is_ok
 }
 
 pub unsafe fn maybe_unpark() -> bool {
-    if let Some(thread) = THREAD.get() {
+    if let Some(thread) = &THREAD {
         thread.unpark();
         true
     } else {

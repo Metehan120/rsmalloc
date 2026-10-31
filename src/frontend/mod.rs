@@ -10,7 +10,9 @@ pub(crate) fn post_trim_request(size: usize) -> bool {
 
     requested_size.store(size, Relaxed);
     let is_ok = !requested.swap(true, Relaxed);
-    unsafe { maybe_unpark() };
+    if is_ok {
+        unsafe { maybe_unpark() };
+    }
     is_ok
 }
 

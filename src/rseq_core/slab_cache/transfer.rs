@@ -1,6 +1,6 @@
 use std::{
     hint::spin_loop,
-    ptr::eq,
+    ptr::{addr_of, eq, read_volatile},
     sync::atomic::Ordering::{self},
 };
 
@@ -335,10 +335,10 @@ impl SlabCache {
 
             let mut tail = pack.current_header;
             let mut count = 1usize;
-            let mut next = (*tail).next;
+            let mut next = read_volatile(addr_of!((*tail).next));
             while count < batch_size && !next.is_null() {
                 tail = next;
-                next = (*tail).next;
+                next = read_volatile(addr_of!((*tail).next));
                 count += 1;
             }
 

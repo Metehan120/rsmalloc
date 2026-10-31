@@ -18,59 +18,67 @@ pub(crate) fn post_trim_request(size: usize) -> bool {
 mod tests {
     use super::*;
     use crate::v2::alloc::{RSMalloc, RSMallocCoreAPI, RSTrimStatus, SimpleTrimSize};
-    use std::{num::NonZero, sync::mpsc, thread, time::Duration};
+    use std::{
+        num::NonZero,
+        process::Command,
+        thread,
+        time::{Duration, Instant},
+    };
 
     #[test]
     fn trim_api_posts_coalesces_and_unparks() {
+        const CHILD: &str = "RSMALLOC_TRIM_API_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            // The real worker runs indefinitely, so keep it in a separate process.
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "frontend::tests::trim_api_posts_coalesces_and_unparks",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success(), "trim API child test failed: {status}");
+            return;
+        }
+
         let allocator = RSMalloc::new_default();
         allocator.manual_init();
         let (requested, size) = crate::TRIM_MESSAGE.get_trim();
         assert!(!requested.load(Relaxed));
+        assert!(!unsafe { maybe_unpark() });
 
-        let (ready_tx, ready_rx) = mpsc::channel();
-        let (wake_tx, wake_rx) = mpsc::channel();
-        let worker = thread::spawn(move || {
-            ready_tx.send(()).unwrap();
-            thread::park_timeout(Duration::from_secs(5));
-            wake_tx.send(()).unwrap();
-        });
-        ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        // This test runs without an allocator maintenance worker. Install a
-        // parked stand-in to check the frontend's wakeup independently.
-        let previous = unsafe {
-            std::ptr::replace(
-                std::ptr::addr_of_mut!(crate::backend::background_thread::THREAD),
-                Some(worker.thread().clone()),
-            )
-        };
-        assert!(previous.is_none());
-
-        assert_eq!(allocator.trim(SimpleTrimSize::All), RSTrimStatus::Requested);
-        let woke = wake_rx.recv_timeout(Duration::from_secs(2)).is_ok();
-        worker.thread().unpark();
-        worker.join().unwrap();
-        unsafe { crate::backend::background_thread::THREAD = previous };
-        assert!(
-            woke,
-            "posting a trim request did not unpark the test worker"
-        );
-        assert!(requested.load(Relaxed));
-        assert_eq!(size.load(Relaxed), 0);
-        assert_eq!(
-            allocator.trim(SimpleTrimSize::Bytes(NonZero::new(4096).unwrap())),
-            RSTrimStatus::AlreadyRequested,
-        );
-        assert_eq!(size.load(Relaxed), 0);
-
-        requested.store(false, Relaxed);
         assert_eq!(
             allocator.trim(SimpleTrimSize::Bytes(NonZero::new(4096).unwrap())),
             RSTrimStatus::Requested,
         );
+        assert!(requested.load(Relaxed));
+        assert_eq!(size.load(Relaxed), 4096);
+        assert_eq!(
+            allocator.trim(SimpleTrimSize::All),
+            RSTrimStatus::AlreadyRequested
+        );
         assert_eq!(size.load(Relaxed), 4096);
 
-        requested.store(false, Relaxed);
-        size.store(0, Relaxed);
+        assert!(unsafe {
+            crate::backend::background_thread::spawn(
+                crate::backend::background_thread::background_reclaimer_main,
+            )
+        });
+        let wait_for_request = || {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while requested.load(Relaxed) {
+                assert!(
+                    Instant::now() < deadline,
+                    "background worker did not consume trim request"
+                );
+                thread::sleep(Duration::from_millis(1));
+            }
+        };
+        wait_for_request();
+
+        assert_eq!(allocator.trim(SimpleTrimSize::All), RSTrimStatus::Requested);
+        wait_for_request();
     }
 }
 

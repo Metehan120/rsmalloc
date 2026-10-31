@@ -3,7 +3,9 @@ use std::{
     sync::atomic::{AtomicPtr, Ordering},
 };
 
-use crate::{CURRENT_STAMP, Flags, backend::page_allocator::PAGE_ALLOCATOR};
+use crate::{
+    CURRENT_STAMP, Flags, backend::page_allocator::PAGE_ALLOCATOR, result_handling::RSMallocError,
+};
 use crate::{
     FREED_MAGIC, Header, MetaData, add_slab_cached_va,
     internals::radix_tree::RADIX,
@@ -14,10 +16,6 @@ use crate::{
     rseq_core::{pending_queue::PENDING_QUEUE, slab_cache::SLAB_CACHE},
     utility::Alignment,
 };
-
-pub(crate) enum Err {
-    OutOfMemory,
-}
 
 #[inline(always)]
 unsafe fn remaining_blocks(metadata: *mut MetaData, block_size: usize) -> usize {
@@ -72,7 +70,7 @@ unsafe fn alloc_metadata(
     class: usize,
     block_size: usize,
     cpu_id: usize,
-) -> Result<*mut MetaData, Err> {
+) -> Result<*mut MetaData, RSMallocError> {
     let inner = SLAB_CACHE.get_inner();
     let node_id = SLAB_CACHE.node_for_cpu(cpu_id, inner);
 
@@ -95,7 +93,11 @@ unsafe fn alloc_metadata(
 
     let mem = PAGE_ALLOCATOR
         .alloc(Some(node_id), total)
-        .ok_or(Err::OutOfMemory)?;
+        .ok_or(RSMallocError::OutOfMemory {
+            subsystem: "bulk_fill",
+            size: block_size,
+            errno: None,
+        })?;
 
     add_slab_cached_va(total);
 
@@ -121,7 +123,7 @@ pub unsafe fn bulk_fill(
     class: usize,
     cpu_id: usize,
     max_init: usize,
-) -> Result<(*mut Header, *mut Header, usize), Err> {
+) -> Result<(*mut Header, *mut Header, usize), RSMallocError> {
     let payload_size = SIZE_CLASSES[class];
     let block_size = (payload_size + Header::SIZE).align_to(16);
     let current_stamp = CURRENT_STAMP.load(Ordering::Relaxed);
@@ -148,7 +150,11 @@ pub unsafe fn bulk_fill(
     let (head, tail, count) =
         init_blocks(class as u8, metadata, block_size, max_init, current_stamp);
     if count == 0 {
-        return Err(Err::OutOfMemory);
+        return Err(RSMallocError::OutOfMemory {
+            subsystem: "bulk_fill",
+            size: max_init,
+            errno: None,
+        });
     }
     if remaining_blocks(metadata, block_size) > 0
         && pending_slot

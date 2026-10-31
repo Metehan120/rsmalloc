@@ -88,7 +88,7 @@ pub unsafe fn spawn(entry: unsafe fn() -> !) -> bool {
     is_ok
 }
 
-pub unsafe fn maybe_unpark() -> bool {
+pub fn maybe_unpark() -> bool {
     let LockGuard::Free(thread) = THREAD.try_lock() else {
         return false;
     };

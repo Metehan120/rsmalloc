@@ -11,7 +11,7 @@ pub(crate) fn post_trim_request(size: usize) -> bool {
     requested_size.store(size, Relaxed);
     let is_ok = !requested.swap(true, Relaxed);
     if is_ok {
-        unsafe { maybe_unpark() };
+        maybe_unpark();
     }
     is_ok
 }
@@ -48,7 +48,7 @@ mod tests {
         allocator.manual_init();
         let (requested, size) = crate::TRIM_MESSAGE.get_trim();
         assert!(!requested.load(Relaxed));
-        assert!(!unsafe { maybe_unpark() });
+        assert!(!maybe_unpark());
 
         assert_eq!(
             allocator.trim(SimpleTrimSize::Bytes(NonZero::new(4096).unwrap())),

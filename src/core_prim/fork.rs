@@ -4,11 +4,12 @@ use std::{
         Mutex, MutexGuard,
         atomic::{AtomicUsize, Ordering},
     },
+    thread::Thread,
 };
 
 use crate::{
     GLOBAL_TRIM_LOCK, RSMallocError,
-    backend::page_allocator::PAGE_ALLOCATOR,
+    backend::{background_thread::THREAD, page_allocator::PAGE_ALLOCATOR},
     big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND,
     inner::{fallback::fallback_reinit_on_fork, preload::libc_int::pthread_atfork},
     internals::{big_meta_map::BIG_MAP, lock::SpinLockGuard, radix_tree::RADIX},
@@ -45,6 +46,7 @@ pub(crate) fn can_borrow_frozen_lock(owner_tid: usize) -> bool {
 }
 static mut ATFORK_GUARD: Option<MutexGuard<'static, ()>> = None;
 static mut TRIM_ATFORK_GUARD: Option<SpinLockGuard<()>> = None;
+static mut THREAD_ATFORK_GUARD: Option<SpinLockGuard<Option<Thread>>> = None;
 
 unsafe extern "C" fn fork_prepare() {
     let guard = BOOTSTRAP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -54,6 +56,7 @@ unsafe extern "C" fn fork_prepare() {
     let owner_tid = current_tid();
     FORK_PROCESS_ID.store(current_pid(), Ordering::Release);
     TRIM_ATFORK_GUARD = Some(GLOBAL_TRIM_LOCK.lock());
+    THREAD_ATFORK_GUARD = Some(THREAD.lock());
 
     SEGMENTED_BITMAP_BACKEND.lock_all_for_fork(owner_tid);
     BIG_MAP.lock_for_fork(owner_tid);
@@ -67,6 +70,9 @@ unsafe extern "C" fn fork_parent() {
     BIG_MAP.reset_lock_on_fork();
     SEGMENTED_BITMAP_BACKEND.reset_locks_on_fork();
 
+    if let Some(guard) = THREAD_ATFORK_GUARD.take() {
+        drop(guard);
+    }
     if let Some(guard) = TRIM_ATFORK_GUARD.take() {
         drop(guard);
     }
@@ -84,6 +90,13 @@ unsafe extern "C" fn fork_child() {
     fallback_reinit_on_fork();
     #[cfg(feature = "experimental-predictive-demand")]
     crate::rseq_core::slab_cache::SLAB_CACHE.reset_demand_after_fork();
+    if let Some(mut guard) = THREAD_ATFORK_GUARD.take() {
+        // Avoid running the inherited Thread handle's destructor in the child callback.
+        if let Some(thread) = guard.take() {
+            std::mem::forget(thread);
+        }
+        drop(guard);
+    }
     if let Some(guard) = TRIM_ATFORK_GUARD.take() {
         drop(guard);
     }

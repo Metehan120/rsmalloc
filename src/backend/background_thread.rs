@@ -18,10 +18,12 @@ use crate::{
         BIG_TRIM_THRESHOLD, SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES, SMALL_TRIM_THRESHOLD,
         TOTAL_CACHED_VA, TRIM_MESSAGE,
     },
+    internals::lock::{LockGuard, SpinLock},
     rseq_core::slab_cache::SLAB_CACHE,
+    traits::Lock,
 };
 
-pub static mut THREAD: Option<Thread> = None;
+pub static THREAD: SpinLock<Option<Thread>> = SpinLock::new(None);
 pub static RECLAIM_GUARD: AtomicBool = AtomicBool::new(false);
 
 const SIG_BLOCK: usize = 0;
@@ -80,13 +82,18 @@ pub unsafe fn spawn(entry: unsafe fn() -> !) -> bool {
 
     let is_ok = thread.is_ok();
     if let Ok(thread) = thread {
-        THREAD = Some(thread.thread().clone());
+        let mut lock = THREAD.lock();
+        *lock = Some(thread.thread().clone())
     }
     is_ok
 }
 
 pub unsafe fn maybe_unpark() -> bool {
-    if let Some(thread) = &THREAD {
+    let LockGuard::Free(thread) = THREAD.try_lock() else {
+        return false;
+    };
+
+    if let Some(thread) = &*thread {
         thread.unpark();
         true
     } else {

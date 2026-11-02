@@ -30,7 +30,7 @@ use crate::{
         page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR},
     },
     core_prim::{predictor::EMA_ALPHA, wrappers::Owned},
-    global_vals::{BIG_TRIM_THRESHOLD, SMALL_TRIM_THRESHOLD, TOTAL_CACHED_VA},
+    global_vals::BIG_TRIM_THRESHOLD,
     inner::alloc::MAX_REFILL_RETRIES,
     internals::{
         binder::NumaBind, fork_lock::SpinLock, lock::LockGuard, once::Once, radix_tree::RADIX,
@@ -450,10 +450,7 @@ impl SegmentedBitmapAllocator {
     }
 
     unsafe fn trim_inner(&self, requested: usize, force: bool) -> usize {
-        if !force
-            && TOTAL_CACHED_VA.load(Ordering::Relaxed) < SMALL_TRIM_THRESHOLD
-            && SEGMENTED_BITMAP_TOTAL_CACHED_VA.load(Ordering::Relaxed) < BIG_TRIM_THRESHOLD
-        {
+        if !force && SEGMENTED_BITMAP_TOTAL_CACHED_VA.load(Ordering::Relaxed) < BIG_TRIM_THRESHOLD {
             return 0;
         }
         let Some(state) = self.state.load(Ordering::Acquire).as_ref() else {

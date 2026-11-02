@@ -1,16 +1,18 @@
-use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
-use crate::backend::background_thread::maybe_unpark;
+use crate::backend::background_thread::{BACKGROUND_THREAD, maybe_unpark};
 
 pub(crate) fn post_trim_request(size: usize) -> bool {
-    let (requested, requested_size) = crate::TRIM_MESSAGE.get_trim();
-    if requested.load(Relaxed) {
+    let (requested, requested_size) = BACKGROUND_THREAD.message.get_trim();
+    if requested.load(Acquire) {
         return false;
     }
 
-    requested_size.store(size, Relaxed);
-    let is_ok = !requested.swap(true, Relaxed);
+    let is_ok = requested
+        .compare_exchange(false, true, Release, Relaxed)
+        .is_ok();
     if is_ok {
+        requested_size.store(size, Relaxed);
         maybe_unpark();
     }
     is_ok

@@ -10,11 +10,10 @@ use rustix::mm::{Advice, madvise};
 use crate::backend::background_thread::{TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA};
 use crate::{
     Flags, Header,
-    big_allocations::segmented_bitmap::SEGMENTED_BITMAP_TOTAL_CACHED_VA,
     core_prim::predictor::TRIM_SMOOTHING,
     global_vals::{
-        AVERAGE_BLOCK_TIMES, BIG_TRIM_THRESHOLD, CURRENT_STAMP, GLOBAL_TRIM_LOCK, NCPU,
-        SMALL_TRIM_THRESHOLD, TOTAL_CACHED_VA,
+        AVERAGE_BLOCK_TIMES, CURRENT_STAMP, GLOBAL_TRIM_LOCK, NCPU, SMALL_TRIM_THRESHOLD,
+        TOTAL_CACHED_VA,
     },
     internals::{atomics::AtomicOrdering, lock::LockGuard},
     rseq_core::{
@@ -32,9 +31,7 @@ use crate::{
 
 impl SlabCache {
     pub unsafe fn trim_small(&self, requested_size: usize) -> usize {
-        if TOTAL_CACHED_VA.load(Relaxed) < SMALL_TRIM_THRESHOLD
-            && SEGMENTED_BITMAP_TOTAL_CACHED_VA.load(Relaxed) < BIG_TRIM_THRESHOLD
-        {
+        if TOTAL_CACHED_VA.load(Relaxed) < SMALL_TRIM_THRESHOLD {
             return 0;
         }
 

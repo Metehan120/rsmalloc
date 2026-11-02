@@ -10,20 +10,32 @@ use syscalls::{
 };
 
 use crate::{
-    AVERAGE_BLOCK_TIMES, CURRENT_STAMP, DISABLE_TRIM_THREAD,
+    AVERAGE_BLOCK_TIMES, CURRENT_STAMP, DISABLE_TRIM_THREAD, Messages,
     big_allocations::segmented_bitmap::{
         SEGMENTED_BITMAP_BACKEND, SEGMENTED_BITMAP_TOTAL_CACHED_VA,
     },
     global_vals::{
         BIG_TRIM_THRESHOLD, SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES, SMALL_TRIM_THRESHOLD,
-        TOTAL_CACHED_VA, TRIM_MESSAGE,
+        TOTAL_CACHED_VA,
     },
     internals::lock::{LockGuard, SpinLock},
     rseq_core::slab_cache::SLAB_CACHE,
     traits::Lock,
 };
 
-pub static THREAD: SpinLock<Option<Thread>> = SpinLock::new(None);
+pub struct BackgroundThread {
+    pub thread: SpinLock<Option<Thread>>,
+    pub message: Messages,
+}
+
+pub static BACKGROUND_THREAD: BackgroundThread = BackgroundThread {
+    thread: SpinLock::new(None),
+    message: Messages::Trim {
+        requested: AtomicBool::new(false),
+        requested_size: AtomicUsize::new(0),
+    },
+};
+
 pub static RECLAIM_GUARD: AtomicBool = AtomicBool::new(false);
 
 const SIG_BLOCK: usize = 0;
@@ -82,14 +94,14 @@ pub unsafe fn spawn(entry: unsafe fn() -> !) -> bool {
 
     let is_ok = thread.is_ok();
     if let Ok(thread) = thread {
-        let mut lock = THREAD.lock();
-        *lock = Some(thread.thread().clone())
+        let mut lock = BACKGROUND_THREAD.thread.lock();
+        *lock = Some(thread.thread().clone());
     }
     is_ok
 }
 
 pub fn maybe_unpark() -> bool {
-    let LockGuard::Free(thread) = THREAD.try_lock() else {
+    let LockGuard::Free(thread) = BACKGROUND_THREAD.thread.try_lock() else {
         return false;
     };
 
@@ -191,7 +203,7 @@ pub unsafe fn background_reclaimer_main() -> ! {
 
         park_timeout(Duration::from_millis(100));
 
-        let trim = TRIM_MESSAGE.get_trim();
+        let trim = BACKGROUND_THREAD.message.get_trim();
         let trim_requested = trim.0.swap(false, Relaxed);
         let size = trim.1.swap(0, Relaxed);
 

@@ -9,7 +9,7 @@ use std::{
 
 use crate::{
     GLOBAL_TRIM_LOCK, RSMallocError,
-    backend::{background_thread::THREAD, page_allocator::PAGE_ALLOCATOR},
+    backend::{background_thread::BACKGROUND_THREAD, page_allocator::PAGE_ALLOCATOR},
     big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND,
     inner::{fallback::fallback_reinit_on_fork, preload::libc_int::pthread_atfork},
     internals::{big_meta_map::BIG_MAP, lock::SpinLockGuard, radix_tree::RADIX},
@@ -56,7 +56,7 @@ unsafe extern "C" fn fork_prepare() {
     let owner_tid = current_tid();
     FORK_PROCESS_ID.store(current_pid(), Ordering::Release);
     TRIM_ATFORK_GUARD = Some(GLOBAL_TRIM_LOCK.lock());
-    THREAD_ATFORK_GUARD = Some(THREAD.lock());
+    THREAD_ATFORK_GUARD = Some(BACKGROUND_THREAD.thread.lock());
 
     SEGMENTED_BITMAP_BACKEND.lock_all_for_fork(owner_tid);
     BIG_MAP.lock_for_fork(owner_tid);

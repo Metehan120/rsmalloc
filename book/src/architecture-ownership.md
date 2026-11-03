@@ -28,7 +28,7 @@ hints, timestamps, and sampled inventory are policy. Ownership bits themselves a
 Default `Header` is `repr(C, align(16))`, size 16, with fields in this order: `next`, `flags`, `class`, 16-bit
 `magic`, and 32-bit `life_time`. `extended-header` changes it to size 32 with `next`, 64-bit `magic`, `flags`,
 `life_time`, and `class`. RSEQ assumes the link is first; changing layout is not merely a metadata
-optimization. Ordinary payload starts one header later.
+optimization. In both layouts `next` is an `AtomicPtr<Header>`; link traversal uses acquire loads and updates use release stores. Ordinary payload starts one header later.
 
 `Flags` is an 8-bit enum: `NotAllocated=1`, `Allocated=2`, `Reclaimed=3`, `BigAlloc=4`. Fresh small headers
 start with `FREED_MAGIC` and `NotAllocated`. Allocation stamps `MAGIC`; ordinary allocation also sets

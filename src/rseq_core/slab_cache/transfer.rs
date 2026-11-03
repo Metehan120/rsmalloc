@@ -1,7 +1,7 @@
 use std::{
     hint::spin_loop,
-    ptr::{addr_of, eq, read_volatile},
-    sync::atomic::Ordering::{self},
+    ptr::eq,
+    sync::atomic::Ordering::{self, Acquire, Release},
 };
 
 use portable_atomic::AtomicU128;
@@ -134,7 +134,7 @@ impl SlabCache {
         loop {
             let pack = Tagging.untag_ptr(old);
 
-            (*tail).next = pack.current_header;
+            (*tail).next.store(pack.current_header, Release);
 
             match list_ptr.compare_exchange(
                 old,
@@ -221,7 +221,7 @@ impl SlabCache {
 
             // This node is ours until publication succeeds. On failure, only
             // the observed head changes; relink our node before trying again.
-            (*header).next = pack.current_header;
+            (*header).next.store(pack.current_header, Release);
             match list_ptr.compare_exchange(
                 old,
                 Tagging.tag_ptr(header, pack.old_packed),
@@ -295,7 +295,7 @@ impl SlabCache {
 
             // The trimmer privately owns the chain it detached, not every
             // block pushed during the trim phase. Pushes can still publish work.
-            if list.trim_lock.get_lock() {
+            if list.trim_message.get_lock() {
                 if !force {
                     // Ordinary callers skip this cache rather than wait for trimming.
                     return None;
@@ -314,7 +314,7 @@ impl SlabCache {
                     if !pack.current_header.is_null() {
                         break;
                     }
-                    if !list.trim_lock.get_lock() {
+                    if !list.trim_message.get_lock() {
                         continue 'retry;
                     }
                     spin_loop();
@@ -335,10 +335,10 @@ impl SlabCache {
 
             let mut tail = pack.current_header;
             let mut count = 1usize;
-            let mut next = read_volatile(addr_of!((*tail).next));
+            let mut next = (*tail).next.load(Acquire);
             while count < batch_size && !next.is_null() {
                 tail = next;
-                next = read_volatile(addr_of!((*tail).next));
+                next = (*tail).next.load(Acquire);
                 count += 1;
             }
 

@@ -111,21 +111,21 @@ For a nonzero resize, never overwrite your only pointer before checking the resu
 `RSMallocCoreAPI` is available without `native-allocation-api`. Import the trait to call its methods:
 
 ```rust
-use rsmalloc::v2::alloc::{RSMalloc, RSMallocCoreAPI, SimpleTrimSize};
+use rsmalloc::v2::alloc::{RSMalloc, RSMallocCoreAPI, RSTrimStatus, SimpleTrimSize};
 
 static ALLOCATOR: RSMalloc = RSMalloc::new_default();
 
 fn main() {
     ALLOCATOR.manual_init();
     match ALLOCATOR.trim(SimpleTrimSize::All) {
-        Some(bytes) => println!("reclaimed {bytes} bytes"),
-        None => println!("nothing reclaimed"),
+        RSTrimStatus::Requested => println!("trim requested"),
+        RSTrimStatus::AlreadyRequested => println!("trim already pending"),
     }
 }
 ```
 
 - `manual_init()` requests allocator-wide bootstrap ahead of ordinary allocation; it cannot override an earlier initializer or warm all allocation paths.
-- `trim(SimpleTrimSize::All)` scans eligible slab caches, then segmented-bitmap blocks. `SimpleTrimSize::Bytes(NonZero<usize>)` requests a byte target. Both are best-effort; the result may fall short and live allocations remain valid. This is not a promise to unmap all cached VA or produce an equal RSS drop.
+- `trim(SimpleTrimSize::All)` requests an asynchronous unbounded pass. `SimpleTrimSize::Bytes(NonZero<usize>)` requests a best-effort target: the worker scans eligible bitmap slots first and scans slab caches if the bitmap result falls short. The target does not bound either scan. The result reports whether a request was posted, not reclaimed bytes; requests are coalesced. A request does not start a worker and may remain pending until a later threshold-triggered startup. Live allocations remain valid, and no RSS reduction is guaranteed.
 - `unsafe rs_usable_size(NonNull<u8>) -> Option<usize>` is another usable-capacity query with the same live-pointer and initialization responsibilities. It is **not safe** merely because the trait also contains safe maintenance methods.
 
 Explicit trimming can be useful between workload phases. Trimming on every request or free can sacrifice reuse and add work; measure it rather than treating it as mandatory cleanup. See [Performance Tuning](performance-tuning.md).

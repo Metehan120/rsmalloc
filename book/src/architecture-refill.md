@@ -97,7 +97,7 @@ Source: `src/rseq_core/slab_cache.rs` — `first_nonempty_cpu_in_range`,
 A successful `transfer_pop_batch` proceeds as follows:
 
 1. Acquire-load the normal tagged head; switch to the trimmed list if empty.
-2. Respect `trim_lock`: ordinary attempts can return `None`; forced attempts
+2. Respect `trim_message`: ordinary attempts can return `None`; forced attempts
    may wait for the trimming path rather than immediately giving up.
 3. Walk actual `Header.next` links up to the requested batch length.
 4. Acquire-CAS the tagged head to the successor after that prefix.

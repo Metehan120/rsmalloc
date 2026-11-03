@@ -14,7 +14,7 @@ The overview below is the short version. The following chapters follow the curre
 | [Refill and deferred initialization](architecture-refill.md) | What are the actual predictor equations? Who owns an unfinished span? How does queue failure affect capacity? | `src/core_prim/predictor.rs`, `src/core_prim/predictor_demand.rs`, `src/rseq_core/bulk_fill.rs`, `src/rseq_core/pending_queue.rs` |
 | [Backing memory](architecture-backing-memory.md) | How do arenas reserve ranges and bitmap regions claim orders? When are direct mappings used? | `src/backend/page_allocator.rs`, `src/big_allocations/` |
 | [Ownership and resizing](architecture-ownership.md) | What do headers, aligned prefixes, radix bits, and exact metadata mean? How do free, calloc, realloc, and fork interact? | `src/inner/`, `src/internals/`, `src/core_prim/fork.rs` |
-| [Reclamation and relief](architecture-reclamation.md) | Which pages qualify, how are scans scheduled, what is excluded, and what does pressure relief measure? | `src/backend/background_thread.rs`, slab reclaim and bitmap trim code |
+| [Reclamation](architecture-reclamation.md) | Which pages qualify, how are scans scheduled, and what is excluded? | `src/backend/background_thread.rs`, slab reclaim and bitmap trim code |
 | [Concurrency and observations](architecture-concurrency.md) | Which state is authoritative? What are the current race, accounting, progress, and telemetry limits? | Cross-subsystem synchronization and diagnostic frontends |
 
 Each detailed chapter cites source paths and symbols. Numeric layouts and policy equations are implementation snapshots and can change. The architecture explanation is not an audit or a guarantee of production safety.
@@ -71,7 +71,7 @@ The slab page backend reserves ranges from NUMA-preferred bump arenas. The defau
 
 Large requests normally try a segmented-bitmap backend with 4, 8, 16, 32, or 64 MiB blocks. Its regions contain 64 MiB segments. Eligibility is based on **adjusted total size**, including the header and page/THP adjustment, and is limited to 64 MiB. A 64 MiB payload therefore exceeds that limit; smaller order-boundary payloads can also need the next order.
 
-If reuse is disabled, ineligible, or unavailable, allocation falls back to a dedicated mapping. Direct frees unmap that allocation. Bitmap frees instead make slots available for reuse. A sharded, lock-protected metadata map tracks exact large allocations; the ownership radix tracks coarse 4 KiB regions.
+If the bitmap backend is uninitialized, the request is ineligible, or allocation there is unavailable, allocation falls back to a dedicated mapping. Direct frees unmap that allocation. Bitmap frees instead make slots available for reuse. A sharded, lock-protected metadata map tracks exact large allocations; the ownership radix tracks coarse 4 KiB regions.
 
 Power-of-two rounding, alignment padding, region growth, metadata, and sparse page touching explain why requested bytes, virtual size, and RSS can differ substantially.
 
@@ -81,7 +81,7 @@ A freed object is no longer yours, even if its pages remain resident. Cached blo
 
 Background trimming advises eligible cold payload pages away using `madvise`. Slab eligibility depends on class, complete reclaimable pages, and observed lifetimes; small classes without reclaimable payload pages are not covered by this mechanism. Segmented-bitmap trimming uses free-slot ages. Regions can remain virtually reserved after pages are reclaimed.
 
-Manual trimming is best-effort, not a request to empty every cache or meet an RSS deadline. `lazy-page-trim` allows lazy reclamation; memory may remain resident until the kernel needs it. Pressure relief is a separate, opt-in, system-wide policy and is not a cgroup memory limiter.
+Manual trimming is best-effort, not a request to empty every cache or meet an RSS deadline. `lazy-page-trim` allows lazy reclamation; memory may remain resident until the kernel needs it.
 
 ## NUMA preference has limits
 

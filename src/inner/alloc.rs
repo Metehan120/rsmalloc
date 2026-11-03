@@ -1,6 +1,9 @@
-use std::ptr::null_mut;
 #[cfg(feature = "debug-full-critic")]
 use std::sync::atomic::AtomicUsize;
+use std::{
+    ptr::null_mut,
+    sync::atomic::Ordering::{Acquire, Release},
+};
 
 #[cfg(feature = "preload")]
 use crate::inner::preload::libc_int::set_nomem;
@@ -147,13 +150,13 @@ unsafe fn take_one_from_batch(
         #[cfg(feature = "debug")]
         record_refill_prediction(class, count, wanted, cpu_id, can_probe_more);
 
-        let rest = (*first).next;
+        let rest = (*first).next.load(Acquire);
         if !rest.is_null() {
             SLAB_CACHE.push_tailed(class, rest, tail, count - 1);
         }
     }
 
-    (*first).next = null_mut();
+    (*first).next.store(null_mut(), Release);
     MaybeNull::new(first)
 }
 

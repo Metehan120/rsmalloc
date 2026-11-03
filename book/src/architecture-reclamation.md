@@ -1,4 +1,4 @@
-# Reclamation and Pressure Relief
+# Reclamation
 
 Reclamation targets **free allocator-owned storage**. Bitmap trimming claims
 free slots before advice; slab trimming detaches and partitions transfer lists.
@@ -29,14 +29,18 @@ Source: `src/rseq_core/slab_cache/reclaim.rs` — `SlabCache::trim_small`;
 
 ## Capacity thresholds are not RSS thresholds
 
-The common gate permits age-based trimming if **either** capacity counter is at
-or above its threshold:
+Worker startup is permitted if **either** capacity counter is at or above its
+threshold:
 
 ```text
 TOTAL_CACHED_VA >= SMALL_TRIM_THRESHOLD
     OR
 SEGMENTED_BITMAP_TOTAL_CACHED_VA >= BIG_TRIM_THRESHOLD
 ```
+
+Each age-based backend scan has its own gate: slab requires the small threshold,
+and bitmap requires the big threshold. Crossing one does not enable the other.
+Forced raw bitmap trimming bypasses its threshold and age checks.
 
 Defaults in `global_vals` are 10 MiB for slab capacity and 512 MiB for bitmap
 capacity. Bootstrap sets the effective bitmap threshold to
@@ -82,8 +86,7 @@ Failure to obtain the mask prevents spawning. A successful worker runs forever;
 there is no normal idle-stop or join path in this implementation.
 
 `DISABLE_TRIM_THREAD` is checked by the loop, **not by the startup gate**. Disabling
-periodic trimming does not by itself prevent worker creation, timestamp updates,
-or opt-in pressure relief.
+periodic trimming does not by itself prevent worker creation or timestamp updates.
 
 Source: `src/backend/background_thread.rs` — `SignalMaskGuard`, `spawn`,
 `maybe_start_background_reclaimer`, `RECLAIM_GUARD`;
@@ -99,19 +102,17 @@ flowchart TD
     Claim -- Yes --> Spawn[Block signals and spawn worker]
     Spawn --> Started{Spawn successful?}
     Started -- No --> Reset[Reset startup guard]
-    Started -- Yes --> Sleep[Sleep 100 ms]
-    Sleep --> Relief[Every third iteration consider relief]
-    Relief --> Clock[Publish current clock stamp]
-    Clock --> Bitmap[If due and enabled trim old bitmap slots]
-    Bitmap --> Slab[If due and enabled trim slab transfer blocks]
-    Slab --> Sleep
+    Started -- Yes --> Park[Park up to 100 ms or until unparked]
+    Park --> Clock[Consume request and publish clock stamp]
+    Clock --> Bitmap[If due or requested trim old bitmap slots]
+    Bitmap --> Slab[If due or needed trim slab transfer blocks]
+    Slab --> Park
 ```
 
 ## Clock and scheduling
 
 `get_clock` initializes a shared `Instant`. The worker publishes
-`CURRENT_STAMP = elapsed_milliseconds / 100` as a `u32` every iteration, after
-its relief check. Slot and header ages use saturating subtraction, avoiding
+`CURRENT_STAMP = elapsed_milliseconds / 100` as a `u32` every iteration. Slot and header ages use saturating subtraction, avoiding
 negative ages but not providing special handling for eventual stamp wraparound.
 This is a sampled 100 ms age clock, not a per-free call to `Instant::now`.
 
@@ -136,7 +137,7 @@ Source: `src/global_vals.rs` — `get_clock`, `CURRENT_STAMP`, average atomics;
 
 ## Bitmap eligibility and synchronization
 
-`trim_old` calls `trim_inner` with `force = false`: it applies the common
+`trim_old` calls `trim_inner` with `force = false`: it applies the bitmap
 capacity gate and requires slot age strictly greater than the sampled bitmap
 average. `trim` sets `force = true`, bypassing **both** that gate and age checks.
 Neither mode can reclaim occupied slots or clean, never-used slots.
@@ -196,10 +197,10 @@ Source: `src/big_allocations/segmented_bitmap.rs` — `TrimStats::finish`,
 
 ## Slab eligibility and synchronization
 
-`trim_small` always applies the common capacity gate and always tries the global
+`trim_small` always applies the slab capacity gate and always tries the global
 trim lock. There is no slab equivalent of bitmap `force`. It scans CPUs and
 classes starting at `get_size_4096_class`, acquiring each transfer list's
-`trim_lock` and atomically detaching the tagged **normal** list head.
+`trim_message` and atomically detaching the tagged **normal** list head.
 It adjusts normal-block accounting as part of the detach.
 
 Transfer pop consults that trim lock; the trimmer partitions the detached
@@ -298,16 +299,25 @@ is not one atomic snapshot or transaction.
 Source: `src/frontend/global_alloc2/raw.rs` — `AdvancedTrimSize`, `TrimReport`,
 `RawInterface for RSMallocRaw::rs_trim`.
 
-Do not generalize this ordering to every API. The v2 `RSMallocCoreAPI::trim`
-tries slab **first**, then forced bitmap for the remainder. The preload
-`malloc_trim` tries age-gated bitmap `trim_old` first, then slab, and returns
-only a boolean-like success indicator. The caller's target is not a promise
-that the kernel will free that many physical bytes.
+The v2 `RSMallocCoreAPI::trim` and preload `malloc_trim` instead post a
+coalesced asynchronous request. A newly posted request attempts to unpark the
+existing worker, but does not start one; it can remain pending until a later
+threshold-triggered startup. The Rust result is `Requested` or
+`AlreadyRequested`, not reclaimed bytes. Preload always returns 1, even if a
+request was already pending or no memory is released.
+
+On a request, the worker calls age- and threshold-gated bitmap `trim_old(0)`
+first. It calls slab `trim_small(0)` if the target is zero or the bitmap result
+is below it; independently due periodic slab work can also trigger a scan.
+Both calls use unbounded backend targets: a nonzero requested size only decides
+whether the slab scan is needed, not a limit on either scan. The target is not a
+promise that the kernel will free that many physical bytes. Explicit requests
+are processed even when periodic trimming is disabled.
 
 Source: `src/frontend/global_alloc2/alloc.rs` — `RSMallocCoreAPI::trim`;
 `src/frontend/abi/malloc.rs` — `malloc_trim`.
 
-A zero result can mean no eligible pages, low capacity, a busy trim lock,
+A zero synchronous raw result can mean no eligible pages, low capacity, a busy trim lock,
 uninitialized bitmap state, or failed advice. A positive result means accepted
 advice under the subsystem's accounting convention, not an RSS deadline.
 Trim does not rewind arenas, unmap bitmap regions, or guarantee that all free
@@ -340,45 +350,6 @@ demotion, or a particular fault cost.
 Source: `src/backend/page_allocator.rs` — `new_arena_locked`;
 `src/big_allocations/segmented_bitmap.rs` — `create_region`;
 `src/big_allocations/big_allocation.rs` — `big_malloc`.
-
-## Host pressure relief and hysteresis
-
-Relief is opt-in: `DISABLE_RELIEF` defaults to true. The worker checks it every
-third loop iteration using a nominal elapsed counter, approximately 300 ms plus
-work and scheduling delays. Relief runs before that iteration's stamp update.
-It is independent of the periodic trimming-disable flag.
-
-`check_memory_pressure` uses host `sysinfo` RAM **and swap**, scaling fields by
-`mem_unit`, then computes:
-
-```text
-used_percent = 100 * ((total_ram + total_swap) - (free_ram + free_swap))
-                   / (total_ram + total_swap)
-```
-
-The subtraction saturates; zero total memory returns 50. This is not process
-RSS, cgroup usage, or Linux `MemAvailable`: cached host pages can count as used,
-and adding swap changes the denominator. It is a coarse policy signal.
-
-At or above the default 85% disable threshold, relief sets
-`DISABLE_SEGMENTED_BITMAP`, resets `UNDER_AFTER`, and calls forced bitmap
-`trim(0)` once on that transition. New large requests then bypass bitmap reuse
-and use direct mappings. Existing bitmap allocations remain valid and free back
-to their original segments. Slab routing is not disabled.
-
-While disabled, two consecutive checks at or below the default 80% enable
-threshold re-enable bitmap routing. A check above that lower threshold resets
-the count. This gap and two-sample requirement provide hysteresis; checks in the
-intermediate band do not prematurely re-enable reuse.
-
-The transition's forced trim is still try-lock best-effort. If it misses the
-lock, disabling remains in effect; relief does not retry the forced call on
-every disabled-state sample. Normal periodic age-based trimming can still run
-unless explicitly disabled. Relief needs a started worker and therefore is
-not an always-on monitor before allocator capacity crosses a startup threshold.
-
-Source: `src/backend/background_thread.rs` — `check_memory_pressure`,
-`relief_paths`, `ENABLE_AFTER`, `UNDER_AFTER`, `background_reclaimer_main`.
 
 ## Reclamation mechanisms and costs
 

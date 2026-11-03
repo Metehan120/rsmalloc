@@ -59,7 +59,7 @@ pub struct TransferCache {
     pub list: AtomicU128,
     pub trimmed: AtomicU128,
     pub size: SizeList,
-    pub trim_lock: SpinLock<()>,
+    pub trim_message: SpinLock<()>,
 }
 
 // NOTE: Use 4096-byte alignment to avoid false sharing between cache lines and NUMA node balancing.
@@ -573,7 +573,7 @@ mod tests {
 
     fn header() -> *mut Header {
         Box::into_raw(Box::new(Header {
-            next: null_mut(),
+            next: AtomicPtr::new(null_mut()),
             class: 0,
             magic: 0,
             life_time: 0,

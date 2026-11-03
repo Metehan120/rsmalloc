@@ -36,7 +36,7 @@ Start with [How the Allocator Works](allocator-design.md) for the allocation lif
 4. [Refill and deferred initialization](architecture-refill.md) — predictor equations, pending spans, and claim/publication rules.
 5. [Backing memory and large allocations](architecture-backing-memory.md) — arenas, bitmap regions, direct mappings, and large-object metadata.
 6. [Ownership, alignment, and resizing](architecture-ownership.md) — headers, ownership checks, free, calloc, realloc, and fork behavior.
-7. [Reclamation and pressure relief](architecture-reclamation.md) — eligible pages, background scheduling, manual trim, and memory-pressure policy.
+7. [Reclamation](architecture-reclamation.md) — eligible pages, background scheduling, and manual trim.
 8. [Concurrency and observation limits](architecture-concurrency.md) — authoritative versus advisory state, current implementation caveats, and diagnostic semantics.
 
 These chapters describe the current alpha implementation with source-path and symbol references. They explain both intended mechanisms and known limitations; they are not a correctness audit or a stable internal API specification.

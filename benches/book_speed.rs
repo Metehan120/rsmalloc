@@ -10,31 +10,10 @@ use std::{
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use rand::RngExt;
-use rustix::system::sysinfo;
 
 unsafe extern "C" {
     fn malloc(size: usize) -> *mut c_void;
     fn free(ptr: *mut c_void);
-}
-
-fn check_memory_pressure() -> usize {
-    let info = sysinfo();
-
-    let unit = info.mem_unit as usize;
-    let total_ram = (info.totalram as usize).saturating_mul(unit);
-    let free_ram = (info.freeram as usize).saturating_mul(unit);
-    let total_swap = (info.totalswap as usize).saturating_mul(unit);
-    let free_swap = (info.freeswap as usize).saturating_mul(unit);
-
-    let total_available = free_ram + free_swap;
-    let total_memory = total_ram + total_swap;
-
-    if total_memory == 0 {
-        return 50;
-    }
-
-    let used = total_memory.saturating_sub(total_available);
-    (used * 100) / total_memory
 }
 
 fn bench_alloc_free(c: &mut Criterion) {
@@ -121,10 +100,6 @@ fn bench_alloc_free(c: &mut Criterion) {
             let ptr = black_box(malloc(3 * 1024 * 1024));
             black_box(free(ptr));
         });
-    });
-
-    group.bench_function("syscall", |b| {
-        b.iter(|| black_box(check_memory_pressure()));
     });
 
     for i in [64, 128, 4096, 8192, 16384, 32768, 1048576] {

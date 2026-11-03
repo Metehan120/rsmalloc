@@ -56,7 +56,7 @@ The page allocator is the shared reservation layer. It backs slab refill spans, 
 | `src/inner/` | Shared allocation, free, calloc, aligned allocation, realloc, and preload fallback behavior. |
 | `src/rseq_core/` | RSEQ TLS access, per-CPU slab caches, assembly critical sections, transfer caches, pending refill metadata, and bulk initialization. |
 | `src/backend/page_allocator.rs` | NUMA-aware arena reservation and atomic bump allocation. |
-| `src/backend/background_thread.rs` | Background timestamps, trimming policy, and memory-pressure relief. |
+| `src/backend/background_thread.rs` | Background timestamps and trimming policy. |
 | `src/big_allocations/` | Segmented-bitmap reuse and direct large allocations. |
 | `src/internals/` | Ownership radix, large metadata map, locks, NUMA parsing/binding, and initialization primitives. |
 | `src/core_prim/` | Adaptive predictors, hardware helpers, random magic initialization, fork support, and pointer wrappers. |
@@ -68,15 +68,13 @@ Both Rust and preload frontends eventually call `backend::bootstrap::main_bootst
 
 Bootstrap:
 
-1. verifies libc's RSEQ offset and size;
-2. installs runtime tuning values;
-3. initializes the ownership radix;
-4. maps the per-CPU slab-cache table and NUMA topology;
-5. initializes the pending refill queue;
-6. initializes per-node page arenas;
-7. initializes the segmented-bitmap backend;
-8. registers preload fork handlers when applicable;
-9. initializes randomized header magic and aligned-allocation tags when enabled.
+1. verifies libc's RSEQ offset and size and prepares normalized configuration, checking for overflow;
+2. initializes randomized header magic and aligned-allocation tags when enabled, then applies runtime settings with both trim thresholds temporarily set to `usize::MAX`;
+3. initializes the ownership radix in place and maps the per-CPU slab-cache table, NUMA topology, and pending refill queue;
+4. calculates the effective big-trim threshold, then initializes per-node page arenas and the segmented-bitmap backend;
+5. registers preload fork handlers when applicable and restores the effective trim thresholds.
+
+The effective big threshold is at least the initial segmented-region and metadata footprint plus one byte, or the configured threshold if larger. Suppressing worker startup during subsystem initialization avoids allocation-capable worker creation inside the outer initialization gate; startup remains lazy on a later refill or region growth.
 
 Initialization is intentionally allocator-internal. Metadata is obtained from anonymous mappings or the page allocator rather than recursively allocating through the public allocator.
 
@@ -84,7 +82,7 @@ Initialization is intentionally allocator-internal. Metadata is obtained from an
 
 `utility::match_size_class` maps requests through `2 MiB` to one of 34 slab classes. Requests through 4 KiB use a 16-byte-granularity lookup; requests through 32 KiB use a 4-KiB-granularity lookup. Larger slab requests derive the power-of-two class from the request's bit width.
 
-Every allocation has an internal `Header` immediately before its ordinary payload. The default header is 16-byte aligned and 16 bytes wide; `extended-header` uses a 32-byte variant. The first field and positioning are assembly-sensitive because free blocks reuse `Header::next` as their intrusive list link.
+Every allocation has an internal `Header` immediately before its ordinary payload. The default header is 16-byte aligned and 16 bytes wide; `extended-header` uses a 32-byte variant. The first field and positioning are assembly-sensitive because free blocks reuse `Header::next` as their intrusive list link. Both header layouts use `AtomicPtr<Header>` for this link; Rust list paths use acquire loads and release stores, while the existing RSEQ assembly and tagged transfer-head protocol retain their distinct publication roles.
 
 Requests not represented by a slab class enter `big_malloc`.
 
@@ -133,7 +131,7 @@ pub struct MainCache {
 - an intrusive freelist head manipulated by RSEQ;
 - an atomic usage counter used to enforce per-class high-water limits.
 
-The 4096-byte alignment separates CPU state, supports NUMA binding of CPU ranges, and prevents unrelated CPUs from sharing the same cache page. The layout is compile-time asserted to remain exactly 4096 bytes, including the per-class pending-refill pointers.
+The 4096-byte alignment separates CPU state, supports NUMA binding of CPU ranges, and prevents unrelated CPUs from sharing the same cache page. The layout, including per-class pending-refill pointers, is compile-time asserted to be 4096 bytes normally or 8192 bytes with `experimental-predictive-demand`.
 
 ### RSEQ commit protocol
 
@@ -156,9 +154,9 @@ The usage update is a locked atomic operation after commit. Moving it before the
 
 ### Cache overflow and abort fallback
 
-A single free is pushed to the local RSEQ cache while its usage is below `CACHE_HIGH_BLOCKS[class]`; otherwise it goes to that CPU's transfer cache. A returned batch is accepted locally only when the sampled usage plus the entire batch fits the high-water limit. If it does not fit, the entire batch goes to the transfer cache rather than being split to fill the remaining room.
+A single free is pushed to the local RSEQ cache while its usage is below `CACHE_HIGH_BLOCKS[class]`; otherwise it goes to that CPU's transfer cache. A returned batch is sent to transfer only when sampled usage is already greater than the high-water limit. At or below that limit, the whole batch may be pushed locally, even if it takes usage above the limit; the batch is not split.
 
-Single-block push retries unsuccessful RSEQ attempts, resampling the CPU and checking usage on each iteration; it has no fixed retry limit. Batch push makes up to three attempts before falling back to the transfer cache, and can overflow immediately if the sampled cache lacks room. Pop likewise retries failed RSEQ attempts; a successfully observed empty list returns to the refill path.
+Single-block push retries unsuccessful RSEQ attempts, resampling the CPU and checking usage on each iteration; it has no fixed retry limit. Batch push makes up to three attempts before falling back to the transfer cache, and can overflow immediately if sampled usage is already above the limit. Pop likewise retries failed RSEQ attempts; a successfully observed empty list returns to the refill path.
 
 ## Transfer Cache
 
@@ -174,7 +172,7 @@ pub struct TransferCache {
     pub list: AtomicU128,
     pub trimmed: AtomicU128,
     pub size: SizeList,
-    pub trim_lock: SpinLock<()>,
+    pub trim_message: SpinLock<()>,
 }
 ```
 
@@ -224,7 +222,7 @@ This makes the transfer system adaptive in two dimensions: hints predict **where
 
 ### Trimming synchronization
 
-`trim_lock` protects the detach/classify/republish interval used by slab trimming. Ordinary allocation-side probes do not block on an active trim pass; they treat that slot as temporarily unavailable and continue searching. The forced fallback pass waits for republished state so a temporarily detached list cannot hide reusable memory indefinitely.
+`trim_message` protects the detach/classify/republish interval used by slab trimming. Ordinary allocation-side probes do not block on an active trim pass; they treat that slot as temporarily unavailable and continue searching. The forced fallback pass waits for republished state so a temporarily detached list cannot hide reusable memory indefinitely.
 
 The trimmer samples and subtracts only `normal_blocks` when it successfully detaches the normal head; the existing trimmed list and its count are left intact. Young/ineligible blocks return to the normal list in batches of `ITERATIONS[class] + ITERATIONS[class] / 2`, with a final partial batch if needed. The lock is released after classification and normal-list republication, before payload-page reclamation; reclaimed blocks are then published separately to the trimmed list.
 
@@ -232,7 +230,7 @@ The trimmer samples and subtracts only `normal_blocks` when it successfully deta
 
 Each `MainCache` has separate predictors for transfer reuse and bulk initialization. Predictors are indexed by CPU and size class because they model the cache being accessed, not the identity of the calling thread.
 
-`AdaptiveBatching` stores policy state in one `AtomicUsize`. The opt-in `experimental-predictive-demand` feature adds a separate expected-demand `AtomicUsize` and previous-unused-block `AtomicU32`; bulk-fill predictors leave those fields unused. `MainCache` is 4096 bytes without the feature and 8192 bytes with it, retaining 4096-byte alignment. In the policy state, the high bits hold a batch candidate; the low byte's interpretation depends on the policy:
+`AdaptiveBatching` stores policy state in one `AtomicUsize`. The opt-in `experimental-predictive-demand` feature adds a 32-byte demand tracker to each predictor; bulk-fill predictors leave it unused. `MainCache` is 4096 bytes without the feature and 8192 bytes with it, retaining 4096-byte alignment. In the policy state, the high bits hold a batch candidate; the low byte's interpretation depends on the policy:
 
 | Predictor | Low byte |
 | --- | --- |
@@ -244,7 +242,9 @@ Zeroed mapped storage means “use the configured initial batch.” Selection is
 
 ### Default inventory-aware transfer batching
 
-With `experimental-predictive-demand`, every refill samples only the caller CPU's RSEQ cache occupancy for the refilling size class. Occupancy below the previous unused-block sample doubles expected demand up to the class transfer limit; otherwise it halves demand down to one. The next unused-block sample is `demand.saturating_sub(cached)`, using demand before the adjustment. This is a raw sample, not an EMA. No other classes are scanned. Only refill code performs this bookkeeping: allocation/free cache hits and overflow paths are unchanged. These relaxed occupancy samples are heuristic feedback, not exact allocation rates or reservations.
+With `experimental-predictive-demand`, refill completion forecasts demand over a 50 µs horizon from `previous_delivery * 50_000 / depletion_interval_ns`, measuring from the previous completion to the current refill start. It extrapolates the change from the previous observation, bounded to roughly half the latest observation; the first observation has no trend. The forecast is bounded by the class transfer limit and a 64 KiB block-stride budget, with a one-block minimum.
+
+The 50 µs recomputation gate is checked at transfer and bulk refill completion; accepted completions record actual deliveries even when recomputation is skipped. Sampling requires an empty starting cache and checks completion CPU and cached remainder. Generation-tagged ownership rejects overlapping refills, and a drop guard releases abandoned samples. Intervals of at least 100 ms reset history; the preload child resets history and ownership while preserving generations. Concurrent frees and migration away and back can still affect this advisory estimate. No other classes are scanned and cache hits add no sampling work.
 
 A successful transfer feeds `TransferReturn::available` to the requesting CPU's predictor, using the supplying list's inventory even for cross-CPU or remote-NUMA steals. Without `experimental-predictive-demand`, the original policy targets one quarter of that inventory. With the feature, it averages that value with expected demand. Both use the existing quarter-gap adjustment; demand influences the target rather than acting as a hard cap:
 
@@ -285,7 +285,7 @@ A successful, nonempty transfer feeds the selected mode, requested count, obtain
 
 The candidate is clamped to the class limit. A short return reduces it to at most the obtained count. A full low-confidence return preserves it: satisfying a deliberately smaller request does not reveal whether the normal candidate would have succeeded, so storing that reduced request would compound shrinkage. Without `experimental-predictive-demand`, full normal feedback grows the candidate by `max(candidate / 8, 1)` at updated confidence of at least 8, and otherwise keeps it, subject to the inventory bound. With `experimental-predictive-demand`, expected demand below the candidate closes one eighth of the downward gap; otherwise updated confidence of at least 8 grows it by `max(expected demand / 8, 1)`. For full normal feedback, the resulting candidate is bounded by `max(available, obtained)` and the class limit. Inventory samples above `isize::MAX` are ignored, as are zero requests and zero returns.
 
-Confidence transfers use a separate limit, `PREDICTOR_BATCHING[class] = CACHE_HIGH_BLOCKS[class] + 1`. One block is returned immediately to the caller, so the remainder can fill an **empty** CPU cache to its high-water mark. Default transfers and bulk initialization still use `ITERATIONS[class]`. This is a static capacity limit, not a reservation of local room: migration or concurrent cache activity can still send the remainder back to transfer through the normal whole-batch overflow path.
+Confidence transfers use a separate limit, `PREDICTOR_BATCHING[class] = CACHE_HIGH_BLOCKS[class] + 1`. One block is returned immediately to the caller, so the remainder can fill an **empty** CPU cache to its high-water mark. Default transfers and bulk initialization still use `ITERATIONS[class]`. This is a static batch limit, not a reservation or a strict local-capacity bound: the whole-batch admission rule can overshoot high water or send the remainder to transfer.
 
 Inventory and confidence are advisory. They do not guarantee that the requested blocks exist or reserve them; the transfer list determines the actual result. The policy may affect overall throughput, latency, and memory usage depending on the workload. Its additional per-refill decision cost does not translate one-to-one into allocation overhead, because it also changes batch sizes and refill frequency.
 
@@ -478,9 +478,9 @@ V2 arena configuration accepts zero and 4 KiB page multiples. Initialization cla
 
 Header magic distinguishes live slab allocations, freed slab blocks, and large allocations. Optional hardening can also validate ownership for blocks popped from internal freelists and zero selected small payloads on free.
 
-## Trimming, Lifetime Adaptation, and Relief
+## Trimming and Lifetime Adaptation
 
-The background thread advances `CURRENT_STAMP` in 100 ms units. It keeps separate last-run stamps for slab and segmented-bitmap trimming: the slab pass is scheduled after more than `max(AVERAGE_BLOCK_TIMES, 30)` stamps, while the segmented-bitmap pass uses its own `SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES` interval. Both are best-effort and subject to the global trim lock. Their low-cache gate is shared: the age-based scans skip only when both slab and segmented-bitmap cached-VA totals are below their configured thresholds. Reaching either threshold permits both subsystems past that gate, while their scheduling intervals remain separate.
+The background thread advances `CURRENT_STAMP` in 100 ms units. It keeps separate last-run stamps for slab and segmented-bitmap trimming: the slab pass is scheduled after more than `max(AVERAGE_BLOCK_TIMES, 30)` stamps, while the segmented-bitmap pass uses its own `SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES` interval. Both are best-effort and subject to the global trim lock. Worker startup is allowed when either cached-VA total reaches its threshold, but the scans have independent gates: slab trimming checks the small threshold, and background segmented-bitmap trimming checks the big threshold and slot age.
 
 ### Slab trimming
 
@@ -503,11 +503,11 @@ The estimate starts at 55 stamps (5.5 seconds) and blends observed ages with an 
 
 ### Explicit trimming
 
-The v2 `RSMallocCoreAPI::trim` path scans slab caches first and then the segmented-bitmap backend for any remaining byte target. `SimpleTrimSize::All` requests an unbounded pass over both. The raw `AdvancedTrimSize::All` path scans both in the opposite order, and its variants can target either backend individually. Explicit segmented-bitmap trim calls bypass the age threshold, but reclamation remains best-effort; slab scans can return early below the configured cached-VA thresholds.
+The v2 `RSMallocCoreAPI::trim` and preload `malloc_trim` post coalesced asynchronous requests. `SimpleTrimSize::All` requests an unbounded pass; `Bytes` supplies a best-effort target. The Rust API returns `Requested` or `AlreadyRequested`, not reclaimed bytes. A newly posted request attempts to unpark an existing worker but does not start one; without a worker it can remain pending until lazy startup. The worker checks aged segmented-bitmap blocks first and, if the target is unbounded or not yet met, scans slabs. Both scans retain their independent threshold gates, and the target does not strictly limit either pass.
 
-### Pressure relief
+Preload `malloc_trim` returns `1` as an acknowledgment, not evidence of released memory; its argument is a reclaim target, not glibc retained padding. The legacy Rust and v2 raw trim APIs remain synchronous. Raw `AdvancedTrimSize::All` scans segmented bitmap then slabs, and other variants target individual backends. Synchronous explicit segmented-bitmap trimming bypasses its byte and age gates; slab trimming still checks its own threshold. All reclamation is best-effort and need not immediately reduce RSS.
 
-Small and segmented-bitmap cached-VA thresholds avoid scans when little memory is reclaimable. A system-wide RAM-and-swap pressure policy can temporarily disable segmented-bitmap allocation, force cached large blocks to be advised away, and re-enable the backend only after pressure remains below a lower threshold.
+Small and segmented-bitmap cached-VA thresholds avoid scans when little memory is reclaimable.
 
 Cached virtual address space is not equivalent to resident memory. Page arenas and segmented regions may remain reserved while their pages are untouched or reclaimed.
 
@@ -521,7 +521,7 @@ A future span-based slab design may allow safe trimming of size classes below 4 
 | --- | --- |
 | Local CPU slab head | RSEQ commit store guarded by CPU-ID validation. |
 | Local cache usage | Locked atomic add/inc/dec after RSEQ commit. |
-| Transfer heads | 128-bit pointer + 64-bit generation CAS. |
+| Transfer heads and links | 128-bit pointer + 64-bit generation CAS; atomic `Header::next` links. |
 | Transfer availability and steal markers | Relaxed advisory bitmaps; never the ownership authority. |
 | Predictor state | Packed relaxed atomic; dropped feedback is permitted. |
 | Per-CPU pending refill span | Pointer-width acquire claim and release CAS return; collision overflows globally. |
@@ -533,6 +533,8 @@ A future span-based slab design may allow safe trimming of size classes below 4 
 | Ownership radix leaves | Atomic bitmaps; lock only for allocating new tables. |
 | Exact large metadata | Sharded hash table with one lock per shard. |
 | Trimming | Global trim exclusion plus subsystem/slot claims. |
+
+Before spawning the maintenance worker, the spawning thread blocks signals using `rt_sigprocmask`, excluding glibc internal signals 32 and 33. The worker inherits that mask; an RAII guard restores the caller's original mask on success, spawn failure, or unwinding. If blocking fails, worker creation is skipped.
 
 Fork handlers in preload builds freeze segmented-growth, large-metadata, radix-allocation, and page-node locks before `fork`. A frozen reservation holds no reference to protected data. The forking thread can temporarily acquire a data guard from its reservation while running older application atfork callbacks; dropping that guard restores the reservation rather than unlocking it for other threads. Parent and child handlers release idle reservations with release ordering before releasing bootstrap serialization. The surviving child thread can also use inherited reservations in older child callbacks.
 

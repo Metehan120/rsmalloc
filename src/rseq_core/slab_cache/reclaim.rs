@@ -1,7 +1,7 @@
 use std::{
     os::raw::c_void,
     ptr::null_mut,
-    sync::atomic::Ordering::{Acquire, Relaxed},
+    sync::atomic::Ordering::{Acquire, Relaxed, Release},
 };
 
 use rustix::mm::{Advice, madvise};
@@ -48,7 +48,7 @@ impl SlabCache {
         for cpu in 0..NCPU {
             for class in get_size_4096_class()..NUM_SIZE_CLASSES {
                 let main_list = self.get_list(cpu, class);
-                let trim_guard = main_list.trim_lock.lock();
+                let trim_guard = main_list.trim_message.lock();
                 let output = main_list.detach_normal_for_trim();
 
                 if output.is_null() {
@@ -77,7 +77,7 @@ impl SlabCache {
                     {
                         total_popped += 1;
                     }
-                    let old_next = (*next).next;
+                    let old_next = (*next).next.load(Acquire);
                     let life_time = (*next).life_time;
 
                     // These blocks are already free. Allocated means the payload
@@ -86,10 +86,10 @@ impl SlabCache {
                     if stamp.saturating_sub(life_time) > avg_life
                         && (*next).flags == Flags::Allocated
                     {
-                        (*next).next = trim_list;
+                        (*next).next.store(trim_list, Release);
                         trim_list = next;
                     } else {
-                        (*next).next = push_list;
+                        (*next).next.store(push_list, Release);
                         push_list = next;
                         if total_push == 0 {
                             push_list_start = next;
@@ -142,7 +142,7 @@ impl SlabCache {
                 while !trim_list.is_null() {
                     #[cfg(feature = "debug-exact")]
                     TOTAL_TRIMMED_BLOCKS.fetch_add(1, Relaxed);
-                    let next = (*trim_list).next;
+                    let next = (*trim_list).next.load(Acquire);
                     let mut did_trim = false;
                     // Zero means no byte limit. Otherwise finish whole blocks,
                     // so the final successful trim can exceed the requested size.

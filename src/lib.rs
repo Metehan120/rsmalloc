@@ -19,8 +19,7 @@
 //! use rsmalloc::v2::{
 //!     alloc::RSMalloc,
 //!     config::{
-//!         Config, PerCacheLimit, Percentage, ReliefSettings, ReliefState,
-//!         SegmentedBitmapTHP, THP, THPSettings, Tuning,
+//!         Config, PerCacheLimit, SegmentedBitmapTHP, Size, THP, THPSettings, Tuning,
 //!     },
 //! };
 //!
@@ -29,12 +28,7 @@
 //!         .with_thp(THPSettings::new(THP::Enabled, SegmentedBitmapTHP::Force))
 //!         .with_refill_init_batch(16)
 //!         .with_max_refill_retries(4)
-//!         .with_max_per_segmented_bitmap_cache(PerCacheLimit::Bytes(512 * 1024 * 1024))
-//!         .with_relief(ReliefSettings::new(
-//!             ReliefState::Enabled,
-//!             Percentage::new(85),
-//!             Percentage::new(80),
-//!         )),
+//!         .with_max_per_segmented_bitmap_cache(PerCacheLimit::Custom(Size::MiB(512))),
 //! );
 //!
 //! #[global_allocator]
@@ -170,7 +164,7 @@ struct BigAllocMeta {
 #[repr(C, align(16))]
 #[assert_sizes(16)]
 struct Header {
-    pub next: *mut Header,
+    pub next: AtomicPtr<Header>,
     pub flags: Flags,
     pub class: u8,
     pub magic: u16,
@@ -182,7 +176,7 @@ struct Header {
 #[repr(C, align(16))]
 #[assert_sizes(32)]
 struct Header {
-    pub next: *mut Header,
+    pub next: AtomicPtr<Header>,
     pub magic: u64,
     pub flags: Flags,
     pub life_time: u32,

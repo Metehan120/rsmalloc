@@ -17,9 +17,9 @@ The CPU index identifies a storage/search shard, not exclusive ownership of its 
 | `trimmed: AtomicU128` | Head of the reclaimed-block list |
 | `size.normal_blocks` | Atomic accounting for the normal list |
 | `size.trimmed_blocks` | Atomic accounting for the trimmed list |
-| `trim_lock: SpinLock<()>` | Per-mailbox coordination flag used by trimming and pop |
+| `trim_message: SpinLock<()>` | Per-mailbox coordination flag used by trimming and pop |
 
-Both lists contain `Header` nodes with an ordinary `Header.next` pointer.
+Both lists contain `Header` nodes with an atomic `Header.next` link (`AtomicPtr<Header>`).
 They are not lists of backing spans: partially initialized `MetaData` spans instead use `pending_refill` and `PENDING_QUEUE` in `src/rseq_core/bulk_fill.rs` and `src/rseq_core/pending_queue.rs`.
 Transfer blocks remain virtually addressable when their eligible payload pages are advised away.
 Trimming does not unmap their headers or unlink them permanently from reuse.
@@ -65,8 +65,8 @@ The pointer preservation and wrap behavior are exercised by `packed_transfer_poi
 The heads use `portable_atomic::AtomicU128`.
 The Rust API alone does not prove that every target implements those operations with one hardware instruction or without a fallback; cost claims must account for the selected target and dependency configuration.
 A tagged CAS protects the head-state comparison, **not every node access by itself**.
-There are no hazard pointers, epochs, or atomic `Header.next` fields in the transfer implementation.
-Readers traverse linkage before winning CAS; tags should not be described as a complete proof of safe concurrent node reuse or traversal.
+There are no hazard pointers or epochs in the transfer implementation. `Header.next` is atomic, with acquire loads and release stores for link access.
+Readers traverse linkage before winning CAS; tags and atomic links should not be described as a complete proof of safe concurrent node reuse or traversal.
 
 ## Publishing a block or a batch
 
@@ -88,7 +88,7 @@ The caller supplies the correct tail and count; publication does not walk or ind
 The successful Release CAS is the publication boundary.
 It makes earlier header/link initialization available to a consumer acquiring the head.
 The counter increment and hint marking are **after** publication, not part of that boundary.
-Neither push path acquires `trim_lock`; publication remains possible while the trimmer is processing detached blocks.
+Neither push path acquires `trim_message`; publication remains possible while the trimmer is processing detached blocks.
 
 For a batch of `k` already linked blocks, push requires constant linkage work and one successful head CAS plus counter update, rather than `k` publications.
 It still may perform arbitrarily many failed CAS attempts under contention.
@@ -100,7 +100,7 @@ This amortizes exchange overhead but concentrates multiple producers on the same
 Allocation callers request positive sizes; traversal starts at one node, so this is not an API for zero-length removal.
 
 1. Select the normal head/counter and load the head Acquire.
-2. Inspect `trim_lock`. With `force == false`, an observed lock returns `None`; forced handling retries or spins as described below.
+2. Inspect `trim_message`. With `force == false`, an observed lock returns `None`; forced handling retries or spins as described below.
 3. If the selected head is null, switch once from normal to trimmed. If trimmed is also null, repair the hint with `clear_hint` and return `None`.
 4. Starting at the observed head, follow `Header.next` until reaching `batch_size` nodes or the end. Remember the prefix tail, successor, and actual count.
 5. CAS the packed head to the successor with the next generation, using Acquire ordering on both success and failure.
@@ -212,12 +212,12 @@ Approximate inventory can produce imperfect policy decisions; it must not change
 
 `trim_small` and `release_memory` are in `src/rseq_core/slab_cache/reclaim.rs`.
 The trimmer visits transfer mailboxes, **not** CPU-local RSEQ heads or pending initialization spans.
-It returns immediately when both cached-VA threshold checks are below their limits, or when `GLOBAL_TRIM_LOCK.try_lock` fails.
+It returns immediately when slab cached VA is below the small threshold, or when `GLOBAL_TRIM_LOCK.try_lock` fails.
 The global lock serializes this trim routine, including its mutable `TRIM_SMOOTHING` updates.
 
 For every configured CPU and class at or above `get_size_4096_class`, it:
 
-1. Acquires `trim_lock` and retains its RAII guard through detachment, partitioning, and retained-block publication. An empty-list exit drops the guard automatically, after the optional empty-list smoothing adjustment.
+1. Acquires `trim_message` and retains its RAII guard through detachment, partitioning, and retained-block publication. An empty-list exit drops the guard automatically, after the optional empty-list smoothing adjustment.
 2. Acquire-loads the normal packed head, samples `normal_blocks` before each detach CAS attempt, and CASes the head to tagged null. On success, subtracts that pre-CAS sample rather than the actual chain count. The detached chain drives traversal; publication-before-increment can make the sample incomplete and leave persistent counter drift after republishing.
 3. Partitions the detached chain. A block goes to trim candidates only if its saturating age exceeds `TRIM_SMOOTHING[class].time(100)` and `flags == Flags::Allocated`; otherwise it is retained normally.
 4. Republishes retained blocks in batches at `ITERATIONS[class] + ITERATIONS[class] / 2`, plus any final remainder, then explicitly drops the per-mailbox guard. It updates per-class age smoothing from nonzero lifetime samples before processing trim candidates.
@@ -241,7 +241,7 @@ Virtual storage remains reserved, and reuse can incur page faults or renewed phy
 
 ## Trim-lock coordination
 
-`trim_lock` is not acquired by ordinary transfer pops; they only Acquire-load its Boolean state through `SpinLock::get_lock` (`src/internals/lock.rs`).
+`trim_message` is not acquired by ordinary transfer pops; they only Acquire-load its Boolean state through `SpinLock::get_lock` (`src/internals/lock.rs`).
 A nonforced pop that observes it set returns `None`.
 A forced pop does not simply ignore it: with a nonnull sampled head it loops back to the lock check; with a null sampled head it reloads/spins until a head appears or the lock becomes clear.
 Forced paths can therefore wait for trimming rather than providing bounded-latency failure.

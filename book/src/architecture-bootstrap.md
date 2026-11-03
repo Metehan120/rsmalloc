@@ -70,10 +70,10 @@ In preload builds, `src/inner/alloc.rs` has a separate frontend `ONCE`; `rs_allo
 `main_bootstrap` currently performs these steps:
 
 1. **Check libc RSEQ exports.** Zero `__rseq_size` or `__rseq_offset` logs `RseqUnavailable` and aborts. The allocator does not register RSEQ itself. This check is not a proof of every thread's later RSEQ state.
-2. **Prepare checked sizes and policy.** Clamp arena size to `MIN_ARENA_SIZE` and checked-round it to 4 KiB; checked-round the initial bitmap region size to a power of two with a 64 MiB minimum. Cap relief percentages and combine bitmap huge-page policy with general THP support. Size overflow logs `RSMallocError::Bootstrap` and aborts.
+2. **Prepare checked sizes and policy.** Clamp arena size to `MIN_ARENA_SIZE` and checked-round it to 4 KiB; checked-round the initial bitmap region size to a power of two with a 64 MiB minimum. Combine bitmap huge-page policy with general THP support. Size overflow logs `RSMallocError::Bootstrap` and aborts.
 3. **Initialize the time origin.** `get_clock` publishes an `Instant`; lifetime stamps use 100 ms units. Debug builds also record start time.
 4. **Randomize magic and alignment tags**, when configured; a zero alignment tag is regenerated.
-5. **Apply the prepared policy.** Install reservation/refill, region, trim-enable, relief, THP, and Rust foreign-pointer settings, but temporarily set **both trim thresholds to `usize::MAX`** to suppress worker startup during subsystem initialization.
+5. **Apply the prepared policy.** Install reservation/refill, region, trim-enable, THP, and Rust foreign-pointer settings, but temporarily set **both trim thresholds to `usize::MAX`** to suppress worker startup during subsystem initialization.
 6. **Create the ownership radix** with `RADIX.init()`. Later slab and region registration depends on it.
 7. **Ensure the slab cache/topology table.** This maps CPU-indexed cache state and search bitmaps, parses NUMA information, and initializes the pending queue.
 8. **Calculate the effective big trim threshold.** Use `max(requested, initial_cached_bytes + 1)`, with the footprint calculated from the normalized initial region, page-rounded region metadata, and page-rounded state/node/hint tables for the discovered topology. A lower requested threshold is raised to that minimum. Footprint or `+ 1` overflow logs `RSMallocError::Bootstrap` and aborts.
@@ -101,17 +101,15 @@ Pending queue storage is initialized in this phase. Unlike mandatory cache mappi
 
 ## Environment parsing is frontend policy
 
-Preload bootstrap reads `RS_*` variables and constructs `BootstrapConfig`. It normalizes region size and relief percentages before common bootstrap. `Config::bootstrap` performs the corresponding translation for Rust, preserving private security state.
+Preload bootstrap reads `RS_*` variables and constructs `BootstrapConfig`. It normalizes region size before common bootstrap. `Config::bootstrap` performs the corresponding translation for Rust, preserving private security state.
 
 Current preload details include:
 
 - decimal byte counts, with a parser that consumes leading digits rather than validating a human-readable size string;
 - absence selects the default, while malformed leading text can produce zero;
-- `RS_ENABLE_RELIEF=0` enables relief; nonzero disables it;
 - exactly `RS_DISABLE_THP=1` disables general attempts;
 - nonzero `RS_DISABLE_RANDOMIZING` retains fixed magic/tag values;
-- initial bitmap region size is clamped to 64 MiB–128 TiB and rounded to a power of two; later growth is a separate policy;
-- re-enable pressure is capped at the disable percentage.
+- initial bitmap region size is clamped to 64 MiB–128 TiB and rounded to a power of two; later growth is a separate policy.
 
 Source: `src/inner/preload/bootstrap.rs`; `src/internals/env.rs`;
 `src/frontend/global_alloc2/config.rs` — `Config::bootstrap`.
@@ -129,7 +127,7 @@ C wrappers do not merely rename the Rust traits:
 - Sized free shims ignore the supplied size/alignment and call ordinary free.
 - `aligned_alloc` requires nonzero power-of-two alignment and size divisible by alignment. `posix_memalign` returns an error code rather than a pointer result.
 - `pvalloc` checks page-rounding overflow; `valloc` requests 4 KiB alignment.
-- `malloc_trim` uses an allocator byte target, not glibc's top-chunk padding contract. Its bitmap pass is age-based, unlike the forced bitmap pass used by the v2 core trim API.
+- `malloc_trim` posts an asynchronous allocator byte target, not glibc's top-chunk padding. It always returns 1; the worker's bitmap pass is age- and threshold-gated, unlike the v2 raw API's forced bitmap pass.
 
 Source: `src/frontend/abi/*.rs`. The pointer lifecycle and failure branches are covered in [ownership and resizing](architecture-ownership.md).
 

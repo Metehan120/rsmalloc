@@ -16,7 +16,7 @@ impl RSMalloc {
             REFILL_UNDER_PREDICTS, REFILLS_BY_CLASS, SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES,
             START_TIME, TOTAL_CACHED_VA, TOTAL_MMAP_BYTES, TOTAL_MMAP_CALLS, TOTAL_REFILL_CALLS,
             backend::{
-                background_thread::{DISABLE_SEGMENTED_BITMAP, TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA},
+                background_thread::{TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA},
                 page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR, TOTAL_LIVED, TOTAL_REMOVED},
             },
             big_allocations::segmented_bitmap::{
@@ -223,7 +223,6 @@ impl RSMalloc {
             avg_segmented_bitmap_life_ms: SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES
                 .load(Relaxed)
                 .saturating_mul(100),
-            segmented_bitmap_disabled: DISABLE_SEGMENTED_BITMAP.load(Relaxed),
             segmented_bitmap_regions: segmented_bitmap.regions,
             segmented_bitmap_total_region_bytes: segmented_bitmap.total_region_bytes,
             segmented_bitmap_used_bytes,
@@ -387,7 +386,6 @@ pub struct RSMallocStats {
     pub trimmed_va: usize,
     pub avg_small_life_ms: u32,
     pub avg_segmented_bitmap_life_ms: u32,
-    pub segmented_bitmap_disabled: bool,
 
     pub segmented_bitmap_regions: usize,
     pub segmented_bitmap_total_region_bytes: usize,

@@ -276,7 +276,7 @@ Source: `src/big_allocations/segmented_bitmap.rs` — `reserve`, `create_region`
 rounds to 4096 bytes; with runtime THP enabled it rounds to 2 MiB when the
 positive remainder is within 64 KiB of that boundary.
 The bitmap attempt additionally requires an initialized backend, a payload no
-larger than 64 MiB, and an unset relief-disable flag. Its adjusted total must
+larger than 64 MiB. Its adjusted total must
 fit one segment: a **64 MiB payload plus header cannot fit**.
 
 Bitmap success records its power-of-two extent. Otherwise a private anonymous

@@ -104,7 +104,7 @@ Configuration is **process-wide**: the first allocator instance to initialize su
 use rsmalloc::v2::{
     alloc::RSMalloc,
     config::{
-        Config, PerCacheLimit, Percentage, ReliefSettings, ReliefState,
+        Config, PerCacheLimit,
         SegmentedBitmapTHP, Size, THP, THPSettings, Tuning,
     },
 };
@@ -114,12 +114,7 @@ const CONFIG: Config = Config::new(
         .with_thp(THPSettings::new(THP::Enabled, SegmentedBitmapTHP::Force))
         .with_refill_init_batch(16)
         .with_max_refill_retries(4)
-        .with_max_per_segmented_bitmap_cache(PerCacheLimit::Custom(Size::MiB(512)))
-        .with_relief(ReliefSettings::new(
-            ReliefState::Enabled,
-            Percentage::new(85),
-            Percentage::new(80),
-        )),
+        .with_max_per_segmented_bitmap_cache(PerCacheLimit::Custom(Size::MiB(512))),
 );
 
 #[global_allocator]
@@ -138,7 +133,6 @@ This is a tuning example, not a recommended configuration for every workload. In
 | Initial segmented-bitmap region | 64 MiB |
 | Background trim thresholds | 10 MiB small / 512 MiB segmented-bitmap cached VA |
 | Transparent huge pages | General support enabled; segmented-bitmap forcing disabled |
-| Memory-pressure relief | Disabled; thresholds are 85% to disable segmented-bitmap allocation and 80% to re-enable it |
 | Magic values and aligned-allocation tag | Randomized at bootstrap |
 | Foreign-pointer policy | Abort when the foreign-pointer path is reached; see the ownership caveats below |
 
@@ -251,18 +245,13 @@ Set these **before the process initializes the allocator**. Size values are deci
 | `RS_MAX_REFILL_RETRIES` | `3` | Maximum refill retries. |
 | `RS_SEGMENTED_BITMAP_PER_CACHE_SIZE` | `67108864` (64 MiB) | Initial segmented-bitmap region size; clamped to 64 MiB–128 TiB and rounded up to a power of two. Later growth adds 64 MiB regions. |
 
-#### Trimming and memory pressure
+#### Trimming
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `RS_DISABLE_TRIM_THREAD` | `0` | Nonzero disables periodic background trimming. Manual trimming remains available; the worker can still handle enabled memory-pressure relief. |
+| `RS_DISABLE_TRIM_THREAD` | `0` | Nonzero disables periodic background trimming. Manual trimming remains available. |
 | `RS_TRIMMER_THRESHOLD` | `10485760` (10 MiB) | Cached small-allocation VA threshold for starting the background worker. |
 | `RS_BIG_TRIMMER_THRESHOLD` | `536870912` (512 MiB) | Cached segmented-bitmap VA threshold for starting the worker. Must be at least 128 MiB. |
-| `RS_ENABLE_RELIEF` | `1` (disabled) | **Set `0` to enable** memory-pressure relief; nonzero disables it in the current alpha. |
-| `RS_SEGMENTED_BITMAP_RELIEF_DISABLE_PERCENTAGE` | `85` | Memory-usage percentage at which segmented-bitmap allocation is disabled. Capped at 100. |
-| `RS_SEGMENTED_BITMAP_RELIEF_ENABLE_PERCENTAGE` | `80` | Percentage at which allocation may re-enable after two qualifying checks. Capped at the disable threshold. |
-
-Relief uses system-wide RAM-plus-swap usage from `sysinfo`, not a `MemAvailable`-based estimate. The separate enable/disable thresholds provide hysteresis; direct mappings remain the fallback when segmented-bitmap allocation is disabled.
 
 #### Huge pages and randomization
 
@@ -272,7 +261,7 @@ Relief uses system-wide RAM-plus-swap usage from `sysinfo`, not a `MemAvailable`
 | `RS_DISABLE_THP` | `0` | Set exactly `1` to disable transparent huge-page attempts. |
 | `RS_DISABLE_RANDOMIZING` | `0` | **Weakens protection:** nonzero keeps fixed magic values and the fixed aligned-allocation tag. |
 
-Use valid decimal values: the current parser consumes leading decimal digits, treats an empty or nonnumeric start as zero, and ignores trailing nondigits. Defaults apply when a variable is absent, not when its value is malformed. This matters especially for `RS_ENABLE_RELIEF`, where zero enables the feature.
+Use valid decimal values: the current parser consumes leading decimal digits, treats an empty or nonnumeric start as zero, and ignores trailing nondigits. Defaults apply when a variable is absent, not when its value is malformed.
 
 ## Cargo Features
 
@@ -363,7 +352,7 @@ A reproducible [MariaDB/sysbench harness](benchmarks/mariadb/README.md) and [rst
 | `src/inner/` | Shared alloc, free, calloc, realloc, aligned allocation, and preload fallback behavior. |
 | `src/rseq_core/` | RSEQ assembly, CPU caches, transfer reuse, pending spans, and refill. |
 | `src/big_allocations/` | Segmented-bitmap reuse and direct large mappings. |
-| `src/backend/` | Page arenas, bootstrap, background trimming, and relief. |
+| `src/backend/` | Page arenas, bootstrap, and background trimming. |
 | `src/internals/` | Ownership radix, large-allocation metadata, NUMA support, locks, and initialization helpers. |
 | `src/core_prim/` | Predictors, hardware helpers, fork support, and pointer wrappers. |
 | `src/utility.rs` | Size classes, batch limits, alignment, and size matching. |

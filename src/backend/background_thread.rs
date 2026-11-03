@@ -3,7 +3,6 @@ use std::{
     thread::{Thread, park_timeout},
 };
 
-use rustix::system::sysinfo;
 use syscalls::{
     Sysno::{self},
     syscall,
@@ -133,32 +132,6 @@ pub unsafe fn maybe_start_background_reclaimer() {
     };
 }
 
-fn check_memory_pressure() -> usize {
-    let info = sysinfo();
-
-    let unit = info.mem_unit as usize;
-    let total_ram = (info.totalram as usize).saturating_mul(unit);
-    let free_ram = (info.freeram as usize).saturating_mul(unit);
-    let total_swap = (info.totalswap as usize).saturating_mul(unit);
-    let free_swap = (info.freeswap as usize).saturating_mul(unit);
-
-    let total_available = free_ram + free_swap;
-    let total_memory = total_ram + total_swap;
-
-    if total_memory == 0 {
-        return 50;
-    }
-
-    let used = total_memory.saturating_sub(total_available);
-    (used * 100) / total_memory
-}
-
-const ENABLE_AFTER: usize = 2;
-pub static DISABLE_SEGMENTED_BITMAP: AtomicBool = AtomicBool::new(false);
-pub static mut SEGMENTED_BITMAP_DISABLE_PERCENTAGE: usize = 85;
-pub static mut SEGMENTED_BITMAP_ENABLE_PERCENTAGE: usize = 80;
-pub static mut DISABLE_RELIEF: bool = true;
-pub static UNDER_AFTER: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "debug")]
 pub static TOTAL_TRIM_CALLS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "debug")]
@@ -168,34 +141,10 @@ pub static TOTAL_TRIMMED_BLOCKS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "debug-exact")]
 pub static TOTAL_TRIMMED_TIME: AtomicUsize = AtomicUsize::new(0);
 
-pub unsafe fn relief_paths() {
-    let pressure = check_memory_pressure();
-
-    if pressure >= SEGMENTED_BITMAP_DISABLE_PERCENTAGE && !DISABLE_SEGMENTED_BITMAP.load(Relaxed) {
-        DISABLE_SEGMENTED_BITMAP.store(true, Relaxed);
-        UNDER_AFTER.store(0, Relaxed);
-        SEGMENTED_BITMAP_BACKEND.trim(0);
-
-        return;
-    }
-
-    if DISABLE_SEGMENTED_BITMAP.load(Relaxed) && pressure <= SEGMENTED_BITMAP_ENABLE_PERCENTAGE {
-        let under = UNDER_AFTER.fetch_add(1, Relaxed) + 1;
-
-        if under >= ENABLE_AFTER {
-            DISABLE_SEGMENTED_BITMAP.store(false, Relaxed);
-            UNDER_AFTER.store(0, Relaxed);
-        }
-    } else {
-        UNDER_AFTER.store(0, Relaxed);
-    }
-}
-
 #[inline(never)]
 pub unsafe fn background_reclaimer_main() -> ! {
     let mut latest_slab_stamp = 0;
     let mut latest_segmented_bitmap_stamp = 0;
-    let mut latest_relief_stamp = 0u32;
 
     loop {
         use crate::get_clock;
@@ -208,10 +157,6 @@ pub unsafe fn background_reclaimer_main() -> ! {
         let size = trim.1.swap(0, Relaxed);
 
         let stamp = (get_clock().elapsed().as_millis() / 100) as u32;
-        if stamp.wrapping_sub(latest_relief_stamp) >= 3 && !DISABLE_RELIEF && !trim_requested {
-            latest_relief_stamp = stamp;
-            relief_paths();
-        }
         CURRENT_STAMP.store(stamp, Relaxed);
 
         let mut trimmed = 0;

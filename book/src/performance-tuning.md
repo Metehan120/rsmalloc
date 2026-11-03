@@ -14,7 +14,6 @@ Rust builds use `Config::new(Tuning::DEFAULT...)`; [preload builds](preload.md#r
 | Initial segmented-bitmap region | 64 MiB | A hard total cache limit. |
 | Small / bitmap trim thresholds | 10 MiB / 512 MiB cached VA | RSS thresholds or per-object release deadlines. |
 | General THP / forced bitmap THP | Enabled / disabled | Guaranteed kernel huge-page placement. |
-| Pressure relief | Disabled; 85% disable / 80% re-enable thresholds | Cgroup-aware OOM prevention. |
 
 Measure throughput, latency, CPU time, peak RSS, idle RSS, and faults after reuse together. Diagnostics help explain a result but must not be part of the final timing configuration.
 
@@ -49,21 +48,15 @@ These are advice policies, not guaranteed physical page sizes. Do not assume the
 
 ## Trimming: eligibility before thresholds
 
-Background trimming uses cached-VA thresholds and lifetime/age heuristics. Lower thresholds can permit work sooner but do not guarantee an RSS target or immediate reclamation. Both subsystems share a low-cache gate: scans skip when **both** cached totals are below their thresholds; their scheduling intervals remain separate.
+Background trimming uses cached-VA thresholds and lifetime/age heuristics. Lower thresholds can permit work sooner but do not guarantee an RSS target or immediate reclamation. Either threshold can trigger worker startup, but each age-based scan independently requires its own subsystem's threshold; their scheduling intervals are also separate.
 
 Slab trimming requires complete reclaimable payload pages. Tiny-class retention cannot be solved simply by lowering the threshold. Bitmap pages must be free and eligible; live objects cannot be reclaimed. Virtual arenas may remain reserved after payload pages are advised away.
 
-`trim-aggressively` tightens idle-class eligibility. `lazy-page-trim` uses `MADV_FREE` rather than immediate discard for both slab and segmented-bitmap payload pages, including explicit and relief-triggered bitmap trimming. It can preserve reuse but delay RSS reduction until kernel reclaim. Benchmark burst/idle/burst sequences to expose the tradeoff.
+`trim-aggressively` tightens idle-class eligibility. `lazy-page-trim` uses `MADV_FREE` rather than immediate discard for both slab and segmented-bitmap payload pages, including explicit bitmap trimming. It can preserve reuse but delay RSS reduction until kernel reclaim. Benchmark burst/idle/burst sequences to expose the tradeoff.
 
-Manual core trimming can be appropriate between phases; see [native/core APIs](native-api.md#core-operations-initialization-and-best-effort-trim). `All` is an unbounded best-effort pass, not proof that all freed memory was returned. Bootstrap sets the effective big trim threshold to `max(requested, initial_cached_bytes + 1)`, not a fixed 128 MiB rejection floor. The footprint includes the normalized initial region, page-rounded region metadata, and page-rounded state/node/hint tables. Footprint or `+ 1` overflow logs `RSMallocError::Bootstrap` and aborts. See `src/backend/bootstrap.rs` — `PreparedBootstrapConfig::big_trim_threshold`; `src/big_allocations/segmented_bitmap.rs` — `initial_cached_bytes`.
+Manual core trimming can be appropriate between phases; see [native/core APIs](native-api.md#core-operations-initialization-and-best-effort-trim). `All` requests an asynchronous unbounded best-effort pass, not proof that all freed memory was returned; it does not start a worker. Bootstrap sets the effective big trim threshold to `max(requested, initial_cached_bytes + 1)`, not a fixed 128 MiB rejection floor. The footprint includes the normalized initial region, page-rounded region metadata, and page-rounded state/node/hint tables. Footprint or `+ 1` overflow logs `RSMallocError::Bootstrap` and aborts. See `src/backend/bootstrap.rs` — `PreparedBootstrapConfig::big_trim_threshold`; `src/big_allocations/segmented_bitmap.rs` — `initial_cached_bytes`.
 
-Disabling periodic background trimming does not disable manual trimming or all worker activity: enabled relief can still need the worker. Only try disabling it when retained memory is acceptable and measured background interference matters. Avoid trimming on every request.
-
-## Memory-pressure relief
-
-Relief uses system-wide RAM-plus-swap usage from `sysinfo`. It can disable segmented-bitmap allocation under pressure, advise cached bitmap pages away, and later re-enable allocation after qualifying lower-pressure checks. Direct mappings remain a fallback; disabling bitmap reuse does not prohibit all large allocations.
-
-It is not based on a container's budget or a `MemAvailable` estimate. Do not rely on it to prevent cgroup OOM. In preload builds **zero enables `RS_ENABLE_RELIEF`**, while nonzero disables it. Use valid decimal values: malformed text can parse as zero.
+Disabling periodic background trimming does not disable manual trimming or all worker activity. Only try disabling it when retained memory is acceptable and measured background interference matters. Avoid trimming on every request.
 
 ## A disciplined experiment
 

@@ -1,10 +1,5 @@
 use crate::{
-    backend::{
-        background_thread::{
-            DISABLE_RELIEF, SEGMENTED_BITMAP_DISABLE_PERCENTAGE, SEGMENTED_BITMAP_ENABLE_PERCENTAGE,
-        },
-        page_allocator::{ARENA_SIZE, MIN_ARENA_SIZE, PAGE_ALLOCATOR},
-    },
+    backend::page_allocator::{ARENA_SIZE, MIN_ARENA_SIZE, PAGE_ALLOCATOR},
     big_allocations::segmented_bitmap::{
         BIG_SEGMENTED_BITMAP_MAX_ORDER, SEGMENTED_BITMAP_BACKEND, SegmentedBitmapAllocator,
     },
@@ -35,9 +30,6 @@ pub struct BootstrapConfig {
     disable_trimmer: bool,
     small_trim_threshold: usize,
     big_trim_threshold: usize,
-    disable_relief: bool,
-    segmented_bitmap_disable_percentage: usize,
-    segmented_bitmap_enable_percentage: usize,
     disable_thp: bool,
     random_magic: bool,
     foreign_pointer_abort: bool,
@@ -54,9 +46,6 @@ impl BootstrapConfig {
         disable_trimmer: bool,
         small_trim_threshold: usize,
         big_trim_threshold: usize,
-        disable_relief: bool,
-        segmented_bitmap_disable_percentage: usize,
-        segmented_bitmap_enable_percentage: usize,
         disable_thp: bool,
         random_magic: bool,
         foreign_pointer_abort: bool,
@@ -70,9 +59,6 @@ impl BootstrapConfig {
             disable_trimmer,
             small_trim_threshold,
             big_trim_threshold,
-            disable_relief,
-            segmented_bitmap_disable_percentage,
-            segmented_bitmap_enable_percentage,
             disable_thp,
             random_magic,
             foreign_pointer_abort,
@@ -85,11 +71,6 @@ impl BootstrapConfig {
             .segmented_bitmap_max_cache
             .checked_next_power_of_two()?
             .max(1 << BIG_SEGMENTED_BITMAP_MAX_ORDER);
-        self.segmented_bitmap_disable_percentage =
-            self.segmented_bitmap_disable_percentage.min(100);
-        self.segmented_bitmap_enable_percentage = self
-            .segmented_bitmap_enable_percentage
-            .min(self.segmented_bitmap_disable_percentage);
         self.segmented_bitmap_attempt_huge &= !self.disable_thp;
         Some(PreparedBootstrapConfig { settings: self })
     }
@@ -118,13 +99,10 @@ impl PreparedBootstrapConfig {
         SEGMENTED_BITMAP_MAX_CACHE = config.segmented_bitmap_max_cache;
         SEGMENTED_BITMAP_ATTEMPT_HUGE = config.segmented_bitmap_attempt_huge;
         DISABLE_TRIM_THREAD = config.disable_trimmer;
-        DISABLE_RELIEF = config.disable_relief;
         // Subsystem initialization may check whether to start the worker.
         // Keep both thresholds unreachable until all bootstrap work is done.
         SMALL_TRIM_THRESHOLD = usize::MAX;
         BIG_TRIM_THRESHOLD = usize::MAX;
-        SEGMENTED_BITMAP_DISABLE_PERCENTAGE = config.segmented_bitmap_disable_percentage;
-        SEGMENTED_BITMAP_ENABLE_PERCENTAGE = config.segmented_bitmap_enable_percentage;
         RS_DISABLE_THP = config.disable_thp;
 
         #[cfg(not(feature = "preload"))]

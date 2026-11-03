@@ -8,7 +8,7 @@
   - [Refill and Deferred Initialization](./architecture-refill.md)
   - [Backing Memory and Large Allocations](./architecture-backing-memory.md)
   - [Ownership, Alignment, and Resizing](./architecture-ownership.md)
-  - [Reclamation and Pressure Relief](./architecture-reclamation.md)
+  - [Reclamation](./architecture-reclamation.md)
   - [Concurrency and Observation Limits](./architecture-concurrency.md)
 - [Workload Fit and Failure Modes](./workload-fit.md)
 - [Getting Started](./getting-started.md)

@@ -46,7 +46,7 @@ Test the hypothesis supported by the data:
 - If cached eligible memory persists, verify that periodic trimming is enabled, whether the worker started, cached-VA thresholds, and age eligibility. Lower thresholds permit scanning; they are not RSS targets or reclaim deadlines.
 - If THP amplification is visible, compare `page-backend-no-huge-page` for slab arenas and the actual segmented/direct-mapping THP settings. Slab advice alone does not control every backend or guarantee a resident-memory limit. Measure TLB/fault and latency costs too.
 - If oversized fresh batches or unused capacity dominate, test smaller refill/arena/region settings individually. Smaller arenas can increase mapping and ownership-metadata work; batch changes can increase refill frequency.
-- If the process is near a cgroup limit, use that cgroup's evidence. Do not expect host-wide relief to detect it.
+- If the process is near a cgroup limit, use that cgroup's evidence. Monitor limits, usage, and OOM events independently.
 
 Do not make a series of unrelated changes until RSS drops; that loses the explanation and can trade memory for unacceptable latency.
 
@@ -54,17 +54,9 @@ Do not make a series of unrelated changes until RSS drops; that loses the explan
 
 Background trimming is best-effort and age-based. The worker may not start until cached VA reaches a threshold; spawning can fail. Slab and segmented passes have separate schedules, and scans can be gated or contend on trim locks. Scheduled sleep intervals and lifetime estimates are not deadlines.
 
-Manual trimming is also best-effort. V2 trim scans slab first, then segmented memory for the remaining target. Explicit segmented trimming bypasses age eligibility, but slab scans can still return early below cached-VA thresholds. An “all” request does not mean all mappings are unmapped or all free bytes are immediately resident-memory savings.
+Manual trimming is also best-effort. V2 core trim posts an asynchronous request to an existing worker, which checks segmented memory first and then slabs if needed; it does not start a worker. Both background scans remain subject to their eligibility thresholds and ages. The synchronous raw API can force segmented trimming past its age and capacity gates, but slab scans can still return early below their threshold. An “all” request does not mean all mappings are unmapped or all free bytes immediately reduce RSS.
 
 Correlate trim deltas with RSS and page state. Default reclamation uses `MADV_DONTNEED`; `lazy-page-trim` uses `MADV_FREE`, whose pages may stay resident until reclaimed by the kernel. Reuse and new faults can offset reclaim. Place controlled manual trim tests at an idle boundary, not on a request hot path.
-
-### Memory-pressure relief did not prevent an OOM
-
-Relief is disabled by default. In the current preload alpha, **`RS_ENABLE_RELIEF=0` enables it; nonzero disables it**. Set a valid decimal value before bootstrap. Rust uses `ReliefSettings`; changing preload variables after initialization does not reconfigure a Rust allocator.
-
-The policy samples system-wide RAM-plus-swap usage from `sysinfo`, not `MemAvailable`, process RSS, or cgroup usage. Default thresholds disable segmented-bitmap allocation at 85% and permit re-enabling after two consecutive checks at or below 80%. Disabling the backend trims cached segmented blocks, but direct mappings remain a fallback. This changes allocation routing, not the application's live-memory requirement.
-
-The background worker handles enabled relief even if periodic trimming is disabled, but detection depends on a running worker and scheduling. It cannot guarantee timely reaction to a burst or prevent allocation failure/OOM. A container can exhaust its memory limit while host pressure remains below the threshold. Check cgroup memory/swap limits, usage, pressure and OOM events independently, and provide application-level headroom or load shedding where needed.
 
 ## Refills are high
 
@@ -100,13 +92,13 @@ Distinguish lock call counts, retries, spin waits, and measured waiting time. In
 
 Separate segmented-bitmap reuse, region scans/growth, direct mappings, ownership updates, exact metadata operations, and later page faults/zero-fill. Routing uses adjusted size including metadata and alignment; nominal application size alone does not identify the backend.
 
-Measure allocation and memory touching separately. Check whether relief disabled segmented allocation, whether the workload reuses compatible blocks, and whether THP/NUMA behavior explains later access cost. Raising region capacity only helps if reuse or reduced growth offsets greater reservation and retention.
+Measure allocation and memory touching separately. Check whether the workload reuses compatible blocks, and whether THP/NUMA behavior explains later access cost. Raising region capacity only helps if reuse or reduced growth offsets greater reservation and retention.
 
 ## Latency spikes
 
-Timestamp workload phases and correlate tail latency with refills, cold initialization, arena/region growth, direct mapping, page faults, trim activity, relief transitions, and CPU throttling. Average throughput can hide these events.
+Timestamp workload phases and correlate tail latency with refills, cold initialization, arena/region growth, direct mapping, page faults, trim activity and CPU throttling. Average throughput can hide these events.
 
-Manual initialization before serving can move bootstrap work out of requests, but it does not prefault future payloads or eliminate future growth. Compare warm-up with the real access pattern. Test periodic trimming changes only if correlated evidence implicates it; disabling periodic trims increases retention and does not disable enabled relief. Manual trim belongs at a controlled maintenance boundary and can make later reuse pay refault costs.
+Manual initialization before serving can move bootstrap work out of requests, but it does not prefault future payloads or eliminate future growth. Compare warm-up with the real access pattern. Test periodic trimming changes only if correlated evidence implicates it; disabling periodic trims increases retention. Manual trim belongs at a controlled maintenance boundary and can make later reuse pay refault costs.
 
 ## Crashes or corruption reports
 

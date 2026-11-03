@@ -36,7 +36,7 @@ Caches and regions favor future reuse, not immediate release after every free. S
 
 Tiny allocations do not each contain complete reclaimable payload pages. Lowering a trim threshold cannot manufacture reclaimable pages in those classes. A large idle RSS therefore needs class/access-pattern investigation, not only a trim call.
 
-Under a container limit, host-wide pressure relief may not react before the cgroup runs out of memory. The initial bitmap-region setting is **not a memory cap**. Maintain headroom and test peak live memory, post-burst residency, faults on reuse, and actual OOM behavior.
+Under a container limit, allocator trimming cannot guarantee that the cgroup will avoid running out of memory. The initial bitmap-region setting is **not a memory cap**. Maintain headroom and test peak live memory, post-burst residency, faults on reuse, and actual OOM behavior.
 
 ### Cold starts and latency-sensitive services
 

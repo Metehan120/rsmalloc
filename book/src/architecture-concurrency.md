@@ -58,7 +58,7 @@ A cache hit avoids a general cache mutex, but successful local slab operations s
 
 Single RSEQ push/pop wrappers retry failures; a batch push has bounded RSEQ attempts before transfer fallback. A bounded batch retry is not a bound on overall allocation latency: refill, mapping, first touch, growth, and scheduling remain possible. Predictor updates use one weak relaxed CAS and can be dropped because their state is advisory.
 
-Pressure relief and trimming are scheduled best-effort work, not real-time deadlines or a memory quota. Unsupported libc RSEQ is a bootstrap failure, not another supported cache mode. Allocation exhaustion can return failure from some paths and abort in mandatory metadata paths.
+Trimming is scheduled best-effort work, not real-time deadlines or a memory quota. Unsupported libc RSEQ is a bootstrap failure, not another supported cache mode. Allocation exhaustion can return failure from some paths and abort in mandatory metadata paths.
 
 Source: `src/rseq_core/slab_cache.rs`; `src/core_prim/predictor.rs`;
 `src/backend/{bootstrap,background_thread,page_allocator}.rs`;

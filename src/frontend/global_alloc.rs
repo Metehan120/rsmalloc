@@ -284,71 +284,6 @@ impl TrimThreadSettings {
     };
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum ReliefState {
-    Enabled,
-    Disabled,
-}
-
-impl ReliefState {
-    const fn is_disabled(&self) -> bool {
-        matches!(self, Self::Disabled)
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct Percentage(pub usize);
-
-impl Percentage {
-    pub const fn new(value: usize) -> Self {
-        Self(value)
-    }
-
-    pub const fn get(self) -> usize {
-        self.0
-    }
-}
-
-/// Applies memory-pressure relief policy.
-///
-/// When system-wide memory pressure reaches `BUDDY_DISABLE_PERCENTAGE`, the
-/// buddy backend is disabled and its cached blocks are trimmed. While disabled,
-/// future eligible big allocations bypass the buddy cache and use direct
-/// mapping instead.
-///
-/// The buddy backend is re-enabled only after memory pressure stays at or below
-/// `BUDDY_ENABLE_PERCENTAGE` for `ENABLE_AFTER` consecutive samples.
-///
-/// This path favors avoiding retained-memory OOM behavior over allocation
-/// throughput.
-#[derive(Clone, Copy, Debug)]
-pub struct ReliefSettings {
-    pub state: ReliefState,
-    pub segmented_bitmap_disable_percentage: Percentage,
-    pub segmented_bitmap_enable_percentage: Percentage,
-}
-
-impl ReliefSettings {
-    pub const DEFAULT: ReliefSettings = ReliefSettings {
-        state: ReliefState::Disabled,
-        segmented_bitmap_disable_percentage: Percentage::new(85),
-        segmented_bitmap_enable_percentage: Percentage::new(80),
-    };
-
-    #[must_use]
-    pub const fn new(
-        state: ReliefState,
-        segmented_bitmap_disable_percentage: Percentage,
-        segmented_bitmap_enable_percentage: Percentage,
-    ) -> ReliefSettings {
-        ReliefSettings {
-            state,
-            segmented_bitmap_disable_percentage,
-            segmented_bitmap_enable_percentage,
-        }
-    }
-}
-
 // ------------------
 
 /// Runtime configuration for `RSMalloc`.
@@ -371,7 +306,6 @@ pub struct RSMallocConfig {
     pub max_per_segmented_bitmap_cache: PerCacheLimit,
     pub experimental_features: ExperimentalFeatures,
     pub trim_thread: TrimThreadSettings,
-    pub relief: ReliefSettings,
     /// Minimum slab page-backend arena data size. The default is 256 MiB;
     /// arena creation page-aligns it and may exceed it for a larger refill.
     pub arena_min_size: Bytes,
@@ -389,7 +323,6 @@ impl RSMallocConfig {
         predictor_settings: RefillPredictorSettings::DEFAULT,
         foreign_pointer: ForeignPointerSettings::DEFAULT,
         trim_thread: TrimThreadSettings::DEFAULT,
-        relief: ReliefSettings::DEFAULT,
         max_per_segmented_bitmap_cache: PerCacheLimit::Default,
         magic_safety: MagicSafety::MagicRandomization,
         experimental_features: ExperimentalFeatures::DEFAULT,
@@ -402,11 +335,6 @@ impl RSMallocConfig {
             experimental_features: features,
             ..*self
         }
-    }
-
-    #[must_use]
-    pub const fn with_relief_settings(&self, relief: ReliefSettings) -> Self {
-        Self { relief, ..*self }
     }
 
     #[must_use]
@@ -486,7 +414,6 @@ pub struct RSMalloc {
 #[inline(never)]
 unsafe fn init(rs: &RSMalloc) {
     let config = &rs.config;
-    let disable_percentage = config.relief.segmented_bitmap_disable_percentage.0.min(100);
     main_bootstrap(BootstrapConfig::new(
         config.arena_min_size.0.max(256 * 1024),
         config.max_refill_retries as usize,
@@ -497,13 +424,6 @@ unsafe fn init(rs: &RSMalloc) {
         config.trim_thread.threshold.0,
         // The legacy API has no separate big-allocation trim threshold.
         crate::global_vals::BIG_TRIM_THRESHOLD,
-        config.relief.state.is_disabled(),
-        disable_percentage,
-        config
-            .relief
-            .segmented_bitmap_enable_percentage
-            .0
-            .min(disable_percentage),
         !config.thp_settings.thp.enabled(),
         !config.magic_safety.is_fixed(),
         config.foreign_pointer.global_alloc.is_abort(),
@@ -854,9 +774,7 @@ impl RSMalloc {
             HIGH_WATER_SLAB_CACHED_VA, HIGH_WATER_TOTAL_CACHED_VA, NCPU, REFILL_OVER_PREDICTS,
             REFILL_UNDER_PREDICTS, REFILLS_BY_CLASS, SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES,
             START_TIME, TOTAL_CACHED_VA, TOTAL_MMAP_BYTES, TOTAL_MMAP_CALLS, TOTAL_REFILL_CALLS,
-            backend::background_thread::{
-                DISABLE_SEGMENTED_BITMAP, TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA,
-            },
+            backend::background_thread::{TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA},
             backend::page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR, TOTAL_LIVED, TOTAL_REMOVED},
             big_allocations::segmented_bitmap::{
                 BIG_SEGMENTED_BITMAP_MIN_ORDER, SEGMENTED_BITMAP_BACKEND,
@@ -1061,7 +979,6 @@ impl RSMalloc {
             avg_segmented_bitmap_life_ms: SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES
                 .load(Relaxed)
                 .saturating_mul(100),
-            segmented_bitmap_disabled: DISABLE_SEGMENTED_BITMAP.load(Relaxed),
             segmented_bitmap_regions: segmented_bitmap.regions,
             segmented_bitmap_total_region_bytes: segmented_bitmap.total_region_bytes,
             segmented_bitmap_used_bytes,
@@ -1225,7 +1142,6 @@ pub struct RSMallocStats {
     pub trimmed_va: usize,
     pub avg_small_life_ms: u32,
     pub avg_segmented_bitmap_life_ms: u32,
-    pub segmented_bitmap_disabled: bool,
 
     pub segmented_bitmap_regions: usize,
     pub segmented_bitmap_total_region_bytes: usize,

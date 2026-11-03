@@ -242,76 +242,6 @@ impl TrimSettings {
     }
 }
 
-/// Segmented-bitmap memory-pressure relief state.
-#[derive(Clone, Copy, Debug)]
-pub enum ReliefState {
-    /// Allow the allocator to disable segmented-bitmap allocation under memory pressure.
-    Enabled,
-    /// Keep segmented-bitmap allocation enabled regardless of the relief thresholds.
-    Disabled,
-}
-
-impl ReliefState {
-    const fn disabled(self) -> bool {
-        matches!(self, Self::Disabled)
-    }
-}
-
-/// A percentage clamped to the inclusive range `0..=100`.
-#[derive(Clone, Copy, Debug)]
-pub struct Percentage(usize);
-
-impl Percentage {
-    /// Creates a percentage, clamped to the inclusive `0..=100` range.
-    pub const fn new(value: usize) -> Self {
-        Self(if value > 100 { 100 } else { value })
-    }
-
-    /// Returns the normalized percentage.
-    pub const fn get(self) -> usize {
-        self.0
-    }
-}
-
-/// Memory-pressure relief settings for the segmented-bitmap backend.
-///
-/// When enabled, segmented-bitmap allocation is disabled at the disable threshold and is
-/// re-enabled after pressure falls to the enable threshold. If the configured
-/// enable threshold exceeds the disable threshold, initialization lowers it to
-/// the disable threshold.
-#[derive(Clone, Copy, Debug)]
-pub struct ReliefSettings {
-    /// Whether memory-pressure relief is active.
-    pub state: ReliefState,
-    /// Pressure percentage at which segmented-bitmap allocation is disabled.
-    pub segmented_bitmap_disable_percentage: Percentage,
-    /// Pressure percentage at or below which segmented-bitmap allocation may be re-enabled.
-    pub segmented_bitmap_enable_percentage: Percentage,
-}
-
-impl ReliefSettings {
-    /// Default thresholds are 85% for disabling and 80% for re-enabling.
-    /// Relief itself is disabled by default.
-    pub const DEFAULT: Self = Self {
-        state: ReliefState::Disabled,
-        segmented_bitmap_disable_percentage: Percentage::new(85),
-        segmented_bitmap_enable_percentage: Percentage::new(80),
-    };
-
-    /// Creates segmented-bitmap memory-pressure relief settings.
-    pub const fn new(
-        state: ReliefState,
-        segmented_bitmap_disable_percentage: Percentage,
-        segmented_bitmap_enable_percentage: Percentage,
-    ) -> Self {
-        Self {
-            state,
-            segmented_bitmap_disable_percentage,
-            segmented_bitmap_enable_percentage,
-        }
-    }
-}
-
 /// Performance and memory-retention tuning.
 #[derive(Clone, Copy, Debug)]
 pub struct Tuning {
@@ -325,8 +255,6 @@ pub struct Tuning {
     pub max_per_segmented_bitmap_cache: PerCacheLimit,
     /// Background trimming policy.
     pub trim: TrimSettings,
-    /// Segmented-bitmap memory-pressure relief policy.
-    pub relief: ReliefSettings,
     /// Minimum slab page-backend arena data size.
     ///
     /// Initialization enforces an absolute minimum of 256 KiB. The default is
@@ -342,7 +270,6 @@ impl Tuning {
         max_refill_retries: 3,
         max_per_segmented_bitmap_cache: PerCacheLimit::Default,
         trim: TrimSettings::DEFAULT,
-        relief: ReliefSettings::DEFAULT,
         arena_min_size: ArenaSize::DEFAULT,
     };
 
@@ -386,12 +313,6 @@ impl Tuning {
     #[must_use]
     pub const fn with_trim(self, trim: TrimSettings) -> Self {
         Self { trim, ..self }
-    }
-
-    /// Replaces the segmented-bitmap memory-pressure relief settings.
-    #[must_use]
-    pub const fn with_relief(self, relief: ReliefSettings) -> Self {
-        Self { relief, ..self }
     }
 
     /// Replaces the minimum slab arena size.
@@ -595,11 +516,6 @@ impl Config {
         } else {
             TrimThread::Disabled
         };
-        let relief_state = if matches!(legacy.relief.state, old::ReliefState::Enabled) {
-            ReliefState::Enabled
-        } else {
-            ReliefState::Disabled
-        };
 
         Self::new(Tuning {
             thp: THPSettings::new(thp, segmented_thp),
@@ -610,11 +526,6 @@ impl Config {
                 trim_worker,
                 Size::Bytes(legacy.trim_thread.threshold.0),
                 Size::BIG_TRIM_DEFAULT,
-            ),
-            relief: ReliefSettings::new(
-                relief_state,
-                Percentage::new(legacy.relief.segmented_bitmap_disable_percentage.0),
-                Percentage::new(legacy.relief.segmented_bitmap_enable_percentage.0),
             ),
             arena_min_size: ArenaSize(Size::bytes(arena_size)),
         })
@@ -643,14 +554,6 @@ impl Config {
     }
 
     pub(crate) const fn bootstrap(self) -> BootstrapConfig {
-        let disable_percentage = self.tuning.relief.segmented_bitmap_disable_percentage.get();
-        let requested_enable_percentage =
-            self.tuning.relief.segmented_bitmap_enable_percentage.get();
-        let enable_percentage = if requested_enable_percentage > disable_percentage {
-            disable_percentage
-        } else {
-            requested_enable_percentage
-        };
         let arena_size = self.tuning.arena_min_size.0;
 
         BootstrapConfig::new(
@@ -662,9 +565,6 @@ impl Config {
             self.tuning.trim.background_worker.disabled(),
             self.tuning.trim.small_threshold.get(),
             self.tuning.trim.big_threshold.get(),
-            self.tuning.relief.state.disabled(),
-            disable_percentage,
-            enable_percentage,
             !self.tuning.thp.thp.enabled(),
             self.security.randomize_magic,
             self.security.abort_on_foreign_pointer,

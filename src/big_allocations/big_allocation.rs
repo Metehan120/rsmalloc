@@ -1,14 +1,13 @@
 use std::{
     os::raw::c_void,
     ptr::{null_mut, write},
-    sync::atomic::Ordering::Relaxed,
+    sync::atomic::AtomicPtr,
 };
 
 use rustix::mm::{Advice, MapFlags, ProtFlags, madvise, mmap_anonymous, munmap};
 
 use crate::{
     BIG_MAGIC, BigAllocMeta, Flags, Header, RS_DISABLE_THP, RSMallocError, SEGMENTED_BITMAP_INIT,
-    backend::background_thread::DISABLE_SEGMENTED_BITMAP,
     big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND,
     core_prim::wrappers::MaybeNull,
     internals::{big_meta_map::BIG_MAP, binder::NumaBind, radix_tree::RADIX},
@@ -59,8 +58,7 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> MaybeNull<Header> {
     let inner = SLAB_CACHE.get_inner();
     let node_id = SLAB_CACHE.node_for_cpu(cpu_id, inner);
 
-    if size <= 1024 * 1024 * 64 && SEGMENTED_BITMAP_INIT && !DISABLE_SEGMENTED_BITMAP.load(Relaxed)
-    {
+    if size <= 1024 * 1024 * 64 && SEGMENTED_BITMAP_INIT {
         let segmented_bitmap = SEGMENTED_BITMAP_BACKEND.alloc(aligned_total, node_id, cpu_id);
 
         if let Some((addr, order, _, region)) = segmented_bitmap {
@@ -104,7 +102,7 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> MaybeNull<Header> {
     write(
         actual_ptr as *mut Header,
         Header {
-            next: null_mut(),
+            next: AtomicPtr::new(null_mut()),
             class: 100,
             magic: BIG_MAGIC,
             life_time: 0,

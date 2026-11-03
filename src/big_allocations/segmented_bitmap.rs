@@ -438,6 +438,7 @@ impl SegmentedBitmapAllocator {
             .then_some((addr, order + 1))
     }
 
+    #[cfg(not(feature = "preload"))]
     // Explicit trimming bypasses the cached-byte and age gates, but still trims
     // only free dirty slots. Zero requested bytes means an unbounded pass.
     pub unsafe fn trim(&self, requested: usize) -> usize {

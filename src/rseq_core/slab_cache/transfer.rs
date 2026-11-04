@@ -14,8 +14,20 @@ use crate::{
         aba::Tagging,
         slab_cache::{SlabCache, SlabCacheInner, TransferReturn},
     },
-    traits::Lock,
 };
+
+use super::trim_message::{Ticket, TrimMessage};
+
+struct TransferHandshake<'a> {
+    message: &'a TrimMessage,
+    ticket: Ticket,
+}
+
+impl Drop for TransferHandshake<'_> {
+    fn drop(&mut self) {
+        self.message.complete(self.ticket);
+    }
+}
 
 impl SlabCache {
     #[inline(always)]
@@ -289,37 +301,27 @@ impl SlabCache {
         let trimmed_ptr = &list.trimmed;
         let (mut list_ptr, mut size_ptr) = (normal_ptr, &list.size.normal_blocks);
 
+        let mut handshake: Option<TransferHandshake<'_>> = None;
         let mut old = list_ptr.load(Ordering::Acquire);
-        'retry: loop {
-            let mut pack = Tagging.untag_ptr(old);
-
-            // The trimmer privately owns the chain it detached, not every
-            // block pushed during the trim phase. Pushes can still publish work.
-            if list.trim_message.get_lock() {
+        loop {
+            if handshake.is_none() && list.trim_message.is_active() {
                 if !force {
                     // Ordinary callers skip this cache rather than wait for trimming.
                     return None;
-                } else if !pack.current_header.is_null() {
-                    // This head was sampled before the flag. It may belong to
-                    // the trimmer's chain; wait out the trim phase before walking it.
-                    continue 'retry;
                 }
-
-                // Starting from an empty snapshot, a forced caller polls for
-                // newly published blocks or the end of trimming. Finding a head
-                // still requires the normal tagged CAS below to claim its blocks.
-                loop {
-                    old = list_ptr.load(Ordering::Acquire);
-                    pack = Tagging.untag_ptr(old);
-                    if !pack.current_header.is_null() {
-                        break;
-                    }
-                    if !list.trim_message.get_lock() {
-                        continue 'retry;
-                    }
-                    spin_loop();
+                let Some(ticket) = list.trim_message.request() else {
+                    return None;
+                };
+                if !list.trim_message.wait_ready(ticket, 1024) {
+                    return None;
                 }
+                handshake = Some(TransferHandshake {
+                    message: &list.trim_message,
+                    ticket,
+                });
+                old = list_ptr.load(Ordering::Acquire);
             }
+            let pack = Tagging.untag_ptr(old);
 
             if pack.current_header.is_null() {
                 if eq(list_ptr, normal_ptr) {

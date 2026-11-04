@@ -24,12 +24,12 @@ use crate::{
 
 pub struct BackgroundThread {
     pub thread: SpinLock<Option<Thread>>,
-    pub message: Messages,
+    pub trim_request: Messages,
 }
 
 pub static BACKGROUND_THREAD: BackgroundThread = BackgroundThread {
     thread: SpinLock::new(None),
-    message: Messages::Trim {
+    trim_request: Messages::Trim {
         requested: AtomicBool::new(false),
         requested_size: AtomicUsize::new(0),
     },
@@ -154,7 +154,7 @@ pub unsafe fn background_reclaimer_main() -> ! {
 
         park_timeout(Duration::from_millis(100));
 
-        let trim = BACKGROUND_THREAD.message.get_trim();
+        let trim = BACKGROUND_THREAD.trim_request.get_trim();
         let trim_requested = trim.0.swap(false, Relaxed);
         let size = trim.1.swap(0, Relaxed);
 

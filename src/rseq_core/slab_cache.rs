@@ -25,7 +25,6 @@ use crate::{
     internals::{
         atomics::{AtomicOrdering, AtomicUsize},
         binder::NumaBind,
-        lock::SpinLock,
         numa_parser::{NumaTopology, parse_numa_topology},
         once::Once,
     },
@@ -43,6 +42,7 @@ use crate::{
 pub mod reclaim;
 mod rseq_asm;
 pub mod transfer;
+mod trim_message;
 
 pub struct SizeList {
     normal_blocks: AtomicUsize,
@@ -59,7 +59,7 @@ pub struct TransferCache {
     pub list: AtomicU128,
     pub trimmed: AtomicU128,
     pub size: SizeList,
-    pub trim_message: SpinLock<()>,
+    trim_message: trim_message::TrimMessage,
 }
 
 // NOTE: Use 4096-byte alignment to avoid false sharing between cache lines and NUMA node balancing.
@@ -565,7 +565,7 @@ pub static SLAB_CACHE: SlabCache = SlabCache::new();
 #[cfg(test)]
 #[cfg(not(feature = "extended-header"))]
 mod tests {
-    use std::hint::black_box;
+    use std::{hint::black_box, sync::mpsc, thread, time::Duration};
 
     use crate::rseq_core::aba::{TAG_SHIFT, Tagging};
 
@@ -579,6 +579,160 @@ mod tests {
             life_time: 0,
             flags: crate::Flags::NotAllocated,
         }))
+    }
+
+    // Mirror the zero-initialized cache and bitmap storage used by ensure_cache,
+    // without initializing its process-global NUMA and pending-queue state.
+    struct TransferFixture {
+        cache: SlabCache,
+        _main: Box<MainCache>,
+        _nonempty: Box<[AtomicU64]>,
+        _stolen: Box<[AtomicU64]>,
+    }
+
+    impl TransferFixture {
+        fn new() -> Self {
+            let mut main: Box<MainCache> = unsafe { Box::new(std::mem::zeroed()) };
+            let mut nonempty: Box<[AtomicU64]> =
+                (0..NUM_SIZE_CLASSES).map(|_| AtomicU64::new(0)).collect();
+            let mut stolen: Box<[AtomicU64]> =
+                (0..NUM_SIZE_CLASSES).map(|_| AtomicU64::new(0)).collect();
+            let cache = SlabCache::new();
+            unsafe {
+                let inner = &mut *cache.inner.get();
+                inner.cache = Owned::from(&mut *main as *mut MainCache);
+                inner.bitmap = Bitmap {
+                    words: 1,
+                    nonempty: nonempty.as_mut_ptr(),
+                    being_stolen: stolen.as_mut_ptr(),
+                };
+            }
+            Self {
+                cache,
+                _main: main,
+                _nonempty: nonempty,
+                _stolen: stolen,
+            }
+        }
+    }
+
+    #[test]
+    fn transfer_ordinary_pop_skips_active_trim_and_cancelled_request() {
+        let fixture = TransferFixture::new();
+        let cache = &fixture.cache;
+        unsafe {
+            let inner = cache.get_inner();
+            let message = &inner.cache[0].mail[0].trim_message;
+            let block = header();
+            cache.transfer_push_batch(0, block, block, 1, 0, inner);
+            assert!(message.begin());
+            assert!(cache.transfer_pop_batch(0, 0, 1, false).is_none());
+            assert!(message.pending().is_none());
+            // No trimmer responds, so the bounded forced request cancels itself.
+            assert!(cache.transfer_pop_batch(0, 0, 1, true).is_none());
+            assert!(message.pending().is_none());
+            assert!(message.finish());
+            let popped = cache.transfer_pop_batch(0, 0, 1, false).unwrap();
+            assert_eq!(popped.start, block);
+            assert_eq!(popped.end, block);
+            assert_eq!(popped.total, 1);
+            assert_eq!(popped.available, 1);
+            drop(Box::from_raw(block));
+        }
+    }
+
+    #[test]
+    fn transfer_forced_pop_receives_published_batch() {
+        let fixture = TransferFixture::new();
+        let cache = &fixture.cache;
+        let message = &cache.get_inner().cache[0].mail[0].trim_message;
+        assert!(message.begin());
+        let block = header();
+        let block_addr = block as usize;
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        thread::scope(|scope| {
+            scope.spawn(move || {
+                let mut published = false;
+                while matches!(stop_rx.try_recv(), Err(mpsc::TryRecvError::Empty)) {
+                    if let Some(ticket) = message.pending() {
+                        if !published {
+                            unsafe {
+                                let block = block_addr as *mut Header;
+                                cache.transfer_push_batch(0, block, block, 1, 0, cache.get_inner());
+                            }
+                            published = true;
+                        }
+                        if message.signal_ready(ticket) {
+                            let done = message.wait_done(ticket, 1024);
+                            if done {
+                                result_tx.send(()).unwrap();
+                                return;
+                            }
+                        }
+                    }
+                    thread::yield_now();
+                }
+            });
+            let mut popped = None;
+            for _ in 0..100_000 {
+                if let Some(batch) = unsafe { cache.transfer_pop_batch(0, 0, 1, true) } {
+                    popped = Some(batch);
+                    break;
+                }
+                thread::yield_now();
+            }
+            let completed = result_rx.recv_timeout(Duration::from_secs(2));
+            let _ = stop_tx.send(());
+            let batch = popped.expect("forced pop never claimed a published batch");
+            assert!(completed.is_ok(), "trimmer did not observe completion");
+            assert_eq!(batch.start as usize, block_addr);
+            assert_eq!(batch.end as usize, block_addr);
+            assert_eq!(batch.total, 1);
+            assert_eq!(batch.available, 1);
+        });
+        assert!(message.finish());
+        unsafe {
+            drop(Box::from_raw(block));
+        }
+    }
+
+    #[test]
+    fn transfer_trimmer_waits_for_claimed_completion() {
+        let fixture = TransferFixture::new();
+        let cache = &fixture.cache;
+        let message = &cache.get_inner().cache[0].mail[0].trim_message;
+        let block = header();
+        assert!(message.begin());
+        let ticket = message.request().unwrap();
+        unsafe {
+            cache.transfer_push_batch(0, block, block, 1, 0, cache.get_inner());
+        }
+        assert!(message.signal_ready(ticket));
+        assert!(message.claim(ticket));
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                started_tx.send(()).unwrap();
+                let done = message.wait_done(ticket, 0);
+                let _ = done_tx.send(done);
+            });
+            started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            let early = done_rx.recv_timeout(Duration::from_millis(50));
+            // Always release the waiter before asserting, including on failure.
+            let completed = message.complete(ticket);
+            let done = done_rx.recv_timeout(Duration::from_secs(2));
+            assert!(early.is_err(), "trimmer returned before completion");
+            assert!(completed);
+            assert_eq!(done.unwrap(), true);
+        });
+        assert!(message.finish());
+        unsafe {
+            let batch = cache.transfer_pop_batch(0, 0, 1, false).unwrap();
+            assert_eq!(batch.start, block);
+            drop(Box::from_raw(block));
+        }
     }
 
     #[test]

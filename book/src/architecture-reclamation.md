@@ -199,21 +199,25 @@ Source: `src/big_allocations/segmented_bitmap.rs` — `TrimStats::finish`,
 
 `trim_small` always applies the slab capacity gate and always tries the global
 trim lock. There is no slab equivalent of bitmap `force`. It scans CPUs and
-classes starting at `get_size_4096_class`, acquiring each transfer list's
-`trim_message` and atomically detaching the tagged **normal** list head.
+classes starting at `get_size_4096_class`, beginning each transfer list's
+`trim_message` handshake and atomically detaching the tagged **normal** list head.
 It adjusts normal-block accounting as part of the detach.
 
-Transfer pop consults that trim lock; the trimmer partitions the detached
+Transfer pop consults that handshake; the trimmer partitions the detached
 chain. A block is eligible only when its age strictly exceeds the
 class's `TRIM_SMOOTHING` time and its flag is `Allocated`. Never-used and already
 `Reclaimed` blocks are retained rather than repeatedly advised.
 Blocks still in CPU-local caches, the separate trimmed list, or pending spans
 are not made eligible just because an explicit call says “all.”
 
-Retained blocks return in batches to transfer storage. The per-list lock is
-released before advice on the detached trim list. Candidates are republished
-after their advice attempt. See [transfer trim coordination](architecture-transfer.md#trim-lock-coordination)
-for the pop-side lock checks and forced-wait behavior.
+Retained blocks return in batches to the shared transfer head. A forced pop may
+request a batch using a globally unique ticket; preclaim waits are bounded and
+can cancel, but after a claim the trimmer waits strictly for completion, even
+indefinitely if the requester stalls. Publication does not reserve the batch or
+guarantee a handoff. The trimmer calls `finish` before advising the detached trim
+candidates, cancelling unclaimed requests and waiting for claimed ones. Candidates
+are republished after their advice attempt. See [transfer trim coordination](architecture-transfer.md#trim-lock-coordination)
+for the full handshake.
 
 Success changes the flag to `Reclaimed` and pushes to the trimmed transfer list.
 Failure or reaching the requested target pushes the block normally. Candidate
@@ -365,7 +369,7 @@ Source: `src/backend/page_allocator.rs` — `new_arena_locked`;
 - Advice ranges preserve header pages and persistent arena/region reservations.
 - Dirty/history flags distinguish reuse states but are not zeroing guarantees.
 - Global try-lock serialization trades completeness for avoiding concurrent
-  scans; per-list locks, CAS retries, list traversal, and syscalls still cost.
+  scans; per-list handshakes, CAS retries, list traversal, and syscalls still cost.
 - Capacity, reported trimmed bytes, advised page bytes, RSS, and swap usage are
   different quantities. Measure them separately when evaluating reclamation.
 

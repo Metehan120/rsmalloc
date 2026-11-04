@@ -17,7 +17,7 @@ The CPU index identifies a storage/search shard, not exclusive ownership of its 
 | `trimmed: AtomicU128` | Head of the reclaimed-block list |
 | `size.normal_blocks` | Atomic accounting for the normal list |
 | `size.trimmed_blocks` | Atomic accounting for the trimmed list |
-| `trim_message: SpinLock<()>` | Per-mailbox coordination flag used by trimming and pop |
+| `trim_message: TrimMessage` | Per-mailbox ticket handshake used by trimming and forced pop |
 
 Both lists contain `Header` nodes with an atomic `Header.next` link (`AtomicPtr<Header>`).
 They are not lists of backing spans: partially initialized `MetaData` spans instead use `pending_refill` and `PENDING_QUEUE` in `src/rseq_core/bulk_fill.rs` and `src/rseq_core/pending_queue.rs`.
@@ -217,11 +217,11 @@ The global lock serializes this trim routine, including its mutable `TRIM_SMOOTH
 
 For every configured CPU and class at or above `get_size_4096_class`, it:
 
-1. Acquires `trim_message` and retains its RAII guard through detachment, partitioning, and retained-block publication. An empty-list exit drops the guard automatically, after the optional empty-list smoothing adjustment.
+1. Begins the per-mailbox `trim_message` handshake under the global trim lock; if it cannot begin, skips the mailbox. An empty-list exit calls `finish` after the optional smoothing adjustment.
 2. Acquire-loads the normal packed head, samples `normal_blocks` before each detach CAS attempt, and CASes the head to tagged null. On success, subtracts that pre-CAS sample rather than the actual chain count. The detached chain drives traversal; publication-before-increment can make the sample incomplete and leave persistent counter drift after republishing.
 3. Partitions the detached chain. A block goes to trim candidates only if its saturating age exceeds `TRIM_SMOOTHING[class].time(100)` and `flags == Flags::Allocated`; otherwise it is retained normally.
-4. Republishes retained blocks in batches at `ITERATIONS[class] + ITERATIONS[class] / 2`, plus any final remainder, then explicitly drops the per-mailbox guard. It updates per-class age smoothing from nonzero lifetime samples before processing trim candidates.
-5. Processes the private candidate chain after the guard is dropped. Successful memory advice changes `flags` to `Reclaimed` and publishes to the trimmed list; unsuccessful or budget-skipped candidates go back to the normal list. Both receive the sampled lifetime stamp.
+4. Republishes retained blocks in batches at `ITERATIONS[class] + ITERATIONS[class] / 2`, plus any final remainder. During partitioning it may also publish a retained batch in response to a pending ticket. It calls `finish` before updating smoothing and processing trim candidates.
+5. Processes the private candidate chain after `finish`. Successful memory advice changes `flags` to `Reclaimed` and publishes to the trimmed list; unsuccessful or budget-skipped candidates go back to the normal list. Both receive the sampled lifetime stamp.
 
 After the mailbox scan, the routine updates the global average lifetime statistic from the per-class estimates.
 
@@ -241,14 +241,11 @@ Virtual storage remains reserved, and reuse can incur page faults or renewed phy
 
 ## Trim-lock coordination
 
-`trim_message` is not acquired by ordinary transfer pops; they only Acquire-load its Boolean state through `SpinLock::get_lock` (`src/internals/lock.rs`).
-A nonforced pop that observes it set returns `None`.
-A forced pop does not simply ignore it: with a nonnull sampled head it loops back to the lock check; with a null sampled head it reloads/spins until a head appears or the lock becomes clear.
-Forced paths can therefore wait for trimming rather than providing bounded-latency failure.
+`trim_message` (`src/rseq_core/slab_cache/trim_message.rs`) is a per-mailbox atomic ticket handshake. `GLOBAL_TRIM_LOCK` serializes trimmers across the entire `begin`–`finish` interval. A nonforced pop observing an active trim returns `None`. A forced pop tries once to register a request and polls readiness at most 1024 times; timeout cancels its `WAIT` or `READY` ticket. Busy or inactive mailboxes can reject the request.
 
-The trim flag controls pop-side waiting while trimming detaches and partitions the normal chain.
-The tagged head CAS determines whether a pop removes its observed prefix; on CAS failure, the pop retries with the newly observed head.
-The being-stolen bit separately discourages competing searches; it is not an exclusive acquisition.
+During partitioning, the trimmer samples a pending ticket before classifying each block. If there is no retained batch, it retains the current block even if it is trim-eligible; otherwise it can use the existing batch. It pushes the batch to the shared normal head and changes `WAIT` to `READY`, if the request has not already been cancelled. A request still pending when classification ends is cancelled. It polls `READY` at most 1024 times before attempting cancellation. If the requester wins the race to claim, however, cancellation is no longer possible: the trimmer waits strictly for `DONE`, potentially forever if the claimant stalls. The requester's drop guard completes the ticket after its pop attempt. `finish` cancels pending or ready tickets and likewise waits for any claim before the trimmer advises its private candidates.
+
+Tickets come from a global counter and wrap after the maximum encodable value; failed request attempts consume a ticket. Avoiding stale-ticket ABA assumes an old exchange cannot remain observable across a full counter cycle. The handshake coordinates a requester with the trimmer but does not reserve the published batch or exclude unrelated users of the shared heads. A claim therefore guarantees neither a handoff nor a successful pop. The tagged head CAS determines which prefix a pop removes; on failure, it retries with the newly observed head. The being-stolen bit separately discourages competing searches; it is not an exclusive acquisition.
 
 ## Cost and correctness summary
 
@@ -260,7 +257,7 @@ The being-stolen bit separately discourages competing searches; it is not an exc
 | Nonempty bitmap | A search hint for normal or trimmed storage | Staleness can waste searches or miss reuse |
 | Being-stolen bitmap | Relaxed marking discourages some competitors | Load-then-mark is not exclusive acquisition |
 | NUMA search | Deterministic bounding-range-first search | Not strict node membership or physical-locality proof |
-| Trimming | Advice ranges preserve headers; processed blocks are republished | Scanning, advice, and forced waiting add cost; reported bytes are not RSS reduction |
+| Trimming | Advice ranges preserve headers; processed blocks are republished | Preclaim polling is bounded, but a stalled claimant can block trimming; reported bytes are not RSS reduction |
 
 Transfer reuse avoids initializing new objects, but replaces that work with shared-head contention, pointer traversal, accounting traffic, and possible remote access.
 Trimming exchanges future reuse latency for potential resident-memory relief; it is not a request to empty every cache.

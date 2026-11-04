@@ -172,7 +172,7 @@ pub struct TransferCache {
     pub list: AtomicU128,
     pub trimmed: AtomicU128,
     pub size: SizeList,
-    pub trim_message: SpinLock<()>,
+    pub trim_message: TrimMessage,
 }
 ```
 
@@ -222,9 +222,9 @@ This makes the transfer system adaptive in two dimensions: hints predict **where
 
 ### Trimming synchronization
 
-`trim_message` protects the detach/classify/republish interval used by slab trimming. Ordinary allocation-side probes do not block on an active trim pass; they treat that slot as temporarily unavailable and continue searching. The forced fallback pass waits for republished state so a temporarily detached list cannot hide reusable memory indefinitely.
+`trim_message` is a per-slot ticket handshake, not a lock on the transfer heads. The global trim lock serializes trimmers from `begin` through `finish`. A nonforced pop observing an active trim returns `None`; a forced pop tries one request and polls up to 1024 times for readiness, cancelling on timeout. When a request is pending, the trimmer publishes any retained batch to the shared normal head before signaling ready; if the batch is empty, it retains the current block even if it is trim-eligible. Requests still pending when classification ends are cancelled. It polls ready up to 1024 times before cancellation, but once the requester claims, it must wait strictly for completion; a stalled claimant can block trimming indefinitely. The requester completes via a drop guard after its pop attempt.
 
-The trimmer samples and subtracts only `normal_blocks` when it successfully detaches the normal head; the existing trimmed list and its count are left intact. Young/ineligible blocks return to the normal list in batches of `ITERATIONS[class] + ITERATIONS[class] / 2`, with a final partial batch if needed. The lock is released after classification and normal-list republication, before payload-page reclamation; reclaimed blocks are then published separately to the trimmed list.
+Tickets come from a global counter and wrap after the maximum encodable value; failed request attempts consume tickets. Avoiding stale-ticket ABA assumes an old exchange cannot remain observable across a full counter cycle. Readiness does not reserve the published batch: other users share the tagged heads, so a successful claim does not guarantee a handoff or a successful pop. The trimmer samples and subtracts only `normal_blocks` when detaching the normal head; the trimmed list is left intact. Retained blocks return in batches of `ITERATIONS[class] + ITERATIONS[class] / 2`, with a final remainder. `finish` cancels unclaimed requests and waits for claimed ones before candidate advice; successfully reclaimed blocks are then published separately.
 
 ## Per-CPU Refill Prediction
 
@@ -486,11 +486,11 @@ The background thread advances `CURRENT_STAMP` in 100 ms units. It keeps separat
 
 Slab trimming applies to classes whose payload can contain complete reclaimable pages. For each CPU/class transfer slot it:
 
-1. acquires the slot's trim lock;
+1. begins the slot's trim handshake under the global trim lock;
 2. atomically detaches the normal transfer list;
 3. classifies blocks by age and allocation history;
 4. republishes young/ineligible blocks in class-sized batches;
-5. advises complete payload pages from old blocks with `MADV_DONTNEED` or `MADV_FREE`;
+5. finishes the handshake, then advises complete payload pages from old blocks with `MADV_DONTNEED` or `MADV_FREE`;
 6. publishes successfully reclaimed blocks on the separate trimmed list.
 
 An EMA-like per-class lifetime estimate controls age eligibility. Reclaimed blocks remain valid allocator objects; only their payload pages have been advised away.

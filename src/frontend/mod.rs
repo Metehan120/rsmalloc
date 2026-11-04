@@ -6,7 +6,7 @@ use crate::backend::background_thread::{BACKGROUND_THREAD, maybe_unpark};
 
 #[cfg(not(feature = "preload"))]
 pub(crate) fn post_trim_request(size: usize) -> bool {
-    let (requested, requested_size) = BACKGROUND_THREAD.message.get_trim();
+    let (requested, requested_size) = BACKGROUND_THREAD.trim_request.get_trim();
     if requested.load(Acquire) {
         return false;
     }

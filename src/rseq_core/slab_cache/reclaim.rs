@@ -29,6 +29,11 @@ use crate::{
     core_prim::hw::HardwareFeature,
 };
 
+#[inline(always)]
+fn should_trim_block(eligible: bool, request_pending: bool, retained: usize) -> bool {
+    eligible && !(request_pending && retained == 0)
+}
+
 impl SlabCache {
     pub unsafe fn trim_small(&self, requested_size: usize) -> usize {
         if TOTAL_CACHED_VA.load(Relaxed) < SMALL_TRIM_THRESHOLD {
@@ -48,13 +53,16 @@ impl SlabCache {
         for cpu in 0..NCPU {
             for class in get_size_4096_class()..NUM_SIZE_CLASSES {
                 let main_list = self.get_list(cpu, class);
-                let trim_guard = main_list.trim_message.lock();
+                if !main_list.trim_message.begin() {
+                    continue;
+                }
                 let output = main_list.detach_normal_for_trim();
 
                 if output.is_null() {
                     if !cfg!(feature = "trim-aggressively") {
                         TRIM_SMOOTHING[class].update_refill(100, 1, 100);
                     }
+                    main_list.trim_message.finish();
                     continue;
                 }
 
@@ -65,8 +73,8 @@ impl SlabCache {
 
                 let mut trim_list = null_mut();
                 let mut total_push = 0;
-                let mut push_list_start = null_mut();
-                let mut push_list = null_mut();
+                let mut push_list_end = null_mut();
+                let mut push_list_head = null_mut();
                 let stamp = CURRENT_STAMP.load(Relaxed);
                 let avg_life = TRIM_SMOOTHING[class].time(100) as u32;
                 let return_batch_limit = ITERATIONS[class] + ITERATIONS[class] / 2;
@@ -79,34 +87,38 @@ impl SlabCache {
                     }
                     let old_next = (*next).next.load(Acquire);
                     let life_time = (*next).life_time;
+                    let ticket = main_list.trim_message.pending();
 
                     // These blocks are already free. Allocated means the payload
                     // has been used, not that a caller still owns it. Skip fresh
                     // never-used blocks and blocks already marked reclaimed.
-                    if stamp.saturating_sub(life_time) > avg_life
-                        && (*next).flags == Flags::Allocated
-                    {
+                    if should_trim_block(
+                        stamp.saturating_sub(life_time) > avg_life
+                            && (*next).flags == Flags::Allocated,
+                        ticket.is_some(),
+                        total_push,
+                    ) {
                         (*next).next.store(trim_list, Release);
                         trim_list = next;
                     } else {
-                        (*next).next.store(push_list, Release);
-                        push_list = next;
+                        (*next).next.store(push_list_head, Release);
+                        push_list_head = next;
                         if total_push == 0 {
-                            push_list_start = next;
+                            push_list_end = next;
                         }
                         total_push += 1;
-                        if total_push == return_batch_limit {
+                        if total_push == return_batch_limit && ticket.is_none() {
                             self.transfer_push_batch(
                                 class,
-                                push_list,
-                                push_list_start,
+                                push_list_head,
+                                push_list_end,
                                 total_push,
                                 cpu,
                                 inner,
                             );
                             total_push = 0;
-                            push_list = null_mut();
-                            push_list_start = null_mut();
+                            push_list_head = null_mut();
+                            push_list_end = null_mut();
                         }
                     }
 
@@ -117,21 +129,38 @@ impl SlabCache {
                         lifetime_samples += 1;
                     }
 
+                    if let Some(ticket) = ticket {
+                        self.transfer_push_batch(
+                            class,
+                            push_list_head,
+                            push_list_end,
+                            total_push,
+                            cpu,
+                            inner,
+                        );
+                        total_push = 0;
+                        push_list_head = null_mut();
+                        push_list_end = null_mut();
+                        if main_list.trim_message.signal_ready(ticket) {
+                            main_list.trim_message.wait_done(ticket, 1024);
+                        }
+                    }
+
                     next = old_next;
                 }
 
                 if total_push > 0 {
                     self.transfer_push_batch(
                         class,
-                        push_list,
-                        push_list_start,
+                        push_list_head,
+                        push_list_end,
                         total_push,
                         cpu,
                         inner,
                     );
                 }
 
-                drop(trim_guard);
+                main_list.trim_message.finish();
 
                 crate::global_vals::record_transfer_pop!(class, total_popped);
                 if lifetime_samples > 0 {
@@ -224,7 +253,7 @@ impl SlabCache {
 }
 
 impl TransferCache {
-    // The caller holds trim_lock until the detached chain has been partitioned
+    // The caller keeps the trim phase active until the detached chain is partitioned
     // and retained blocks republished. Only the normal list is detached here.
     unsafe fn detach_normal_for_trim(&self) -> *mut Header {
         let mut list = self.list.load(Acquire);

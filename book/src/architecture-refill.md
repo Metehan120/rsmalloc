@@ -97,13 +97,23 @@ Source: `src/rseq_core/slab_cache.rs` — `first_nonempty_cpu_in_range`,
 A successful `transfer_pop_batch` proceeds as follows:
 
 1. Acquire-load the normal tagged head; switch to the trimmed list if empty.
-2. Respect `trim_message`: ordinary attempts can return `None`; forced attempts
-   may wait for the trimming path rather than immediately giving up.
+2. If `trim_message` is active, ordinary attempts return `None`. A forced
+   attempt tries to register a globally unique ticket and polls at most 1024
+   times for readiness, cancelling on timeout; registration can also fail.
+   On a claim, a drop guard completes the ticket after the pop attempt.
 3. Walk actual `Header.next` links up to the requested batch length.
 4. Acquire-CAS the tagged head to the successor after that prefix.
 5. Subtract the detached count from the selected list's inventory counter.
 6. Return `start`, `end`, actual `total`, and the **old counter value** as
    `TransferReturn.available`; clear/recheck the hint if the list became empty.
+
+The trimmer publishes retained blocks to the shared head before signaling a
+request. Its preclaim ready wait is also bounded, but after a claim it waits
+strictly for completion, potentially indefinitely if the requester stalls.
+The handshake does not reserve blocks: other users can consume them, so a claim
+does not guarantee a handoff or even a successful pop. The trimmer finishes the
+handshake before advising its private trim candidates. See [transfer trim
+coordination](architecture-transfer.md#trim-lock-coordination).
 
 `available` is selected-list inventory sampled by step 5. It is not remaining
 inventory, total inventory across both lists, a whole-system free count, or

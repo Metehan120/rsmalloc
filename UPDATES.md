@@ -27,9 +27,9 @@ Alpha-3 also strengthens transfer-cache ABA protection, addresses fork and backg
 
 ### Asynchronous trim requests
 
-- Changed the v2 `RSMallocCoreAPI::trim` and preload `malloc_trim` frontends to post a coalesced request to the background reclaimer instead of trimming synchronously. `SimpleTrimSize::All` requests an unbounded pass; `Bytes` supplies a best-effort reclaim target. The Rust API returns `RSTrimStatus::Requested` or `AlreadyRequested`, not reclaimed bytes.
+- Changed the v2 `RSMallocCoreAPI::trim` frontend to post a coalesced request to the background reclaimer instead of trimming synchronously. `SimpleTrimSize::All` requests an unbounded pass; `Bytes` supplies a best-effort reclaim target. The Rust API returns `RSTrimStatus::Requested` or `AlreadyRequested`, not reclaimed bytes.
 - A newly posted request unparks the existing worker, whose `park_timeout` still permits periodic maintenance. Explicit requests do not start a worker; startup remains subject to the existing cache thresholds. The worker checks segmented-bitmap blocks first and scans slab caches if needed, subject to their existing eligibility gates. The requested size determines whether to run the slab pass after the bitmap pass; each pass receives an unbounded target.
-- Preload `malloc_trim` now always returns `1` to acknowledge a request, not to indicate that memory was released; its argument is treated as a reclaim target rather than glibc's retained padding. Trimming is asynchronous and does not guarantee an immediate RSS reduction. The legacy Rust and v2 raw trim APIs remain synchronous.
+- Restored synchronous preload `malloc_trim`: it calls age- and threshold-gated bitmap `trim_old(requested_size)` first, then slab `trim_small` with the remaining target if needed, or zero for an unbounded request. It returns `1` if total advised bytes are nonzero, otherwise `0`. The argument is a reclaim target rather than glibc's retained padding; zero is unbounded. Both passes use a try-lock and are best-effort, with no guarantee of an immediate RSS reduction. The legacy Rust and v2 raw trim APIs also remain synchronous.
 
 ### Bootstrap sequencing and configuration
 

@@ -127,7 +127,7 @@ C wrappers do not merely rename the Rust traits:
 - Sized free shims ignore the supplied size/alignment and call ordinary free.
 - `aligned_alloc` requires nonzero power-of-two alignment and size divisible by alignment. `posix_memalign` returns an error code rather than a pointer result.
 - `pvalloc` checks page-rounding overflow; `valloc` requests 4 KiB alignment.
-- `malloc_trim` posts an asynchronous allocator byte target, not glibc's top-chunk padding. It always returns 1; the worker's bitmap pass is age- and threshold-gated, unlike the v2 raw API's forced bitmap pass.
+- `malloc_trim` synchronously uses an allocator byte target, not glibc's top-chunk padding. It calls age- and threshold-gated bitmap `trim_old` first, then slab `trim_small` with the remaining target if needed; zero is unbounded. It returns 1 if total advised bytes are nonzero, otherwise 0. The passes use a try-lock and are best-effort. Unlike this bitmap pass, the v2 raw API's forced bitmap pass bypasses the age and threshold gates.
 
 Source: `src/frontend/abi/*.rs`. The pointer lifecycle and failure branches are covered in [ownership and resizing](architecture-ownership.md).
 

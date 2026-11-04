@@ -50,7 +50,7 @@ The preload frontend exports:
 - `posix_memalign`, `memalign`, `aligned_alloc`, `valloc`, and `pvalloc`;
 - `malloc_usable_size` and `malloc_trim`.
 
-Do not infer support for every libc allocation extension, statistics API, hook, or allocator-specific behavior from this list. In this source version, `malloc_trim` is exported directly by the preload frontend; it does not require a separate trim feature. Its argument is a requested reclamation amount, **not glibc's retained top-chunk padding**. It posts a coalesced asynchronous trim request and always returns 1, not an indication that bytes were reclaimed. The request does not start a worker and can remain pending until threshold-triggered startup. It does not guarantee an RSS reduction.
+Do not infer support for every libc allocation extension, statistics API, hook, or allocator-specific behavior from this list. In this source version, `malloc_trim` is exported directly by the preload frontend; it does not require a separate trim feature. Its argument is a requested reclamation amount, **not glibc's retained top-chunk padding**. It synchronously calls age- and threshold-gated bitmap `trim_old` first, then slab `trim_small` with the remaining target if needed. A zero target is unbounded and runs both passes with zero. It returns 1 if total advised bytes are nonzero, otherwise 0. The passes use a try-lock and are best-effort; successful advice does not guarantee an immediate RSS reduction.
 
 `aligned_alloc` checks a nonzero power-of-two alignment and requires size to be a multiple of alignment. `posix_memalign` requires a power-of-two alignment at least pointer-sized, returns an error code, and leaves the output pointer untouched on failure. Check errors before using an aligned allocation.
 

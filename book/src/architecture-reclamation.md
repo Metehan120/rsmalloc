@@ -299,12 +299,18 @@ is not one atomic snapshot or transaction.
 Source: `src/frontend/global_alloc2/raw.rs` — `AdvancedTrimSize`, `TrimReport`,
 `RawInterface for RSMallocRaw::rs_trim`.
 
-The v2 `RSMallocCoreAPI::trim` and preload `malloc_trim` instead post a
-coalesced asynchronous request. A newly posted request attempts to unpark the
-existing worker, but does not start one; it can remain pending until a later
-threshold-triggered startup. The Rust result is `Requested` or
-`AlreadyRequested`, not reclaimed bytes. Preload always returns 1, even if a
-request was already pending or no memory is released.
+Preload `malloc_trim(requested_size)` synchronously calls bitmap
+`trim_old(requested_size)` first, retaining its age and capacity gates. If the
+nonzero target has not been met, it calls slab `trim_small` with the remaining
+target; for zero, it calls both passes with zero, meaning unbounded. Its argument
+is a reclaim target, not glibc's retained top-chunk padding. It returns 1 if the
+total advised bytes are nonzero, otherwise 0. Both passes use the global trim
+try-lock and are best-effort; they do not form an atomic transaction.
+
+The v2 `RSMallocCoreAPI::trim` instead posts a coalesced asynchronous request.
+A newly posted request attempts to unpark the existing worker, but does not
+start one; it can remain pending until a later threshold-triggered startup. The
+Rust result is `Requested` or `AlreadyRequested`, not reclaimed bytes.
 
 On a request, the worker calls age- and threshold-gated bitmap `trim_old(0)`
 first. It calls slab `trim_small(0)` if the target is zero or the bitmap result
@@ -317,7 +323,7 @@ are processed even when periodic trimming is disabled.
 Source: `src/frontend/global_alloc2/alloc.rs` — `RSMallocCoreAPI::trim`;
 `src/frontend/abi/malloc.rs` — `malloc_trim`.
 
-A zero synchronous raw result can mean no eligible pages, low capacity, a busy trim lock,
+A zero synchronous raw or preload result can mean no eligible pages, low capacity, a busy trim lock,
 uninitialized bitmap state, or failed advice. A positive result means accepted
 advice under the subsystem's accounting convention, not an RSS deadline.
 Trim does not rewind arenas, unmap bitmap regions, or guarantee that all free

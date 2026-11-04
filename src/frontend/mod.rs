@@ -1,7 +1,10 @@
+#[cfg(not(feature = "preload"))]
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
+#[cfg(not(feature = "preload"))]
 use crate::backend::background_thread::{BACKGROUND_THREAD, maybe_unpark};
 
+#[cfg(not(feature = "preload"))]
 pub(crate) fn post_trim_request(size: usize) -> bool {
     let (requested, requested_size) = BACKGROUND_THREAD.message.get_trim();
     if requested.load(Acquire) {

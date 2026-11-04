@@ -17,7 +17,7 @@ use crate::{
         BIG_TRIM_THRESHOLD, SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES, SMALL_TRIM_THRESHOLD,
         TOTAL_CACHED_VA,
     },
-    internals::lock::{LockGuard, SpinLock},
+    internals::lock::SpinLock,
     rseq_core::slab_cache::SLAB_CACHE,
     traits::Lock,
 };
@@ -99,8 +99,10 @@ pub unsafe fn spawn(entry: unsafe fn() -> !) -> bool {
     is_ok
 }
 
+#[cfg(not(feature = "preload"))]
 pub fn maybe_unpark() -> bool {
-    let LockGuard::Free(thread) = BACKGROUND_THREAD.thread.try_lock() else {
+    let crate::internals::lock::LockGuard::Free(thread) = BACKGROUND_THREAD.thread.try_lock()
+    else {
         return false;
     };
 

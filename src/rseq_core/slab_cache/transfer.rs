@@ -312,7 +312,7 @@ impl SlabCache {
                 let Some(ticket) = list.trim_message.request() else {
                     return None;
                 };
-                if !list.trim_message.wait_ready(ticket, 1024) {
+                if !list.trim_message.wait_ready(ticket, 1024 * 5) {
                     return None;
                 }
                 handshake = Some(TransferHandshake {

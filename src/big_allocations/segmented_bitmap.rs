@@ -36,14 +36,11 @@ use crate::{
         binder::NumaBind, fork_lock::SpinLock, lock::LockGuard, once::Once, radix_tree::RADIX,
     },
     record_mmap_call,
-    rseq_core::slab_cache::SLAB_CACHE,
+    rseq_core::{rseq_offsets::get_rseq, slab_cache::SLAB_CACHE},
     traits::Lock,
     utility::Alignment,
 };
-use rustix::{
-    mm::{Advice, MapFlags, ProtFlags, madvise, mmap_anonymous, munmap},
-    thread::sched_getcpu,
-};
+use rustix::mm::{Advice, MapFlags, ProtFlags, madvise, mmap_anonymous, munmap};
 use std::{
     mem::size_of,
     os::raw::c_void,
@@ -319,7 +316,7 @@ impl SegmentedBitmapAllocator {
                 thp,
                 is_numa: inner.is_numa,
             });
-            let id = SLAB_CACHE.node_for_cpu(sched_getcpu() as usize, inner) as usize;
+            let id = SLAB_CACHE.node_for_cpu(get_rseq().cpu_id_start as usize, inner) as usize;
             let id = if id < count { id } else { 0 };
             let Some(region) = create_region(Self::normalize_region_size(size), id as u16, &*state)
             else {

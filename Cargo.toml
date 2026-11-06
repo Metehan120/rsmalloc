@@ -15,7 +15,6 @@ rustix = { version = "=1.1.4", features = [
     "rand",
     "system",
     "fs",
-    "thread",
 ] }
 rsmalloc-macro = { path = "./rsmalloc-macro" }
 portable-atomic = {version = "1", features = ["require-cas"]}

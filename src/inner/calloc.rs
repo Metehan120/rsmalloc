@@ -58,7 +58,7 @@ unsafe fn calc_and_get(size: Layout, nmem: usize) -> Option<(MaybeNull<Header>, 
 }
 
 #[inline(always)]
-pub unsafe fn rs_calloc(size: usize, zero_size: usize) -> MaybeNull<Header> {
+pub unsafe fn rs_calloc_inner(size: usize, zero_size: usize) -> MaybeNull<Header> {
     let layout = match Layout::array::<u8>(size) {
         Ok(layout) => layout,
         Err(_) => {
@@ -101,4 +101,8 @@ pub unsafe fn rs_calloc(size: usize, zero_size: usize) -> MaybeNull<Header> {
             ptr
         }
     }
+}
+
+pub fn rs_calloc(size: usize, zero_size: usize) -> MaybeNull<Header> {
+    unsafe { rs_calloc_inner(size, zero_size) }
 }

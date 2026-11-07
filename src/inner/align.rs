@@ -43,11 +43,7 @@ pub unsafe fn posix_align_inner(memptr: *mut *mut c_void, alignment: usize, size
 }
 
 #[inline(always)]
-pub unsafe fn memalign_inner(
-    alignment: usize,
-    size: usize,
-    skip_checks: bool,
-) -> MaybeNull<Header> {
+unsafe fn rs_memalign_inner(alignment: usize, size: usize, skip_checks: bool) -> MaybeNull<Header> {
     let mut ptr: *mut c_void = null_mut();
     let adjusted_alignment = alignment.max(size_of::<*mut c_void>());
 
@@ -73,4 +69,8 @@ pub unsafe fn memalign_inner(
 
         MaybeNull::NULL
     }
+}
+
+pub fn rs_memalign(alignment: usize, size: usize, skip_checks: bool) -> MaybeNull<Header> {
+    unsafe { rs_memalign_inner(alignment, size, skip_checks) }
 }

@@ -7,7 +7,7 @@ use std::{
 use rustix::mm::{Advice, MapFlags, ProtFlags, madvise, mmap_anonymous, munmap};
 
 use crate::{
-    BIG_MAGIC, BigAllocMeta, Flags, Header, RS_DISABLE_THP, RSMallocError, SEGMENTED_BITMAP_INIT,
+    BIG_MAGIC, BigAllocMeta, DISABLE_THP, Flags, Header, RSMallocError, SEGMENTED_BITMAP_INIT,
     big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND,
     core_prim::wrappers::MaybeNull,
     internals::{big_meta_map::BIG_MAP, binder::NumaBind, radix_tree::RADIX},
@@ -18,8 +18,8 @@ use crate::{
 
 const TWO_MB: usize = 1024 * 1024 * 2;
 
-pub unsafe fn estimate_and_align_2mb(size: usize) -> Option<usize> {
-    if !RS_DISABLE_THP {
+pub fn estimate_and_align_2mb(size: usize) -> Option<usize> {
+    if unsafe { !DISABLE_THP } {
         let remainder = size % TWO_MB;
         let alignment = size.checked_align_to(TWO_MB);
 
@@ -91,7 +91,7 @@ pub unsafe fn big_malloc(size: usize, aligned: bool) -> MaybeNull<Header> {
         }
     }
 
-    if !registered && mapped_total.is_multiple_of(TWO_MB) && !RS_DISABLE_THP {
+    if !registered && mapped_total.is_multiple_of(TWO_MB) && !DISABLE_THP {
         let _ = madvise(
             actual_ptr as *mut c_void,
             mapped_total,

@@ -6,7 +6,7 @@ use std::{
 use rustix::io::Errno;
 
 use crate::inner::{
-    align::{memalign_inner, posix_align_inner},
+    align::{posix_align_inner, rs_memalign},
     preload::libc_int::{__errno_location, set_nomem},
 };
 
@@ -21,7 +21,7 @@ pub unsafe extern "C" fn posix_memalign(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn memalign(alignment: usize, size: usize) -> *mut c_void {
-    memalign_inner(alignment, size, false).cast_as_ptr()
+    rs_memalign(alignment, size, false).cast_as_ptr()
 }
 
 static MEMALIGN: unsafe extern "C" fn(alignment: usize, size: usize) -> *mut c_void = memalign;

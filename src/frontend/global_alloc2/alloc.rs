@@ -34,7 +34,7 @@ use crate::{
     backend::bootstrap::main_bootstrap,
     core_prim::wrappers::MaybeNull,
     inner::{
-        align::memalign_inner,
+        align::rs_memalign,
         alloc::{rs_alloc, usable_size},
         calloc::{rs_calloc, zero},
         free::rs_free,
@@ -109,7 +109,7 @@ impl RSMalloc {
 
     #[inline(never)]
     unsafe fn memalign_non_inline(align: usize, size: usize) -> MaybeNull<Header> {
-        memalign_inner(align, size, false)
+        rs_memalign(align, size, false)
     }
 
     #[inline(never)]
@@ -295,7 +295,7 @@ unsafe impl AllocationAPI for RSMalloc {
             return Err(AllocationError::InvalidAlignment);
         }
 
-        let pointer = unsafe { memalign_inner(alignment.get(), size.bytes(), true) };
+        let pointer = unsafe { rs_memalign(alignment.get(), size.bytes(), true) };
 
         NonNull::new(pointer.cast_as_ptr()).ok_or(AllocationError::OutOfMemory)
     }

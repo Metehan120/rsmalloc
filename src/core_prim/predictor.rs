@@ -281,7 +281,7 @@ impl EmaSmoothing {
     }
 
     #[inline(always)]
-    pub unsafe fn update_refill(&mut self, demand: usize, min: usize, max: usize) {
+    pub fn update_refill(&mut self, demand: usize, min: usize, max: usize) {
         let demand = demand.max(1);
 
         self.ema = EMA_ALPHA * demand as f32 + (1.0 - EMA_ALPHA) * self.ema;
@@ -289,7 +289,7 @@ impl EmaSmoothing {
     }
 
     #[inline(always)]
-    pub unsafe fn time(&mut self, fallback: usize) -> usize {
+    pub fn time(&mut self, fallback: usize) -> usize {
         let out = self.time.max(1).min(fallback);
 
         out

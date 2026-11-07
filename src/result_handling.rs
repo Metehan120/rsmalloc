@@ -84,7 +84,7 @@ impl RseqResult {
     pub const SUCCESS: usize = 1;
 
     #[inline(always)]
-    pub const unsafe fn new(value: usize) -> Self {
+    pub const fn new(value: usize) -> Self {
         Self(value)
     }
 

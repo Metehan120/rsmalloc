@@ -333,27 +333,29 @@ impl SegmentedBitmapAllocator {
     }
 
     #[inline]
-    pub unsafe fn alloc(&self, size: usize, node_id: u16, cpu_id: usize) -> Option<Allocation> {
-        if size > SEGMENT_BYTES {
-            return None;
+    pub fn alloc(&self, size: usize, node_id: u16, cpu_id: usize) -> Option<Allocation> {
+        unsafe {
+            if size > SEGMENT_BYTES {
+                return None;
+            }
+
+            let order = size.max(SLOT_BYTES).next_power_of_two().trailing_zeros() as usize
+                - BIG_SEGMENTED_BITMAP_MIN_ORDER;
+
+            // Null means optional backend initialization did not complete successfully;
+            // the caller can fall back to direct mappings rather than dereference it.
+            let state = self.state.load(Ordering::Acquire).as_ref()?;
+            let id = if (node_id as usize) < state.node_count {
+                node_id as usize
+            } else {
+                0
+            };
+
+            let lane = Self::lane_for_cpu(cpu_id, state.lane_count);
+            let node = state.node(id);
+            node.alloc(order, lane)
+                .or_else(|| self.expand(state, id, order, lane))
         }
-
-        let order = size.max(SLOT_BYTES).next_power_of_two().trailing_zeros() as usize
-            - BIG_SEGMENTED_BITMAP_MIN_ORDER;
-
-        // Null means optional backend initialization did not complete successfully;
-        // the caller can fall back to direct mappings rather than dereference it.
-        let state = self.state.load(Ordering::Acquire).as_ref()?;
-        let id = if (node_id as usize) < state.node_count {
-            node_id as usize
-        } else {
-            0
-        };
-
-        let lane = Self::lane_for_cpu(cpu_id, state.lane_count);
-        let node = state.node(id);
-        node.alloc(order, lane)
-            .or_else(|| self.expand(state, id, order, lane))
     }
 
     #[cold]
@@ -438,13 +440,13 @@ impl SegmentedBitmapAllocator {
     #[cfg(not(feature = "preload"))]
     // Explicit trimming bypasses the cached-byte and age gates, but still trims
     // only free dirty slots. Zero requested bytes means an unbounded pass.
-    pub unsafe fn trim(&self, requested: usize) -> usize {
-        self.trim_inner(requested, true)
+    pub fn trim(&self, requested: usize) -> usize {
+        unsafe { self.trim_inner(requested, true) }
     }
 
     // Background trimming keeps the byte threshold and per-slot age checks.
-    pub unsafe fn trim_old(&self, requested: usize) -> usize {
-        self.trim_inner(requested, false)
+    pub fn trim_old(&self, requested: usize) -> usize {
+        unsafe { self.trim_inner(requested, false) }
     }
 
     unsafe fn trim_inner(&self, requested: usize, force: bool) -> usize {

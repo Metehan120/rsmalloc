@@ -8,7 +8,7 @@ use crate::{
         random::{init_align, init_magic},
     },
     global_vals::{
-        ALIGN_TAG, BIG_TRIM_THRESHOLD, DISABLE_TRIM_THREAD, RS_DISABLE_THP,
+        ALIGN_TAG, BIG_TRIM_THRESHOLD, DISABLE_THP, DISABLE_TRIM_THREAD,
         SEGMENTED_BITMAP_ATTEMPT_HUGE, SEGMENTED_BITMAP_MAX_CACHE, SMALL_TRIM_THRESHOLD, get_clock,
     },
     inner::alloc::MAX_REFILL_RETRIES,
@@ -103,7 +103,7 @@ impl PreparedBootstrapConfig {
         // Keep both thresholds unreachable until all bootstrap work is done.
         SMALL_TRIM_THRESHOLD = usize::MAX;
         BIG_TRIM_THRESHOLD = usize::MAX;
-        RS_DISABLE_THP = config.disable_thp;
+        DISABLE_THP = config.disable_thp;
 
         #[cfg(not(feature = "preload"))]
         {

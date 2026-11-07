@@ -392,13 +392,13 @@ unsafe fn rs_alloc_inner<const FLAG: bool>(size: usize, aligned: bool) -> MaybeN
 }
 
 #[inline(always)]
-pub unsafe fn rs_alloc(size: usize, aligned: bool) -> MaybeNull<Header> {
-    rs_alloc_inner::<true>(size, aligned)
+pub fn rs_alloc(size: usize, aligned: bool) -> MaybeNull<Header> {
+    unsafe { rs_alloc_inner::<true>(size, aligned) }
 }
 
 #[inline(always)]
-pub unsafe fn rs_alloc_no_flag(size: usize, aligned: bool) -> MaybeNull<Header> {
-    rs_alloc_inner::<false>(size, aligned)
+pub fn rs_alloc_no_flag(size: usize, aligned: bool) -> MaybeNull<Header> {
+    unsafe { rs_alloc_inner::<false>(size, aligned) }
 }
 
 #[inline(always)]

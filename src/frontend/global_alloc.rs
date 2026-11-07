@@ -6,7 +6,7 @@ use crate::big_allocations::segmented_bitmap::{
 };
 use crate::core_prim::predictor::DEFAULT_BATCH;
 use crate::core_prim::wrappers::MaybeNull;
-use crate::inner::align::memalign_inner;
+use crate::inner::align::rs_memalign;
 use crate::inner::alloc::{rs_alloc, usable_size};
 use crate::inner::calloc::{rs_calloc, zero};
 use crate::inner::free::rs_free;
@@ -459,7 +459,7 @@ impl RSMalloc {
 
 #[inline(never)]
 unsafe fn memalign_non_inline(align: usize, size: usize) -> MaybeNull<Header> {
-    memalign_inner(align, size, false)
+    rs_memalign(align, size, false)
 }
 
 unsafe impl GlobalAlloc for RSMalloc {
@@ -668,7 +668,7 @@ impl RSMalloc {
     #[inline]
     pub unsafe fn rs_memalign(&self, alignment: usize, size: usize) -> *mut u8 {
         self.init();
-        memalign_inner(alignment, size, false).cast_as_ptr()
+        rs_memalign(alignment, size, false).cast_as_ptr()
     }
 
     /// Reallocates memory with the requested size and alignment.

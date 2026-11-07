@@ -76,71 +76,79 @@ impl BigMetaMap {
         (hash & SHARD_MASK, (hash >> 6) & BUCKET_MASK)
     }
 
-    pub unsafe fn insert(&self, key: usize, meta: BigAllocMeta) {
+    pub fn insert(&self, key: usize, meta: BigAllocMeta) {
         let (shard_index, bucket_index) = Self::location(key);
         let mut inner = self.shards[shard_index].inner.lock();
         let mut node = inner.buckets[bucket_index];
 
-        while !node.is_null() {
-            if (*node).key == key {
-                (*node).meta = meta;
-                return;
+        unsafe {
+            while !node.is_null() {
+                if ((*node).key) == key {
+                    (*node).meta = meta;
+                    return;
+                }
+                node = (*node).next;
             }
-            node = (*node).next;
         }
 
-        let node = self.alloc_node(&mut inner, key, meta);
-        (*node).next = inner.buckets[bucket_index];
+        let node = unsafe { self.alloc_node(&mut inner, key, meta) };
+        unsafe { (*node).next = inner.buckets[bucket_index] };
         inner.buckets[bucket_index] = node;
     }
 
-    pub unsafe fn get(&self, key: usize) -> Option<BigAllocMeta> {
+    pub fn get(&self, key: usize) -> Option<BigAllocMeta> {
         let (shard_index, bucket_index) = Self::location(key);
         let inner = self.shards[shard_index].inner.lock();
         let mut node = inner.buckets[bucket_index];
 
-        while !node.is_null() {
-            if (*node).key == key {
-                return Some((*node).meta);
+        unsafe {
+            while !node.is_null() {
+                if ((*node).key) == key {
+                    return Some((*node).meta);
+                }
+                node = (*node).next;
             }
-            node = (*node).next;
         }
 
         None
     }
 
-    pub unsafe fn replace(&self, key: usize, meta: BigAllocMeta) -> Option<BigAllocMeta> {
+    pub fn replace(&self, key: usize, meta: BigAllocMeta) -> Option<BigAllocMeta> {
         let (shard_index, bucket_index) = Self::location(key);
         let inner = self.shards[shard_index].inner.lock();
         let mut node = inner.buckets[bucket_index];
 
-        while !node.is_null() {
-            if (*node).key == key {
-                let old = (*node).meta;
-                (*node).meta = meta;
-                return Some(old);
+        unsafe {
+            while !node.is_null() {
+                if (*node).key == key {
+                    let old = (*node).meta;
+                    (*node).meta = meta;
+                    return Some(old);
+                }
+                node = (*node).next;
             }
-            node = (*node).next;
         }
 
         None
     }
 
-    pub unsafe fn remove(&self, key: usize) -> Option<BigAllocMeta> {
+    pub fn remove(&self, key: usize) -> Option<BigAllocMeta> {
         let (shard_index, bucket_index) = Self::location(key);
         let mut inner = self.shards[shard_index].inner.lock();
         let mut link = &mut inner.buckets[bucket_index] as *mut *mut Node;
 
-        while !(*link).is_null() {
-            let node = *link;
-            if (*node).key == key {
-                *link = (*node).next;
-                let meta = (*node).meta;
-                (*node).next = inner.free_list;
-                inner.free_list = node;
-                return Some(meta);
+        unsafe {
+            while !(*link).is_null() {
+                let node = *link;
+                if (*node).key == key {
+                    *link = (*node).next;
+                    let meta = (*node).meta;
+                    (*node).next = inner.free_list;
+                    inner.free_list = node;
+                    return Some(meta);
+                }
+                link = &mut (*node).next;
             }
-            link = &mut (*node).next;
         }
 
         None
@@ -251,42 +259,38 @@ mod tests {
             state
         };
 
-        unsafe {
-            for i in 0..5000usize {
-                let op = next_rand() % 4;
-                let key = ((next_rand() % 500) as usize) * 16 + 0x1000;
-                match op {
-                    0 | 1 => {
-                        map.insert(key, meta(i));
-                        reference.insert(key, i);
-                    }
-                    2 => {
-                        let got = map.get(key).map(|m| m.size);
-                        assert_eq!(got, reference.get(&key).copied());
-                    }
-                    _ => {
-                        let got = map.remove(key).map(|m| m.size);
-                        assert_eq!(got, reference.remove(&key));
-                    }
+        for i in 0..5000usize {
+            let op = next_rand() % 4;
+            let key = ((next_rand() % 500) as usize) * 16 + 0x1000;
+            match op {
+                0 | 1 => {
+                    map.insert(key, meta(i));
+                    reference.insert(key, i);
+                }
+                2 => {
+                    let got = map.get(key).map(|m| m.size);
+                    assert_eq!(got, reference.get(&key).copied());
+                }
+                _ => {
+                    let got = map.remove(key).map(|m| m.size);
+                    assert_eq!(got, reference.remove(&key));
                 }
             }
+        }
 
-            for (key, size) in &reference {
-                assert_eq!(map.get(*key).map(|m| m.size), Some(*size));
-            }
+        for (key, size) in &reference {
+            assert_eq!(map.get(*key).map(|m| m.size), Some(*size));
         }
     }
 
     #[test]
     fn replace_returns_old_value_and_leaves_key_present() {
         let map = BigMetaMap::new();
-        unsafe {
-            assert!(map.replace(42, meta(1)).is_none());
-            map.insert(42, meta(1));
-            let old = map.replace(42, meta(2));
-            assert_eq!(old.map(|m| m.size), Some(1));
-            assert_eq!(map.get(42).map(|m| m.size), Some(2));
-        }
+        assert!(map.replace(42, meta(1)).is_none());
+        map.insert(42, meta(1));
+        let old = map.replace(42, meta(2));
+        assert_eq!(old.map(|m| m.size), Some(1));
+        assert_eq!(map.get(42).map(|m| m.size), Some(2));
     }
 
     #[test]

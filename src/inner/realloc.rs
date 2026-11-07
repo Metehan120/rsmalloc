@@ -14,7 +14,7 @@ use crate::{
     },
     core_prim::wrappers::{MaybeNull, Owned},
     inner::{
-        align::memalign_inner,
+        align::rs_memalign,
         alloc::{rs_alloc, usable_size},
         free::{find_original_ptr, rs_free},
     },
@@ -27,7 +27,7 @@ unsafe fn allocate_replacement(size: usize, alignment: usize) -> MaybeNull<Heade
     if alignment <= 16 {
         rs_alloc(size, false)
     } else {
-        memalign_inner(alignment, size, false)
+        rs_memalign(alignment, size, false)
     }
 }
 
@@ -354,7 +354,7 @@ pub unsafe fn rs_realloc(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inner::align::memalign_inner;
+    use crate::inner::align::rs_memalign;
 
     unsafe fn fill_pattern(ptr: &MaybeNull<Header>, len: usize, seed: u8) {
         let base = ptr.cast_as_ptr::<u8>();
@@ -484,7 +484,7 @@ mod tests {
             let new_size = 1024usize;
             let seed = 0x6Du8;
 
-            let p = memalign_inner(64, old_size, false);
+            let p = rs_memalign(64, old_size, false);
             assert!(!p.is_null());
             assert_eq!(p.cast_usize() % 64, 0);
             fill_pattern(&p, old_size, seed);
@@ -505,7 +505,7 @@ mod tests {
             let new_size = 96usize;
             let seed = 0x2Cu8;
 
-            let p = memalign_inner(128, old_size, false);
+            let p = rs_memalign(128, old_size, false);
             assert!(!p.is_null());
             assert_eq!(p.cast_usize() % 128, 0);
             fill_pattern(&p, new_size, seed);

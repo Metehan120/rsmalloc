@@ -158,9 +158,9 @@ impl PageAllocator {
     }
 
     #[inline(always)]
-    pub unsafe fn alloc(&self, node_id: Option<u16>, size: usize) -> Option<*mut c_void> {
+    pub fn alloc(&self, node_id: Option<u16>, size: usize) -> Option<*mut c_void> {
         let size = (size.max(1)).checked_align_to(PAGE_SIZE)?;
-        let inner = &*self.inner.get();
+        let inner = unsafe { &*self.inner.get() };
 
         if inner.arenas.is_null() || inner.node_count == 0 {
             return None;
@@ -169,7 +169,7 @@ impl PageAllocator {
         let node_id = node_id.unwrap_or_else(|| {
             let inner = SLAB_CACHE.get_inner();
             let cpu_id = get_rseq().cpu_id_start as usize;
-            SLAB_CACHE.node_for_cpu(cpu_id, inner)
+            unsafe { SLAB_CACHE.node_for_cpu(cpu_id, inner) }
         });
 
         let node = if node_id as usize >= inner.node_count {
@@ -178,7 +178,7 @@ impl PageAllocator {
             node_id as usize
         };
 
-        Self::alloc_inner(&*inner.arenas.add(node), size)
+        unsafe { Self::alloc_inner(&*inner.arenas.add(node), size) }
     }
 
     unsafe fn maybe_remove(state: &mut NodeArenaState, node: &NodeArena, current: *mut PageArena) {
@@ -275,7 +275,7 @@ impl PageAllocator {
         }
     }
 
-    pub unsafe fn try_grow_inplace(
+    pub fn try_grow_inplace(
         &self,
         node_id: u16,
         ptr: *mut c_void,
@@ -294,7 +294,7 @@ impl PageAllocator {
             return true;
         }
 
-        let inner = &*self.inner.get();
+        let inner = unsafe { &*self.inner.get() };
         if inner.arenas.is_null() || inner.node_count == 0 {
             return false;
         }
@@ -305,14 +305,14 @@ impl PageAllocator {
             node_id as usize
         };
 
-        let node = &*inner.arenas.add(node);
+        let node = unsafe { &*inner.arenas.add(node) };
         let state = &mut *node.lock.lock();
 
         let addr = ptr as usize;
         let mut arena = state.arenas;
 
         while !arena.is_null() {
-            let arena_ref = &mut *arena;
+            let arena_ref = unsafe { &mut *arena };
             if addr >= arena_ref.base && addr < arena_ref.end {
                 if (addr - arena_ref.base) % PAGE_SIZE != 0 {
                     return false;
@@ -339,7 +339,7 @@ impl PageAllocator {
                 }
 
                 if arena_ref.end - new_end < MIN_REFILL_BYTES {
-                    Self::remove_arena(state, node, arena);
+                    unsafe { Self::remove_arena(state, node, arena) };
                 }
 
                 return true;

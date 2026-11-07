@@ -19,7 +19,7 @@ pub static mut FREED_MAGIC: u64 = u64::from_le_bytes(*b"RMMAGICF");
 #[cfg(feature = "extended-header")]
 pub static mut BIG_MAGIC: u64 = u64::from_le_bytes(*b"RBMAGICB");
 
-pub static mut RS_DISABLE_THP: bool = false;
+pub static mut DISABLE_THP: bool = false;
 pub static mut SEGMENTED_BITMAP_INIT: bool = false;
 pub static mut SEGMENTED_BITMAP_MAX_CACHE: usize = 0;
 pub static mut SEGMENTED_BITMAP_ATTEMPT_HUGE: bool = false;

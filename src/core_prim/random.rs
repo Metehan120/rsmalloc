@@ -5,7 +5,7 @@ use crate::{ALIGN_TAG, BIG_MAGIC, FREED_MAGIC, MAGIC, RSMallocError};
 
 #[stable_api_surface]
 #[inline(never)]
-pub unsafe fn init_magic() {
+pub fn init_magic() {
     #[cfg(not(feature = "extended-header"))]
     {
         let mut main = 0u16.to_le_bytes();
@@ -56,9 +56,11 @@ pub unsafe fn init_magic() {
             }
         }
 
-        MAGIC = u16::from_le_bytes(main);
-        FREED_MAGIC = u16::from_le_bytes(freed);
-        BIG_MAGIC = u16::from_le_bytes(big);
+        unsafe {
+            MAGIC = u16::from_le_bytes(main);
+            FREED_MAGIC = u16::from_le_bytes(freed);
+            BIG_MAGIC = u16::from_le_bytes(big);
+        }
     }
 
     #[cfg(feature = "extended-header")]
@@ -111,15 +113,17 @@ pub unsafe fn init_magic() {
             }
         }
 
-        MAGIC = u64::from_le_bytes(main);
-        FREED_MAGIC = u64::from_le_bytes(freed);
-        BIG_MAGIC = u64::from_le_bytes(big);
+        unsafe {
+            MAGIC = u64::from_le_bytes(main);
+            FREED_MAGIC = u64::from_le_bytes(freed);
+            BIG_MAGIC = u64::from_le_bytes(big);
+        }
     }
 }
 
 #[stable_api_surface]
 #[inline(never)]
-pub unsafe fn init_align() {
+pub fn init_align() {
     let mut main = 0usize.to_le_bytes();
     if let Err(err) = getrandom(&mut main, GetRandomFlags::empty()) {
         RSMallocError::SecurityViolation {
@@ -128,5 +132,7 @@ pub unsafe fn init_align() {
         }
         .log_and_abort();
     }
-    ALIGN_TAG = usize::from_le_bytes(main);
+    unsafe {
+        ALIGN_TAG = usize::from_le_bytes(main);
+    }
 }

@@ -25,32 +25,35 @@ unsafe extern "C" {
 
 #[stable_api_surface]
 #[inline(always)]
-pub unsafe fn get_rseq() -> &'static rseq {
+pub fn get_rseq() -> &'static rseq {
     let rseq_ptr: *mut rseq;
 
-    #[cfg(target_arch = "x86_64")]
-    asm!(
-        "mov {tp}, fs:[0]",
-        "lea {tp}, [{tp} + {offset}]",
-        tp = out(reg) rseq_ptr,
-        offset = in(reg) __rseq_offset,
-        options(pure, nomem, nostack, preserves_flags)
-    );
+    unsafe {
+        asm!(
+            "mov {tp}, fs:[0]",
+            "lea {tp}, [{tp} + {offset}]",
+            tp = out(reg) rseq_ptr,
+            offset = in(reg) __rseq_offset,
+            options(pure, nomem, nostack, preserves_flags)
+        )
+    };
 
     #[cfg(target_arch = "aarch64")]
     {
-        let tp: usize;
-        asm!(
-            "mrs {tp}, tpidr_el0",
-            "add {rseq_ptr}, {tp}, {offset}",
-            tp = out(reg) tp,
-            offset = in(reg) __rseq_offset,
-            rseq_ptr = out(reg) rseq_ptr,
-            options(pure, nomem, nostack, preserves_flags)
-        );
+        unsafe {
+            let tp: usize;
+            asm!(
+                "mrs {tp}, tpidr_el0",
+                "add {rseq_ptr}, {tp}, {offset}",
+                tp = out(reg) tp,
+                offset = in(reg) __rseq_offset,
+                rseq_ptr = out(reg) rseq_ptr,
+                options(pure, nomem, nostack, preserves_flags)
+            );
+        }
     }
 
-    let pointer = &*rseq_ptr;
+    let pointer = unsafe { &*rseq_ptr };
     #[cfg(feature = "abort-on-rseq-failure")]
     if unlikely(pointer.cpu_id == u32::MAX) {
         RSMallocError::RseqUnavailable.log_and_abort();
@@ -60,6 +63,6 @@ pub unsafe fn get_rseq() -> &'static rseq {
 }
 
 #[inline(always)]
-pub unsafe fn get_cs_ptr(rseq: &rseq) -> *mut usize {
+pub fn get_cs_ptr(rseq: &rseq) -> *mut usize {
     core::ptr::addr_of!((*rseq).rseq_cs) as *mut usize
 }

@@ -79,7 +79,7 @@ impl Drop for SignalMaskGuard {
 
 #[cold]
 #[inline(never)]
-pub unsafe fn spawn(entry: unsafe fn() -> !) -> bool {
+pub fn spawn(entry: unsafe fn() -> !) -> bool {
     let Some(_mask) = SignalMaskGuard::block() else {
         return false;
     };
@@ -114,11 +114,11 @@ pub fn maybe_unpark() -> bool {
     }
 }
 
-pub unsafe fn maybe_start_background_reclaimer() {
+pub fn maybe_start_background_reclaimer() {
     use std::sync::atomic::Ordering;
 
-    if (TOTAL_CACHED_VA.load(Ordering::Relaxed) < SMALL_TRIM_THRESHOLD
-        && SEGMENTED_BITMAP_TOTAL_CACHED_VA.load(Ordering::Relaxed) < BIG_TRIM_THRESHOLD)
+    if (TOTAL_CACHED_VA.load(Ordering::Relaxed) < unsafe { SMALL_TRIM_THRESHOLD }
+        && SEGMENTED_BITMAP_TOTAL_CACHED_VA.load(Ordering::Relaxed) < unsafe { BIG_TRIM_THRESHOLD })
         || RECLAIM_GUARD.load(Ordering::Relaxed) == true
     {
         return;

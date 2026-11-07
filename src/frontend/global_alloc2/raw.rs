@@ -4,8 +4,7 @@ use crate::{
     big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND,
     core_prim::wrappers::MaybeNull,
     inner::{
-        align::memalign_inner, alloc::rs_alloc, calloc::rs_calloc, free::rs_free,
-        realloc::rs_realloc,
+        align::rs_memalign, alloc::rs_alloc, calloc::rs_calloc, free::rs_free, realloc::rs_realloc,
     },
     rseq_core::slab_cache::SLAB_CACHE,
     v2::alloc::{RSMalloc, RSMallocCoreAPI},
@@ -78,7 +77,7 @@ impl<'a> RawInterface for RSMallocRaw<'a> {
 
     unsafe fn rs_aligned(&self, alignment: usize, size: usize) -> *mut u8 {
         self.global.manual_init();
-        memalign_inner(alignment, size, false).cast_as_ptr()
+        rs_memalign(alignment, size, false).cast_as_ptr()
     }
 
     unsafe fn rs_realloc(

@@ -181,7 +181,7 @@ impl SlabCache {
         cpu_id: usize,
         inner: &SlabCacheInner,
     ) {
-        let list = &inner.cache[cpu_id].mail.get_unchecked(class);
+        let list = &inner.cache[cpu_id].mail[class];
         let list_ptr = &list.list;
 
         self.transfer_push_single_to(
@@ -201,7 +201,7 @@ impl SlabCache {
         cpu_id: usize,
         inner: &SlabCacheInner,
     ) {
-        let list = &inner.cache[cpu_id].mail.get_unchecked(class);
+        let list = &inner.cache[cpu_id].mail[class];
         let list_ptr = &list.trimmed;
 
         self.transfer_push_single_to(
@@ -296,7 +296,7 @@ impl SlabCache {
         crate::TOTAL_TRANSFER_POP_CALLS.fetch_add(1, Ordering::Relaxed);
 
         let inner = self.get_inner();
-        let list = &inner.cache[cpu_id].mail.get_unchecked(class);
+        let list = &inner.cache[cpu_id].mail[class];
         let normal_ptr = &list.list;
         let trimmed_ptr = &list.trimmed;
         let (mut list_ptr, mut size_ptr) = (normal_ptr, &list.size.normal_blocks);

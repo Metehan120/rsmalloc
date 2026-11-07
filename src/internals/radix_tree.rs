@@ -302,7 +302,7 @@ pub struct RadixTree {
 unsafe impl Sync for RadixTree {}
 
 impl RadixTree {
-    pub const unsafe fn new_const() -> Self {
+    pub const fn new_const() -> Self {
         Self {
             nodes: Radix::new_const(),
         }
@@ -331,15 +331,15 @@ impl RadixTree {
     }
 
     #[inline(always)]
-    pub unsafe fn set_single_big(&self, addr: usize, val: bool) {
+    pub fn set_single_big(&self, addr: usize, val: bool) {
         if unlikely(!Self::valid_user_addr(addr)) {
             return;
         }
-        self.nodes.set(addr / CHUNK_SIZE, val);
+        unsafe { self.nodes.set(addr / CHUNK_SIZE, val) };
     }
 
     #[inline(always)]
-    pub unsafe fn set(&self, addr: usize, size: usize, val: bool) {
+    pub fn set(&self, addr: usize, size: usize, val: bool) {
         if unlikely(size == 0 || !Self::valid_user_addr(addr)) {
             return;
         }
@@ -356,10 +356,12 @@ impl RadixTree {
         let start_idx = addr / CHUNK_SIZE;
         let end_idx = end_addr / CHUNK_SIZE;
 
-        if end_idx == start_idx {
-            self.nodes.set(start_idx, val);
-        } else {
-            self.nodes.set_range(start_idx, end_idx, val);
+        unsafe {
+            if end_idx == start_idx {
+                self.nodes.set(start_idx, val);
+            } else {
+                self.nodes.set_range(start_idx, end_idx, val);
+            }
         }
     }
 
@@ -381,14 +383,14 @@ impl RadixTree {
     }
 
     #[inline(always)]
-    pub unsafe fn is_owned(&self, addr: usize) -> bool {
-        self.is_owned_inner::<true>(addr)
+    pub fn is_owned(&self, addr: usize) -> bool {
+        unsafe { self.is_owned_inner::<true>(addr) }
     }
 
     #[cfg(not(feature = "validate-foreign-first"))]
     #[inline(never)]
-    pub unsafe fn is_owned_noninline_no_validation(&self, addr: usize) -> bool {
-        self.is_owned_inner::<false>(addr)
+    pub fn is_owned_noninline_no_validation(&self, addr: usize) -> bool {
+        unsafe { self.is_owned_inner::<false>(addr) }
     }
 
     #[cfg(feature = "debug")]
@@ -461,7 +463,7 @@ pub const fn valid_user_addr(addr: usize) -> bool {
     addr < MAX_ADDR
 }
 
-pub static RADIX: RadixTree = unsafe { RadixTree::new_const() };
+pub static RADIX: RadixTree = RadixTree::new_const();
 
 #[cfg(test)]
 mod tests {

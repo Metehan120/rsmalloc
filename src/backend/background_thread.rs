@@ -1,3 +1,5 @@
+#[cfg(feature = "debug-print-trim-calls")]
+use std::time::Instant;
 use std::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed},
     thread::{Thread, park_timeout},
@@ -167,16 +169,29 @@ pub unsafe fn background_reclaimer_main() -> ! {
             && !DISABLE_TRIM_THREAD)
             || trim_requested
         {
+            #[cfg(feature = "debug-print-trim-calls")]
+            let start = Instant::now();
             latest_segmented_bitmap_stamp = stamp;
-            trimmed = SEGMENTED_BITMAP_BACKEND.trim_old(0);
+            trimmed = SEGMENTED_BITMAP_BACKEND.trim_old(size);
+            #[cfg(feature = "debug-print-trim-calls")]
+            eprintln!("big_trim time: {:?}, trimmed {trimmed}", start.elapsed());
         }
 
         if (stamp.saturating_sub(latest_slab_stamp) > AVERAGE_BLOCK_TIMES.load(Relaxed).max(30)
             && !DISABLE_TRIM_THREAD)
             || (trim_requested && (size == 0 || trimmed < size))
         {
+            #[cfg(feature = "debug-print-trim-calls")]
+            let start = Instant::now();
             latest_slab_stamp = stamp;
-            SLAB_CACHE.trim_small(0);
+            let size = if trim_requested {
+                size.saturating_sub(trimmed).max(1)
+            } else {
+                0
+            };
+            let _debug = SLAB_CACHE.trim_small(size);
+            #[cfg(feature = "debug-print-trim-calls")]
+            eprintln!("small_trim time: {:?}, trimmed {_debug}", start.elapsed());
         }
     }
 }

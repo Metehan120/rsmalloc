@@ -8,6 +8,9 @@ pub(super) const SLOT_BYTES: usize = 1 << BIG_SEGMENTED_BITMAP_MIN_ORDER;
 pub(super) const SEGMENT_BYTES: usize = SLOTS * SLOT_BYTES;
 const DIRTY_SHIFT: u32 = 16;
 const USED_SHIFT: u32 = 32;
+// (busy, trim): (0,0) free, (0,1) revocable claim,
+// (1,0) allocated, (1,1) irrevocable advising ownership.
+const TRIM_SHIFT: u32 = 48;
 
 #[repr(C, align(64))]
 struct Hot {
@@ -78,7 +81,7 @@ impl Segment {
 
     #[inline(always)]
     pub(super) fn dirty_free(word: u64) -> u16 {
-        !(word as u16) & (word >> DIRTY_SHIFT) as u16
+        !(word as u16) & !((word >> TRIM_SHIFT) as u16) & (word >> DIRTY_SHIFT) as u16
     }
 
     #[inline(always)]
@@ -99,7 +102,10 @@ impl Segment {
             }
             let start = available.trailing_zeros() as usize;
             let mask = slot_mask(start, order) as u64;
-            let next = word | mask | (mask << DIRTY_SHIFT) | (mask << USED_SHIFT);
+            let next = (word & !(mask << TRIM_SHIFT))
+                | mask
+                | (mask << DIRTY_SHIFT)
+                | (mask << USED_SHIFT);
             match self.hot.word.compare_exchange_weak(
                 word,
                 next,
@@ -161,7 +167,10 @@ impl Segment {
             if word as u16 & whole != left {
                 return false;
             }
-            let next = word | right | (right << DIRTY_SHIFT) | (right << USED_SHIFT);
+            let next = (word & !(right << TRIM_SHIFT))
+                | right
+                | (right << DIRTY_SHIFT)
+                | (right << USED_SHIFT);
             match self.hot.word.compare_exchange_weak(
                 word,
                 next,
@@ -186,7 +195,7 @@ impl Segment {
             }
             match self.hot.word.compare_exchange_weak(
                 word,
-                word | mask as u64,
+                word | ((mask as u64) << TRIM_SHIFT),
                 Ordering::Acquire,
                 Ordering::Relaxed,
             ) {
@@ -200,6 +209,67 @@ impl Segment {
         }
     }
 
+    // Only the serialized trimmer creates claims. Allocators may revoke them,
+    // but cannot recreate them, so a stolen-and-freed slot cannot pass this CAS.
+    pub(super) fn begin_advice(&self, mask: u16) -> u16 {
+        let mut word = self.snapshot();
+        loop {
+            let owned = mask & (word >> TRIM_SHIFT) as u16 & !(word as u16);
+            if owned == 0 {
+                return 0;
+            }
+            match self.hot.word.compare_exchange_weak(
+                word,
+                word | owned as u64,
+                Ordering::Release,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return owned,
+                Err(observed) => word = observed,
+            }
+        }
+    }
+
+    pub(super) fn cancel_trim(&self, mask: u16) {
+        let mut word = self.snapshot();
+        loop {
+            let owned = mask & !(word as u16) & (word >> TRIM_SHIFT) as u16;
+            if owned == 0 {
+                return;
+            }
+            match self.hot.word.compare_exchange_weak(
+                word,
+                word & !((owned as u64) << TRIM_SHIFT),
+                Ordering::Release,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return,
+                Err(observed) => word = observed,
+            }
+        }
+    }
+
+    pub(super) fn advising_candidate(&self, order: usize) -> u16 {
+        let word = self.snapshot();
+        let advising = word as u16 & (word >> TRIM_SHIFT) as u16;
+        let available = candidates(word as u16 & !advising, order);
+        if available == 0 {
+            return 0;
+        }
+        slot_mask(available.trailing_zeros() as usize, order) & advising
+    }
+
+    pub(super) fn wait_advising(&self, mask: u16) {
+        for _ in 0..64 {
+            let word = self.snapshot();
+            if word as u16 & (word >> TRIM_SHIFT) as u16 & mask == 0 {
+                break;
+            }
+            std::hint::spin_loop();
+        }
+    }
+
+    // Called only for the exact mask returned by begin_advice, after the syscall.
     pub(super) fn finish_trim(&self, mask: u16, success: bool, stamp: Option<u32>) {
         if mask == 0 {
             return;
@@ -212,7 +282,10 @@ impl Segment {
                 self.freed_at[slot].store(stamp, Ordering::Relaxed);
             }
         }
+        let word = self.snapshot();
+        debug_assert_eq!(word as u16 & (word >> TRIM_SHIFT) as u16 & mask, mask);
         let clear = mask as u64
+            | ((mask as u64) << TRIM_SHIFT)
             | if success {
                 (mask as u64) << DIRTY_SHIFT
             } else {

@@ -66,6 +66,7 @@ static SEGMENT_PROBES: AtomicUsize = AtomicUsize::new(0);
 static CAS_RETRIES: AtomicUsize = AtomicUsize::new(0);
 
 mod segment;
+
 use segment::{SEGMENT_BYTES, SLOT_BYTES, Segment};
 
 // Reserved region and metadata bytes, not a measurement of resident memory.
@@ -140,6 +141,7 @@ impl Node {
         hint: &AtomicPtr<Segment>,
         preferred: *mut Segment,
     ) -> Option<Allocation> {
+        let mut waiting = None;
         let mut region = self.head.load(Ordering::Acquire);
         while let Some(region_ref) = region.as_ref() {
             let count = region_ref.segment_count;
@@ -159,12 +161,33 @@ impl Node {
                         segment as usize,
                     ));
                 }
+                if waiting.is_none() {
+                    let mask = (*segment).advising_candidate(order);
+                    if mask != 0 {
+                        waiting = Some((segment, mask));
+                    }
+                }
                 index += 1;
                 if index == count {
                     index = 0;
                 }
             }
             region = region_ref.next;
+        }
+        // Never wait at a hint or before exhausting ordinary reuse. Only bits
+        // blocking a usable aligned block matter; a stalled syscall must not
+        // prevent growth/direct-mapping fallback.
+        if let Some((segment, mask)) = waiting {
+            (*segment).wait_advising(mask);
+            if let Some((addr, flags)) = (*segment).alloc(order) {
+                hint.store(segment, Ordering::Release);
+                return Some((
+                    addr,
+                    order + BIG_SEGMENTED_BITMAP_MIN_ORDER,
+                    flags,
+                    segment as usize,
+                ));
+            }
         }
         None
     }
@@ -652,7 +675,7 @@ fn trim_segment(
         if !segment.claim_trim(mask) {
             continue;
         }
-        // claim_trim temporarily sets busy bits, excluding allocations/growth.
+        // Claims remain revocable by allocation/growth until begin_advice.
         // Re-read ages after claiming: a candidate could have been reused and
         // freed again between the initial snapshot and our successful claim.
         let mut eligible = 0u16;
@@ -666,7 +689,7 @@ fn trim_segment(
         }
         // Return young slots without clearing dirty state or changing their age.
         // Only the eligible subset remains privately held for advice below.
-        segment.finish_trim(mask & !eligible, false, None);
+        segment.cancel_trim(mask & !eligible);
         while eligible != 0 {
             let start = eligible.trailing_zeros() as usize;
             let mut count = (eligible >> start).trailing_ones() as usize;
@@ -677,19 +700,25 @@ fn trim_segment(
                 count = count.min(remaining.div_ceil(SLOT_BYTES).max(1));
             }
             let range = (((1u32 << count) - 1) << start) as u16;
-            let bytes = count * SLOT_BYTES;
-            let success = advise(segment.base() + start * SLOT_BYTES, bytes);
-            // Release the temporary claim only after advice completes. Success
-            // clears dirty bits; failure keeps them for a later retry. Both paths
-            // refresh timestamps, and neither clears the ever-used history.
-            segment.finish_trim(range, success, Some(now));
-            eligible &= !range;
-            if success {
-                stats.bytes += bytes;
+            // The CAS transfers only surviving claims to irrevocable ownership.
+            // Stolen slots (even if freed again) must never reach the syscall.
+            let mut advising = segment.begin_advice(range);
+            while advising != 0 {
+                let first = advising.trailing_zeros() as usize;
+                let count = (advising >> first).trailing_ones() as usize;
+                let owned = (((1u32 << count) - 1) << first) as u16;
+                let bytes = count * SLOT_BYTES;
+                let success = advise(segment.base() + first * SLOT_BYTES, bytes);
+                segment.finish_trim(owned, success, Some(now));
+                advising &= !owned;
+                if success {
+                    stats.bytes += bytes;
+                }
             }
+            eligible &= !range;
             if requested != 0 && stats.bytes - initial_bytes >= requested {
                 // Release every still-claimed slot before ending a budgeted pass.
-                segment.finish_trim(eligible, false, None);
+                segment.cancel_trim(eligible);
                 return;
             }
         }

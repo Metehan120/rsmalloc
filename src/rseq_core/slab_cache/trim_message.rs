@@ -123,8 +123,6 @@ impl TrimMessage {
                 return false;
             }
             spin_loop();
-
-            spin_loop();
         }
         self.cancel(ticket);
         false

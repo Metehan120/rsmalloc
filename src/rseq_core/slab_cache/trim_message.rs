@@ -1,6 +1,5 @@
 use std::hint::spin_loop;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::thread::yield_now;
 
 const INACTIVE: u64 = 0;
 const ACTIVE: u64 = 1;
@@ -114,7 +113,7 @@ impl TrimMessage {
 
     /// Poll for readiness, cancelling on timeout. Each ticket has one requester.
     pub fn wait_ready(&self, ticket: Ticket, attempts: usize) -> bool {
-        for i in 0..attempts {
+        for _ in 0..attempts {
             let state = self.state.load(Ordering::Acquire);
             if state == ticket.state(READY) {
                 if self.claim(ticket) {
@@ -125,20 +124,10 @@ impl TrimMessage {
             }
             spin_loop();
 
-            if i + 1 == (attempts / 2).max(1) && i + 1 < attempts {
-                Self::yield_waiter();
-            } else {
-                spin_loop();
-            }
+            spin_loop();
         }
         self.cancel(ticket);
         false
-    }
-
-    #[cold]
-    #[inline(never)]
-    fn yield_waiter() {
-        yield_now();
     }
 
     /// Cancel a waiting or ready ticket; claimed tickets cannot be cancelled.

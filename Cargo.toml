@@ -46,7 +46,7 @@ transfer-debug = ["debug-exact"]
 transfer-debug-exact = ["transfer-debug"]
 debug-full = ["transfer-debug-exact"]
 debug-full-critic = ["transfer-debug-exact", "debug-predictor-exact"]
-debug-print-trim-calls = []
+debug-print-trim-calls = ["rustix/time"]
 
 extended-header = []
 lazy-page-trim = []

@@ -1,5 +1,5 @@
 #[cfg(feature = "debug-print-trim-calls")]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use std::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed},
     thread::{Thread, park_timeout},
@@ -23,6 +23,12 @@ use crate::{
     rseq_core::slab_cache::SLAB_CACHE,
     traits::Lock,
 };
+
+#[cfg(feature = "debug-print-trim-calls")]
+fn thread_cpu_time() -> Duration {
+    let time = rustix::time::clock_gettime(rustix::time::ClockId::ThreadCPUTime);
+    Duration::new(time.tv_sec as u64, time.tv_nsec as u32)
+}
 
 pub struct BackgroundThread {
     pub thread: SpinLock<Option<Thread>>,
@@ -169,29 +175,41 @@ pub unsafe fn background_reclaimer_main() -> ! {
             && !DISABLE_TRIM_THREAD)
             || trim_requested
         {
+            latest_segmented_bitmap_stamp = stamp;
+            #[cfg(feature = "debug-print-trim-calls")]
+            let cpu_start = thread_cpu_time();
             #[cfg(feature = "debug-print-trim-calls")]
             let start = Instant::now();
-            latest_segmented_bitmap_stamp = stamp;
             trimmed = SEGMENTED_BITMAP_BACKEND.trim_old(size);
             #[cfg(feature = "debug-print-trim-calls")]
-            eprintln!("big_trim time: {:?}, trimmed {trimmed}", start.elapsed());
+            {
+                let wall = start.elapsed();
+                let cpu = thread_cpu_time().saturating_sub(cpu_start);
+                eprintln!("big_trim wall: {wall:?}, CPU: {cpu:?}, trimmed {trimmed}");
+            }
         }
 
         if (stamp.saturating_sub(latest_slab_stamp) > AVERAGE_BLOCK_TIMES.load(Relaxed).max(30)
             && !DISABLE_TRIM_THREAD)
             || (trim_requested && (size == 0 || trimmed < size))
         {
-            #[cfg(feature = "debug-print-trim-calls")]
-            let start = Instant::now();
             latest_slab_stamp = stamp;
             let size = if trim_requested {
                 size.saturating_sub(trimmed).max(1)
             } else {
                 0
             };
+            #[cfg(feature = "debug-print-trim-calls")]
+            let cpu_start = thread_cpu_time();
+            #[cfg(feature = "debug-print-trim-calls")]
+            let start = Instant::now();
             let _debug = SLAB_CACHE.trim_small(size);
             #[cfg(feature = "debug-print-trim-calls")]
-            eprintln!("small_trim time: {:?}, trimmed {_debug}", start.elapsed());
+            {
+                let wall = start.elapsed();
+                let cpu = thread_cpu_time().saturating_sub(cpu_start);
+                eprintln!("small_trim wall: {wall:?}, CPU: {cpu:?}, trimmed {_debug}");
+            }
         }
     }
 }

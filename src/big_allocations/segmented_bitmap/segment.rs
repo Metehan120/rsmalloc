@@ -110,7 +110,7 @@ impl Segment {
                 word,
                 next,
                 Ordering::Acquire,
-                Ordering::Relaxed,
+                Ordering::Acquire,
             ) {
                 Ok(_) => {
                     return Some((
@@ -175,7 +175,7 @@ impl Segment {
                 word,
                 next,
                 Ordering::Acquire,
-                Ordering::Relaxed,
+                Ordering::Acquire,
             ) {
                 Ok(_) => return true,
                 Err(observed) => {
@@ -197,7 +197,7 @@ impl Segment {
                 word,
                 word | ((mask as u64) << TRIM_SHIFT),
                 Ordering::Acquire,
-                Ordering::Relaxed,
+                Ordering::Acquire,
             ) {
                 Ok(_) => return true,
                 Err(observed) => {
@@ -241,7 +241,7 @@ impl Segment {
                 word,
                 word & !((owned as u64) << TRIM_SHIFT),
                 Ordering::Release,
-                Ordering::Relaxed,
+                Ordering::Acquire,
             ) {
                 Ok(_) => return,
                 Err(observed) => word = observed,

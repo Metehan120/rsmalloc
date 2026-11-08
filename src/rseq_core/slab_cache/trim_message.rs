@@ -125,7 +125,7 @@ impl TrimMessage {
             }
             spin_loop();
 
-            if i + 1 % (attempts / 2).max(1) == 0 && i + 1 < attempts {
+            if i + 1 == (attempts / 2).max(1) && i + 1 < attempts {
                 Self::yield_waiter();
             } else {
                 spin_loop();

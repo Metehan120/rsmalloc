@@ -1,27 +1,3 @@
-// Small note for developers considering this design:
-//
-// First of all this is a proof-of-concept, not a release-ready allocator. Designed by GPT-6-Astra and published on development branch.
-//
-// GPT designed a way better large allocator than I ever could (I've never been good with buddy allocators) so I decided to publish as proof-of-concept before release
-// this design is going to change in future, not a final product or a pure generation.
-//
-// This segmented bitmap allocator is designed for low single-core overhead and high-core scalability.
-// Buddy geometry defines its size classes, but atomic bitmaps replace the old buddy's linear searches.
-//
-// I did audit the design; there is still some aggressive ordering where a weaker ordering can be used, a few optimization spots for arithmetics etc.
-// which can be fixed easily. Overall a good design worth considering.
-//
-// Oh also ate my 5-hour limit for breakfast, it was pretty hungry I guess. I know this is such a dad joke.
-//
-// - Metehan
-
-// September 6 note:
-//
-// I frogot to mention that GPT and I designed this together; it is not purely LLM-generated.
-// GPT designed the bitmap design, etc. while I designed its concurrency model.
-//
-// - Metehan
-
 use crate::{
     CURRENT_STAMP, Flags, GLOBAL_TRIM_LOCK, SEGMENTED_BITMAP_AVERAGE_BLOCK_TIMES,
     SEGMENTED_BITMAP_INIT, add_segmented_bitmap_cached_va,

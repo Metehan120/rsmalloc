@@ -4,7 +4,7 @@
 
 v0.3.0-alpha (alpha-3) is RSMalloc's biggest update yet, reworking how it exposes configuration, manages refill memory, and caches large allocations. The default Rust global allocator and C preload builds now support stable Rust: partially consumed refill spans move from thread-local storage into per-CPU slots, removing allocator-owned TLS and thread-exit cleanup. The new `rsmalloc::v2` API separates ordinary tuning from security-sensitive settings and offers an optional stable native allocation interface without requiring callers to retain a Rust `Layout`.
 
-Internally, an experimental segmented-bitmap backend replaces the buddy cache for 4–64 MiB allocations, using atomic slot claims instead of tree traversal or per-order free lists. Page-arena reservations now use a lock-free bump fast path, pending refill metadata uses sharded ABA-tagged atomic stacks, and exact large-allocation metadata is split across independent hash-table shards. These changes reduce reliance on shared locks while preserving NUMA-local reuse. Slab and large-allocation trimming also get separate background schedules and revised large-block lifetime estimation.
+Internally, a segmented-bitmap backend replaces the buddy cache for 4–64 MiB allocations, using atomic slot claims instead of tree traversal or per-order free lists. Page-arena reservations now use a lock-free bump fast path, pending refill metadata uses sharded ABA-tagged atomic stacks, and exact large-allocation metadata is split across independent hash-table shards. These changes reduce reliance on shared locks while preserving NUMA-local reuse. Slab and large-allocation trimming also get separate background schedules and revised large-block lifetime estimation.
 
 Alpha-3 also strengthens transfer-cache ABA protection, addresses fork and background-worker signal-handling gaps, and expands structured diagnostics. Public frontend code is separated from allocator internals, with clearer API and architecture documentation. This is still an experimental alpha release: the new backend and public API may evolve, and the changes are not a blanket performance or production-readiness guarantee.
 
@@ -59,13 +59,13 @@ Alpha-3 also strengthens transfer-cache ABA protection, addresses fork and backg
 
 ### Segmented-bitmap large-allocation backend
 
-- Replaced the old large-allocation buddy cache with an experimental segmented-bitmap allocator for the 4–64 MiB range. Each 64 MiB segment is divided into sixteen 4 MiB slots; one atomic word records occupancy, dirty/reused state, historical use, and trim claims, preserving buddy-style power-of-two orders without tree traversal or per-order free lists.
+- Replaced the old large-allocation buddy cache with a segmented-bitmap allocator for the 4–64 MiB range. Each 64 MiB segment is divided into sixteen 4 MiB slots; one atomic word records occupancy, dirty/reused state, historical use, and trim claims, preserving buddy-style power-of-two orders without tree traversal or per-order free lists.
 - Added NUMA-local region lists and per-CPU-sharded hint lanes. Allocation first probes the hinted segment for its node/order, then scans local regions before growing under a node-local lock; ordinary allocation/free operates through atomic bitmap updates without taking that growth lock.
 - Added in-place growth, age-aware trimming, never-allocated/reused/trimmed state reporting, and page-backend-backed region reservation.
 - Rebalanced segmented-bitmap trim timing: the lifetime estimate starts at 5.5 seconds, adapts within a 1–8.5-second range, and counts never-allocated slots as long-lived samples instead of letting untouched capacity skew the estimate downward. Slab and segmented-bitmap background trim passes now have independent last-run timestamps and use their respective lifetime estimates for scheduling.
 - Audited bitmap synchronization and weakened successful CAS operations from `AcqRel` to `Acquire` where the atomic update publishes no preceding writes. Split the preferred-segment allocation path from the cold region scan so the common result stays in registers instead of crossing the slow-path call ABI.
 - Segment bitmap trim claims are revocable until advice begins: allocation and in-place growth can take claimed slots, while slots undergoing `madvise` remain unavailable. When normal reuse is exhausted, allocation briefly polls suitable advising slots before falling back.
-- This backend remains experimental and its internal layout and policy are not a stable API.
+- The backend's internal layout and policy are not a stable API.
 
 ### Lock-free page-backend fast path
 

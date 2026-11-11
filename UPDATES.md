@@ -1,5 +1,265 @@
 # Updates
 
+## v0.3.0-alpha
+
+v0.3.0-alpha (alpha-3) is RSMalloc's biggest update yet, reworking how it exposes configuration, manages refill memory, and caches large allocations. The default Rust global allocator and C preload builds now support stable Rust: partially consumed refill spans move from thread-local storage into per-CPU slots, removing allocator-owned TLS and thread-exit cleanup. The new `rsmalloc::v2` API separates ordinary tuning from security-sensitive settings and offers an optional stable native allocation interface without requiring callers to retain a Rust `Layout`.
+
+Internally, a segmented-bitmap backend replaces the buddy cache for 4–64 MiB allocations, using atomic slot claims instead of tree traversal or per-order free lists. Page-arena reservations now use a lock-free bump fast path, pending refill metadata uses sharded ABA-tagged atomic stacks, and exact large-allocation metadata is split across independent hash-table shards. These changes reduce reliance on shared locks while preserving NUMA-local reuse. Slab and large-allocation trimming also get separate background schedules and revised large-block lifetime estimation.
+
+Alpha-3 also strengthens transfer-cache ABA protection, addresses fork and background-worker signal-handling gaps, and expands structured diagnostics. Public frontend code is separated from allocator internals, with clearer API and architecture documentation. This is still an experimental alpha release: the new backend and public API may evolve, and the changes are not a blanket performance or production-readiness guarantee.
+
+### Header links and memory-pressure relief
+
+- Changed `Header::next` to `AtomicPtr<Header>` in both header layouts. Slab allocation, refill, transfer, and reclamation paths now initialize atomic links and use acquire loads and release stores when following or updating them. This makes concurrent link accesses atomic while preserving the existing header layout and tagged transfer-head protocol.
+- Removed system-memory-pressure sampling and the automatic segmented-bitmap disable, drain, and re-enable policy. Eligible large allocations continue to use the initialized segmented-bitmap backend; background age- and threshold-based trimming remains available.
+- Removed relief settings from the legacy and v2 Rust configuration APIs and stopped parsing `RS_ENABLE_RELIEF`, `RS_SEGMENTED_BITMAP_RELIEF_DISABLE_PERCENTAGE`, and `RS_SEGMENTED_BITMAP_RELIEF_ENABLE_PERCENTAGE` in preload builds. Existing Rust configurations using these settings must remove them; the preload variables no longer control allocator behavior.
+- Removed relief-specific debug reporting, preload parsing tests, and the memory-pressure sampling benchmark, and updated the README, architecture notes, and user guide to match.
+
+### Stable Rust and lock-free refill metadata
+
+- Removed RSMalloc's remaining Rust TLS dependency by moving partially consumed refill `MetaData` from `ThreadBulk` into per-CPU/per-class `MainCache` slots. Refill workers atomically claim a slot before mutating its metadata and return it with release publication; collisions fall back to the NUMA-aware pending queue.
+- Removed the `ThreadBulk` TLS destructor, `__cxa_thread_atexit_impl` registration, thread-exit draining, `#![feature(thread_local)]`, and the obsolete `-Z tls-model=initial-exec` build flag.
+- Replaced unstable branch-prediction intrinsics with stable `likely`/`unlikely` wrappers built on `std::hint::cold_path`. The unlikely branch calls `cold_path()` before returning, matching the cold-path shaping strategy used by Rust's intrinsic implementation without requiring a nightly feature gate.
+- Replaced the pending metadata queue's per-node/per-class `SpinLock` heads with ABA-tagged `AtomicU128` Treiber stacks. The low word preserves the complete 64-bit pointer and the high word carries a 64-bit generation counter. `MetaData::next_page` is now an `AtomicPtr` so node reuse cannot race with a competing pop's intrusive-link read. Each node/class queue has four fixed, cache-line-separated lanes selected by CPU ID; pop checks the preferred lane first and then the remaining three, reducing same-class CAS contention and eliminating false sharing without dynamic lane tables or bitmap maintenance.
+- Removed pending-queue fork lock/reset handling; the atomic queue head is inherited in a complete pre- or post-CAS state instead of carrying a lock that can remain owned by a vanished thread.
+- Removed the repository's nightly toolchain pin and made the default Cargo feature set stable-compatible. The default Rust `GlobalAlloc` and C `LD_PRELOAD` configurations support stable Rust 1.96 and newer. The optional `allocator-api` interface works on stable Rust 1.100 and newer; earlier toolchains require nightly with `allocator-api-feature-gate`, or an upgrade to Rust 1.100 or newer.
+- Added a compile-time assertion that `MainCache` remains exactly 4096 bytes, preserving the RSEQ CPU-cache stride after adding per-CPU refill slots, plus a concurrent pending-stack regression test that verifies every metadata node is returned exactly once.
+
+### Asynchronous trim requests
+
+- The v2 `RSMallocCoreAPI::trim` frontend posts a coalesced request to the background reclaimer. `SimpleTrimSize::All` requests an unbounded pass; `Bytes` supplies a best-effort reclaim target. The Rust API returns `RSTrimStatus::Requested` or `AlreadyRequested`, not reclaimed bytes.
+- A newly posted request attempts to unpark the existing worker, whose `park_timeout` still permits periodic maintenance. Explicit requests do not start a worker; startup remains subject to the existing cache thresholds. The worker checks segmented-bitmap blocks first and scans slab caches if needed, subject to their existing eligibility gates. The bitmap pass receives the requested target; if more is needed, the slab pass receives the remaining target. Unbounded requests and periodic passes use an unbounded target for both backends.
+- Preload `malloc_trim` runs synchronously: it calls age- and threshold-gated bitmap `trim_old(requested_size)` first, then slab `trim_small` with the remaining target if needed, or zero for an unbounded request. It returns `1` if total advised bytes are nonzero, otherwise `0`. The argument is a reclaim target rather than glibc's retained padding; zero is unbounded. Both passes use a try-lock and are best-effort, with no guarantee of an immediate RSS reduction. The legacy Rust and v2 raw trim APIs also remain synchronous.
+
+### Bootstrap sequencing and configuration
+
+- Split bootstrap configuration preparation from applying allocator-wide settings. Preparation checks arena-size page alignment and segmented-region power-of-two rounding for overflow, preserves the 256 KiB minimum arena and 64 MiB minimum initial bitmap region and disables explicit segmented-region huge-page requests when global THP support is disabled.
+- Moved randomized header magic and alignment-tag initialization ahead of radix, slab, page-backend, and segmented-bitmap initialization. Configuration application is centralized, and the radix is initialized in place rather than replaced.
+- Prevented subsystem initialization from triggering allocation-capable background-worker startup while the outer allocation initialization gate is still running. Both trim thresholds temporarily remain at `usize::MAX`; bootstrap restores the effective thresholds only after subsystem initialization and preload fork-handler registration finish. Worker startup remains lazy on a later refill or region growth; no post-initialization callback or extra allocation/cache-hit bookkeeping was added.
+- Added a shared initial-footprint calculator for the normalized bitmap region, page-rounded region/segment metadata, and NUMA node/CPU hint-lane tables. Initialization uses the same metadata-sizing helpers. The effective big-trim threshold is at least this complete footprint plus one byte, because the worker-start predicate triggers at equality; a larger configured threshold is preserved. This replaces fixed metadata allowances and coarse multiples of the configured cache size.
+
+### Sharded large-allocation metadata
+
+- Replaced the single-lock red-black tree used for exact large-allocation metadata with a 64-shard hash table. Each shard has independent bucket chains, locking, and reusable node storage, so unrelated large allocations no longer serialize on one global lock.
+
+### Module layout
+
+- Split public-surface code out of the crate root into `frontend/`: `global_alloc.rs` (Rust `GlobalAlloc` impl) and `abi/` (C ABI) now live under `frontend/global_alloc.rs` and `frontend/abi/`, mirroring the existing `backend/` (page arenas) naming. `global_alloc` compiles only without `preload`; `abi` only with it.
+- Split the old top-level `trim.rs`: slab-list reclamation now lives beside the cache in `rseq_core/slab_cache/reclaim.rs`, while the background trimmer lives in `backend/background_thread.rs`. RSEQ assembly likewise moved under `rseq_core/slab_cache/`, next to the data structure whose invariants it implements.
+
+### New Rust API surface
+
+- Renamed the opt-in `semi-hardened` feature to `extra-checks` to avoid implying that RSMalloc is a hardened allocator. The bundle still enables `extended-header`, `check-owned-on-alloc`, `zero-small-on-free`, and `validate-foreign-first`; protection behavior is unchanged. Update Cargo feature lists and build commands to the new name; the previous name is not retained as an alias.
+- Added the `rsmalloc::v2` API and moved the preferred Rust global allocator to `v2::alloc::RSMalloc`. The new configuration model separates ordinary tuning (`Tuning`, THP policy, refill retries, cache sizing, and trimming) from settings that weaken safety; security-critical controls are only exposed with `expose-security-critical-settings` and require an explicit unsafe acknowledgement where applicable. The original root-level global-allocator API remains re-exported but is deprecated.
+- Added the temporary `legacy_config_to_v2!(legacy_config)` compatibility macro for migrating legacy `RSMallocConfig` values to v2 `Config`, including const contexts such as `#[global_allocator]`. It preserves ordinary tuning and uses the v2 default big-allocation trim threshold (the legacy API has no separate setting). Arena sizes accept zero and 4 KiB page multiples, with initialization preserving the historical 256 KiB minimum and the 256 MiB default. Legacy migration clamps sizes below 256 KiB before validation. Fixed magic, ignored foreign pointers, and larger legacy arena sizes that are not 4 KiB multiples are rejected rather than silently changing their behavior; migrate those settings explicitly.
+- Added a native `AllocationAPI` for metadata-owning malloc-style allocations. `AllocationSize` represents checked byte counts, including overflow-checked array sizing; allocation, aligned allocation, zeroed allocation, usable-size queries, alignment-preserving reallocation, and `aligned_reallocate` for requesting a new alignment return typed `AllocationError` values. Both aligned operations take `NonZero<usize>` alignments. Deallocation and reallocation take raw pointers so null can be used for no-op deallocation or allocation-style reallocation; zero-size reallocation frees the block and returns `Ok(null_mut())`. Callers do not need to retain a Rust `Layout`.
+- Added `RSMallocCoreAPI` for manual initialization, usable-size queries, and simple trimming, plus `RSMalloc::raw()`/`RawInterface` for callers that deliberately need unsafe raw-pointer operations. The raw trimming API can target slab memory, segmented-bitmap memory, or both and returns the reclaimed byte counts separately.
+- Added public v2 alignment helpers and constants for constructing typed, SIMD, and page-oriented alignment requests. Expanded the v2 API documentation around allocation ownership, alignment, zero-size reallocation, configuration, and trimming.
+- Split the background trim trigger into independently configurable small- and big-allocation thresholds. Rust configuration defaults to 10 MiB for slab memory and 512 MiB for segmented-bitmap memory; preload builds expose the latter through `RS_BIG_TRIMMER_THRESHOLD` alongside the existing `RS_TRIMMER_THRESHOLD` small-cache setting.
+
+### Segmented-bitmap large-allocation backend
+
+- Replaced the old large-allocation buddy cache with a segmented-bitmap allocator for the 4–64 MiB range. Each 64 MiB segment is divided into sixteen 4 MiB slots; one atomic word records occupancy, dirty/reused state, historical use, and trim claims, preserving buddy-style power-of-two orders without tree traversal or per-order free lists.
+- Added NUMA-local region lists and per-CPU-sharded hint lanes. Allocation first probes the hinted segment for its node/order, then scans local regions before growing under a node-local lock; ordinary allocation/free operates through atomic bitmap updates without taking that growth lock.
+- Added in-place growth, age-aware trimming, never-allocated/reused/trimmed state reporting, and page-backend-backed region reservation.
+- Rebalanced segmented-bitmap trim timing: the lifetime estimate starts at 5.5 seconds, adapts within a 1–8.5-second range, and counts never-allocated slots as long-lived samples instead of letting untouched capacity skew the estimate downward. Slab and segmented-bitmap background trim passes now have independent last-run timestamps and use their respective lifetime estimates for scheduling.
+- Audited bitmap synchronization and weakened successful CAS operations from `AcqRel` to `Acquire` where the atomic update publishes no preceding writes. Split the preferred-segment allocation path from the cold region scan so the common result stays in registers instead of crossing the slow-path call ABI.
+- Segment bitmap trim claims are revocable until advice begins: allocation and in-place growth can take claimed slots, while slots undergoing `madvise` remain unavailable. When normal reuse is exhausted, allocation briefly polls suitable advising slots before falling back.
+- The backend's internal layout and policy are not a stable API.
+
+### Lock-free page-backend fast path
+
+- Promoted `PageAllocator` into the allocator's central memory-reservation backend. Slab refills, segmented-bitmap region growth, radix ownership tables, and large-allocation metadata now request arena-backed memory through it before falling back to their own direct mappings.
+- Reworked each NUMA node's current page arena around an atomic arena pointer and an atomic bump offset. Ordinary page-backed allocations now reserve space with a CAS loop without taking the node lock; the lock is restricted to exhausted-arena removal, searches through older arenas, and mapping/publishing a new arena.
+- Moved NUMA selection and the bounded refill retry policy into `PageAllocator::alloc`, giving those consumers one shared reservation policy. Requests now use checked page alignment and fall back to direct mappings when they are too large for the configured arena or the arena path cannot satisfy them.
+
+### Radix tree initialization and optimizations
+
+- Replaced the mutable global radix tree and whole-object bootstrap assignment with an immutable `RADIX` static whose root pointer is stored in `UnsafeCell`. The existing metadata-allocation lock serializes root creation, a release/acquire initialization flag publishes the completed root, and repeated initialization leaves the existing root and ownership bits intact. Early ownership lookups return false until publication instead of reading a root pointer concurrently with an ordinary bootstrap assignment. The embedded fork lock also keeps its identity across initialization.
+- Removed redundant root-null checks after initialization is established. Registration relies on bootstrap completion; ownership queries and debug reports check publication before reading the cell. Sparse lower-level tables retain their missing-branch checks. No reader lock or generation counter is introduced.
+- Allocate radix metadata from page-backend arenas when available, falling back to direct mappings. Lazy node allocation is serialized under a metadata-allocation lock to avoid duplicate allocations, while readers use acquire loads without taking the lock.
+- Skip redundant ownership ORs when a relaxed bitmap load finds the requested bits already set. Range updates batch masks by bitmap word and leaf, with a single-page fast path for ranges contained within one ownership chunk.
+
+### NUMA memory-policy correction
+
+- Corrected the `mbind` syscall argument placement in `internals/binder.rs`: `MPOL_F_STATIC_NODES` is now combined with `MPOL_PREFERRED` or `MPOL_BIND` in the mode argument, while the final migration-flags argument is zero. Previously the mode flag was passed as a migration flag, allowing Linux to reject the policy request with `EINVAL` while allocation continued.
+- This restores the intended preferred-node/bind policy requests for CPU-cache storage, page arenas, and direct large mappings where those calls are used. It does not request migration of already-faulted pages, remove cpuset/kernel restrictions, or turn best-effort preferred placement into a hard placement guarantee.
+
+### Metadata-first free and optional ownership validation
+
+- Changed the default free path to classify alignment tags and header magic before checking radix ownership. Successful small and large frees skip the upfront lookup and assume non-null inputs are live RSMalloc allocations.
+- Added the opt-in `validate-foreign-first` Cargo feature to restore ownership validation before metadata reads. Without it, the remaining late foreign-pointer check/fallback is best-effort: a foreign pointer can fault or be misclassified before reaching that check. The feature is disabled by default and is included in `extra-checks`.
+- Gated radix validation of recovered aligned-allocation bases before dereferencing their headers on `validate-foreign-first`, alongside input-address validation. Coarse ownership validation does not establish allocation boundaries or make invalid frees safe.
+- Added an unconditional supported-address-range check to free: non-null input addresses at or above `2^56` abort before alignment/header metadata reads, independently of `validate-foreign-first`. This range check does not establish mapping or ownership. Radix ownership queries now separate address validation from bitmap lookup so free's input check is not repeated; the default late ownership lookup stays out of line, and corruption/invalid-pointer reporting uses cold helpers.
+
+### Transfer-cache ABA hardening
+
+- Widened the transfer cache's ABA protection from an 8-bit tag packed into the pointer's high byte to a full 64-bit generation counter, by switching `TransferCache::list`/`trimmed` from a tagged `AtomicUsize` to a 128-bit `AtomicU128` (via the `portable-atomic` crate) holding the full 64-bit pointer in the low word and the tag in the high word. The old scheme needed only 256 same-slot push/pop cycles between a thread's stale load and its retried CAS to spuriously succeed; the new one needs `2^64`, which isn't reachable at any real hardware throughput.
+- As a side effect, this also removes an implicit LA57 canonical-address assumption the old high-byte tag depended on — the pointer field is no longer masked at all.
+- `Tagging::pack` extracts and increments the tag as a plain `u64` (`wrapping_add`) instead of doing wrapping arithmetic across the full `u128`, since a 128-bit add costs an add+adc pair for no benefit when only the high word ever changes; this restored throughput to parity with the old 8-bit-tag scheme in benchmarking.
+- Changed single and batch transfer pushes to acquire the existing list head before linking it, preserving publication of the prior chain through the new head.
+- Enabled `portable-atomic`'s `require-cas` feature; its default features remain enabled. The implementation selected for 128-bit atomics depends on the target and build configuration.
+
+### Debug/stats API parity
+
+- Added `alloc_calls`/`free_calls` counters (`debug-full-critic`) to `RSMallocExactStats`, closing a gap where the text-based exit report had allocation/free call counts but the structured Rust stats API didn't.
+- Added `pid`, `uptime_ms`, `clock_ms`, `mmap_calls`, `mmap_bytes_requested`, `total_arenas`, `arenas_lived`, `arenas_removed`, and `arena_size` to `RSMallocStats`, and `trimmed_blocks_small`/`avg_madvise_cycles_small` (`debug-exact`) to `RSMallocExactStats` — bringing the structured stats API closer to parity with what the exit-time text report already exposed.
+- Expanded large-backend reporting with segmented-bitmap region usage and per-order never-allocated/reused/trimmed block counts, and expanded radix reporting with ownership and metadata-density measurements.
+- The `debug-print-trim-calls` feature reports wall time, thread CPU time, and trimmed bytes for each background slab and segmented-bitmap trim pass.
+
+### Lock redesign 
+
+- Reworked `SpinLock` from a bare `AtomicBool` plus separately-managed data into a generic `SpinLock<T>` that owns its data behind an `UnsafeCell`, guarded by a `SpinLockGuard<'a, T>` implementing `Deref`/`DerefMut`. Introduced a shared `Lock` trait (`lock`, `try_lock`, `spin_until_unlock`, `get_lock`) so lock types can be used more uniformly across the allocator, and a `LockState`/`LockGuard<G>` pair for `try_lock` call sites.
+
+- Removed manual `unlock(&self)` from the common lock trait and both ordinary and preload fork-aware lock implementations. Ordinary critical sections now release through their guards, preventing a safe explicit unlock from releasing a lock while its original data guard remains usable. Fork freeze/thaw operations remain separate.
+
+### Fork safety
+
+- Added `PAGE_ALLOCATOR` to fork-prepare/parent/child lock handling alongside the large-allocation backend and `BIG_MAP`. The pending metadata queue uses ABA-tagged lock-free `AtomicU128` stacks and does not require fork lock/reset handling.
+
+- Fixed allocation deadlocks in application `pthread_atfork` callbacks registered before allocator initialization. Preload page, segmented-growth, large-metadata, and radix locks now freeze without retaining a data reference and allow the fork-owning thread to acquire a temporary guard; other threads remain excluded until recovery completes. Ordinary uncontended acquisition still uses one CAS, without identity syscalls or Rust TLS on the normal path.
+- Added a native preload regression covering earlier prepare/parent/child callbacks, allocation/refill, large reallocation, trimming, and concurrent forks. Recursive forks from callbacks and callbacks waiting on allocator-blocked threads remain unsupported; POSIX restrictions on multithreaded child callbacks still apply.
+
+### Background-worker signal isolation
+
+- Fixed a MariaDB shutdown hang caused by the allocator's background worker inheriting an unblocked signal mask and interfering with application signal handling. Signals are now blocked before worker creation, avoiding a startup race, and the caller's original mask is restored by an RAII guard on success, spawn failure, or unwinding.
+- Uses Linux `rt_sigprocmask` through the existing `syscalls` dependency, without adding a direct `libc` dependency. Glibc's internal signals 32 and 33 are excluded from blocking.
+- Keeps the lifetime/trimming worker running throughout normal operation; no `atexit` hook, worker retirement, or disabled background maintenance is needed. Added signal-mask inheritance/restoration tests and verified clean MariaDB shutdown through both `mariadb-admin shutdown` and `SIGTERM` after read/write smoke workloads.
+
+### Error handling
+
+- Added a centralized `RSMallocError` error model, derived with `thiserror`, for out-of-memory failures, double frees, metadata corruption, invalid or foreign pointers, unavailable RSEQ state, and security violations. Fatal allocator paths now print consistent subsystem, pointer, reason, errno, and OS-error context before aborting instead of assembling unrelated messages at each call site.
+- Updated allocation, reallocation, random initialization, radix/tree metadata allocation, bootstrap, and RSEQ setup paths to propagate checked failures into the centralized handler or return allocation failure where the public contract permits it.
+
+- Added `RSMallocError::Bootstrap { reason }` for configuration-size and initial-footprint/threshold overflow failures, replacing silent bootstrap aborts. This variant writes its static diagnostic directly to stderr with the existing syscall dependency, handles partial writes, and then aborts without heap allocation or taking Rust's stderr lock while initialization is incomplete.
+- The `posix_memalign` allocation path returns `ENOMEM` without explicitly setting `errno` when a slab refill fails; the `memalign`-style wrappers continue to set `errno` on failure.
+- C `malloc` and `calloc` now set `ENOMEM` when allocation fails; `realloc` does so for a nonzero requested size, preserving zero-size free semantics. `pvalloc` also reports `ENOMEM` when page rounding overflows. Added ABI regression tests without adding per-size allocation special cases.
+
+### Realloc hardening
+
+- Added a magic-value check (`MAGIC`/`BIG_MAGIC`) on the header found via `find_original_ptr` during `rs_realloc`'s owned-pointer path, aborting as a double-free/corruption if it doesn't match either expected value, instead of trusting whatever the search returned.
+- Replaced the manual overflow guard in `big_realloc`'s 2MB-aligned size estimate with a proper `Option`-returning `estimate_and_align_2mb`, built on new `checked_align_to`/`checked_align_of_page` helpers (see Alignment helpers below). `big_malloc`, `big_realloc`, and `big_free` all now propagate `None` instead of proceeding with a wrapped/undersized aligned size.
+- Replaced bare `.unwrap()` calls on recomputed big-allocation sizes (`big_free`, `big_realloc`) with `unwrap_or_else(|| RSMallocError::MemoryCorruption.log_and_abort(...))`, matching the rest of the big-allocation path's error handling instead of panicking on corrupted metadata.
+
+- Corrected `recallocarray` to erase discarded bytes on shrink and explicitly erase the old array before freeing it on growth or zero-size requests, independent of the `explicit-zero` feature. Growth allocates a zeroed replacement and preserves the original allocation on failure; new-size overflow reports `ENOMEM`, while old-size overflow reports `EINVAL`.
+- Fixed Rust `GlobalAlloc::realloc` trimming so a zero-size request is handled explicitly instead of being treated as ordinary retained capacity.
+
+### Hardware-feature abstraction
+
+- Added `src/core_prim/hw.rs`, centralizing per-architecture hardware hints behind a single `HardwareFeature` type instead of raw `std::arch` calls scattered across call sites.
+- `HardwareFeature::prefetch` takes a `SafeToPrefetch<T>` pointer wrapper and a `PrefetchHint` (`PreferL1`/`PreferL2`/`PreferL3`).
+- Added `HardwareFeature::new_cycle_clock()` / `CycleClock` (`debug-exact` only), wrapping `__rdtscp`-based timing that was previously called directly in the slab reclaimer's per-block trim timing.
+
+### Type-safety modernization
+
+- Replaced raw `u8` header flags with a `#[repr(u8)]` `Flags` enum (`NotAllocated`/`Allocated`/`Reclaimed`/`BigAlloc`) with explicit discriminants.
+- Replaced the RSEQ push/pop asm result convention (raw `usize`/`*mut Header` with `-1`/`1` sentinels) with `RseqResult`, a `#[repr(transparent)]` struct wrapping `usize` with `is_success()`/`is_failed()`/`get()` accessors — sound for arbitrary pointer bit patterns (verified under Miri) and compiles to identical codegen to the raw sentinel version.
+- Introduced `TransferReturn` (`start`/`end`/`total`/`available`) as a named return type for transfer-cache pop paths (`try_pop`, `transfer_pop_batch`, `first_nonempty_cpu_in_range`, `slowest_numa_steal_path`, `pop_slow`), replacing an unnamed tuple return.
+- Replaced raw pointer arithmetic in `slab_cache.rs` with `Owned<T>`/`MaybeNull<T>`, `#[repr(transparent)]` newtype wrappers (`core_prim::wrappers`) providing `get_offset`/`walk_header`/`get_actual_header`/`cast_as_ptr`; `Owned<T>` also implements indexed access so cache-array call sites retain ordinary reference semantics. The wrapper refactor was checked against generated `malloc` code to avoid adding fast-path overhead.
+
+- The internal `Owned<T>`/`MaybeNull<T>` pointer wrappers are used throughout allocator internals, frontends, and debug stats, and `Owned::cast` supports transparent casts. These wrappers do not provide runtime ownership validation or change pointer representation.
+- The native `rs_usable_size` API is unsafe and requires a live allocator-owned pointer.
+
+### Trim/transfer-cache correctness
+
+- Added separate `normal_blocks` and `trimmed_blocks` counters to each transfer-cache slot. Successful pushes and pops update the counter belonging to the selected list; trimming subtracts only the detached normal-list inventory, leaving already-trimmed blocks accounted for independently. This keeps the batching predictor's inventory feedback tied to the list actually supplying blocks.
+
+- Per-slot `TrimMessage` ticket handshakes coordinate transfer operations with globally serialized trimmers. Ordinary pops observing an active trim return `None`; forced pops attempt a request and poll readiness for at most 5120 iterations before cancelling. The trimmer publishes a retained batch to the shared normal head before signaling readiness; if the batch is empty, it retains the current block even when trim-eligible. A request still pending at the end of classification is cancelled. Its ready wait is also bounded, but once claimed, the request cannot be cancelled and the trimmer waits strictly for completion, potentially indefinitely if the requester stalls. A claim does not reserve the shared batch or guarantee a handoff. Tickets come from a global counter, are consumed even by failed attempts, and wrap after the maximum encodable value; avoiding stale-ticket ABA assumes no old exchange survives a full counter cycle.
+- Fixed `trim_small`'s average-life update being incorrectly gated behind `total_push > 0` — it now correctly runs whenever `total > 0`, independent of whether any nodes were push-eligible that pass.
+- Added separate cached-VA threshold early-outs to `trim_small` and the large-allocation backend, skipping the global trim-lock acquisition and scan when that backend is below its threshold. Explicit bitmap backend trims bypass its guard.
+- Replaced `trim_small`'s fixed `TRIM_REPUSH_BATCH` (16) periodic-flush threshold with `ITERATIONS[class] + ITERATIONS[class] / 2`, tying republished batches to per-class refill granularity and reducing transfer-head CAS frequency during classification.
+- Fixed transfer-cache pop retries to reload the selected head when switching from the normal list to the trimmed list.
+- Corrected the debug slab-usage load to use the atomic ordering import, restoring `preload,debug-exact` compilation.
+- Slab reclamation finishes the mailbox handshake after retained batches are republished and before advising private trim candidates; `finish` cancels unclaimed requests and waits for claimed requesters. Empty-list exits also finish the handshake. The tagged normal-list detach loop remains separate, and candidate advice preserves headers and publishes successful trims to the reclaimed list.
+
+### Calloc zero-skip correctness
+
+- `rs_alloc` unconditionally stamped `Flags::Allocated` onto a popped slab header before `rs_calloc` ever got to inspect it, so the existing `calloc_zero!` skip-zero fast path (gated on `Flags::NotAllocated`, i.e. memory never handed to a caller before and therefore still kernel-zeroed) was permanently dead — every calloc on a slab-class size always saw `Allocated` and always paid the explicit zero, even on virgin memory. Split `rs_alloc` into `rs_alloc_inner(size, aligned, is_calloc)`; `rs_calloc` now goes through a new `rs_alloc_no_flag` entry point that skips the stamp so the original flag value survives long enough for `calloc_zero!` to read it, then restamps `Flags::Allocated` itself right after the zero check. `malloc`/`realloc`/`memalign` are unaffected (still go through the original `rs_alloc` wrapper, which stamps unconditionally as before).
+- Extended the same state-preserving zero decision to segmented-bitmap allocations: virgin blocks retain `Flags::NotAllocated` and can use kernel-zeroed memory directly, while reused, reclaimed, or direct-mapped big blocks are explicitly zeroed before return.
+
+### Alignment helpers
+
+- Added an `Alignment<T>` trait (`utility.rs`) implemented for `usize`/`u64`/`u32`/`u16`, providing `align_to` (existing unchecked fast path), `checked_align_to` (overflow-checked, returns `None` instead of silently wrapping), and `checked_align_of_page` (additionally requires the alignment to be a multiple of the OS page size).
+- `estimate_and_align_2mb` now short-circuits the 2MB/THP-eligible branch entirely when `RS_DISABLE_THP` is set, instead of always computing it and discarding the result.
+
+
+### CPU-ID-aware cache sizing
+
+- Per-CPU cache, NUMA, and bitmap storage uses the highest Linux possible CPU ID plus one, including gaps and CPUs that can be brought online later. The possible CPU list is parsed without heap allocation; if it cannot be read or parsed, initialization falls back to the configured CPU count.
+
+### Important RSEQ contract fix
+
+- Corrected the CPU-field pairing to follow the Linux RSEQ ABI: sample `cpu_id_start` outside the critical section to select the per-CPU cache, then compare that same sample against `cpu_id` inside the critical section before modifying the list and committing. Single push, batch push, and pop now validate `cpu_id`, rather than comparing against `cpu_id_start` again.
+- This check validates the cache selection made before the protected section, including migration before descriptor publication; RSEQ restart handling protects execution inside the section up to the commit point. `cpu_id_start` alone is not the validation field and can contain a plausible CPU index even when RSEQ is uninitialized. The `cpu_id` field carries the uninitialized/registration-failed sentinel values and remains the field used for availability checks.
+
+### RSEQ/slab fast path
+
+- Rewrote the successful RSEQ pop sequence to reuse its result register for descriptor setup and the list head, validate the sampled CPU through constant offsets from the RSEQ base, remove the guarded next-node prefetch and final result copy, and keep the list-head store immediately adjacent to `post_commit_ip`.
+- Stopped clearing `rseq_cs` on ordinary success, empty-list, mismatch, and abort exits. Linux only requires explicit clearing before reclaiming the descriptor or referenced code; rsmalloc's descriptors and assembly have process lifetime, and every new operation still installs its own descriptor.
+- Moved `AdaptiveBatching` from thread-local state to the page-aligned per-CPU slab cache so each `(CPU, size class)` predictor follows the cache whose transfer availability it models, rather than fragmenting history across threads. Transfer and bulk-fill predictors remain separate; each packs its batch and low-demand streak into one `AtomicUsize`, uses relaxed loads and a single non-retrying relaxed CAS for advisory feedback, and interprets zero-initialized mapped storage through the configured initial batch without per-instance `Once` initialization.
+- Made transfer batching inventory-aware instead of inferring availability from the number of blocks returned. A successful pop passes the selected list's pre-subtraction block count from its counter RMW to the requesting CPU's predictor, including when blocks are stolen from another CPU. The target is one quarter of that sampled inventory, bounded by the per-class batch limit; growth and shrinkage each close one quarter of the gap, smoothing adjustments without immediately jumping to the target. Feedback still uses a single non-retrying relaxed CAS, and obtaining the inventory snapshot needs no extra counter load.
+- Removed transfer-miss feedback and the synthetic growth signal previously supplied by a full transfer batch. The transfer predictor now adjusts on successful inventory observations; the separate bulk-fill predictor retains its own demand-based policy.
+- Adjusted the separate bulk-fill predictor's feedback after a transfer miss: `refill` discounts the number of blocks observed from a successful bulk fill by at least one and otherwise by half of the missed transfer batch (clamped to a minimum observation of one). A full bulk batch still supplies the existing bounded growth signal, but the transfer miss no longer looks like unqualified bulk demand.
+- Moved partially consumed bulk-fill metadata from thread-local `ThreadBulk` storage into per-CPU/per-class atomic slots in `MainCache`, eliminating the remaining Rust TLS and thread-destructor dependency while retaining the NUMA-aware pending queue as the collision/overflow path.
+
+### Opt-in confidence-based transfer batching
+
+- Added the opt-in `confidence-predictor` feature as an alternative to the original inventory-based adaptive transfer policy. It remains excluded from default features and `extra-checks`; bulk-fill prediction and trim lifetime estimation are unchanged.
+- Packs the normal batch candidate and two saturating 0–10 scores (normal confidence and back-off evidence) into the policy `AtomicUsize`. The independent, opt-in `experimental-predictive-demand` feature adds a 32-byte demand tracker to each predictor; bulk-fill predictors leave it unused. `MainCache` is 4096 bytes without the feature and 8192 bytes with it, retaining 4096-byte alignment. Policy feedback uses a single best-effort, non-retrying relaxed CAS.
+- Starts with confidence 5 and no back-off evidence. A full normal request raises confidence by one and removes one point of back-off evidence; a nonempty short return lowers confidence by one and adds two points of evidence. Empty transfer outcomes are ignored rather than training the predictor toward minimum batches.
+- Selects low-confidence mode when back-off evidence is nonzero and at least half the normal confidence. Low requests use two thirds of the bounded normal candidate, rounded down with a minimum of one for a positive candidate. Successful low requests drain evidence without lowering the stored normal candidate or increasing normal confidence, preventing repeated back-off from compounding into permanent batch shrinkage. Short returns reduce the candidate to the obtained count; full normal feedback grows at confidence 8 or above by one eighth of the candidate (at least one block), bounded by sampled inventory and the per-class limit. With `experimental-predictive-demand`, it instead eases toward lower demand by one eighth of the gap, or grows by one eighth of expected demand. Inventory is historical feedback, not a reservation or a guarantee of current availability.
+- Added independent `PREDICTOR_BATCHING` limits of `CACHE_HIGH_BLOCKS[class] + 1`, allowing a transfer refill to fill an empty CPU cache to its per-class high-water mark after returning one block to the caller. The original transfer policy and bulk refills retain `ITERATIONS` limits.
+- The independent, opt-in `experimental-predictive-demand` feature supplies a next-demand forecast to either transfer policy; it remains disabled by default. With the original policy, the target is the arithmetic mean of expected demand and one quarter of sampled inventory, clamped to class limits. Quarter-gap batch smoothing remains in place. The completion-based forecasting mechanism is described below.
+- With `predictor-debug` and `experimental-predictive-demand`, both policies log `expected_demand`; confidence builds additionally log `is_low`, recording the selected mode before supply feedback.
+- This policy may affect overall allocator performance: throughput, latency, and memory usage can improve or regress depending on the workload. Its additional prediction cost does not translate one-to-one into allocation overhead, since the policy runs on refills and changes batch sizes and refill frequency. Benchmark representative workloads before enabling it.
+
+### Completion-based predictive demand
+
+- The experimental predictor uses direct demand forecasting in `src/core_prim/predictor_demand.rs`. An observation estimates blocks consumed over a 50 µs horizon: `previous_delivery * 50_000 / depletion_interval_ns`. The interval runs from the previous refill's completion to the current refill's start, excluding the current refill's own work.
+- Forecasts the next demand as the latest observation plus its change from the previous observation, with the trend bounded to approximately half the latest observation in either direction. The first observation has no trend. Forecasts are bounded by the class transfer limit and a 64 KiB block-stride budget, with a one-block minimum. This branch uses bounded extrapolation, not the learned three-parameter model from `experiments`.
+- Checks the 50 µs recomputation gate at every refill completion, including successful transfer refills and bulk fallback. Accepted completions record actual delivered blocks even when recomputation is skipped, so the next observation uses the latest delivery. Forecast recomputation is `#[inline(never)]`; no allocation/free cache-hit bookkeeping, per-pop counters, background polling, or scans of other classes are added. Feature-disabled builds omit the tracker and sampling work.
+- Requires an empty cache at sample start and checks the completion CPU and cached remainder before accepting a delivery. Generation-tagged sample ownership rejects overlapping refills, and a drop guard releases abandoned samples. These checks filter unreliable observations; concurrent frees and migration away and back can still affect the estimate.
+- Depletion intervals of at least 100 ms reset the forecast history to its initial state. Preload child reset clears demand history, sample ownership, and the recomputation timestamp while preserving generation counters.
+
+### Instruction and codegen optimization
+
+- Changed x86-64 RSEQ pointer construction from `add` to `lea`, preserving flags as declared by the inline-assembly contract without increasing the instruction count.
+- Made RSEQ pop take a `RseqCache` pointer and address its usage counter relative to the list head. The displacement is derived with `offset_of!`, removing a separate address calculation and assembly input register while retaining the locked decrement after the head-store commit point.
+- Folded single-node RSEQ push's descriptor publication into a store at `offset_of!(rseq, rseq_cs)` from the RSEQ base, eliminating the separate descriptor-field address calculation. CPU validation, commit/abort handling, and atomic usage accounting remain unchanged.
+- Replaced selected slab/transfer-cache class indexing with unchecked indexing under the existing valid-size-class invariant. Removing the slab pop bounds check also allowed LLVM to fold LUT indexing into the load and simplify CPU-field addressing in the inspected release build.
+- Transfer-cache single/batch pushes and batch pops now reuse the head/tag returned by a failed CAS instead of issuing a separate acquire head load on each CAS retry. Push retains release publication, and failed CAS operations use acquire ordering to preserve the previous acquire reload semantics. Pop retraverses the observed list to recompute batch boundaries; ABA tags, per-list accounting, and retry backoff remain in place.
+
+### Small branch/overhead cleanups
+
+- Consolidated radix ownership reads around the initialized root and shared lookup helper; the direct `Radix::get` entry point is now test-only, and the shared traversal retains its chunk-index bounds check.
+- Simplified the RSEQ pop empty-list exit to jump directly to the shared exit label, removing the redundant intermediate label and jump without decrementing usage for an empty pop.
+- Changed slab batch admission to test current occupancy against the high-water mark rather than current occupancy plus the incoming batch. A batch can therefore be admitted when the cache is at or below the mark even if it crosses the mark; an already-overfull cache routes the batch to transfer storage.
+
+### Bounded allocation and API regression tests
+
+- Expanded `tests/global_test.rs` with representative size-class/page edges and alignments through 4 KiB, dirty-free/zeroed-allocation cycles, same-size/grow/shrink reallocations, incompatible alignment moves, failure preservation, and simultaneously live nonoverlapping ranges. Live-data checks also span best-effort trim calls without requiring specific reuse addresses or reclaimed-byte totals.
+- Added `tests/native_api.rs` behind `native-allocation-api`, deliberately leaving the test executable's global allocator unchanged. Cases cover standalone native allocation, slab/large boundaries, usable-size queries, counted-zeroing overflow rejection, alignment helpers and invalid alignments, null/zero-size realloc semantics, explicit alignment changes, and preservation of the original block on failure. The current native error behavior is unchanged.
+- Extended `tests/allocator_api.rs` coverage for requested-size reporting, simultaneously live boundary allocations, zero-sized layouts, retained and moved growth, `grow_zeroed` tails across alignment/backend changes, and original-block preservation after failed growth. Removed the older inline C ABI realloc/recallocarray test modules without changing those ABI implementations.
+- Replaced the old libc-driven stress checks with deterministic tests that explicitly allocate through v2 RSMalloc while the harness uses the system allocator. Four workers exercise mixed sizes and cross-thread resize/free ownership transfers, checking initialized patterns and live-range separation. Defaults retain bounded batches rather than tens of GiB of large allocations; `RS_TEST_LOOP` now controls rounds clamped to 1–64. Removed timing output from correctness tests, and exclude these Rust integration targets under preload rather than accidentally measuring/testing libc. The separate C fork regression remains available.
+
+### Fuzzing
+
+- Added a `fuzz/` crate (`cargo-fuzz`/`libfuzzer-sys`, `arbitrary`-derived op sequences) with two targets: `alloc_ops` (single-threaded alloc/dealloc/realloc/alloc_zeroed sequences against tracked live allocations, checking pattern-filled content survives untouched and calloc'd memory reads back zero) and `concurrent_alloc_ops` (the same op space driven across up to 12 threads via a shared `rayon` pool, exercising the transfer cache's cross-CPU stealing and NUMA paths under concurrent load).
+- Added `RS_FUZZ_TYPE` modes to the concurrent target so fuzz runs can concentrate on small allocations, the 4-64 MiB segmented-bitmap band, mixed boundary cases, or the wider full range without maintaining separate targets.
+- Removed `tests/loom_transfer.rs` in favor of the above — direct fuzzing over the real transfer-cache/RSEQ paths in place of a `loom`-modeled subset of the same logic.
+
+### User guide and architecture documentation
+
+- Added an mdBook under `book/`, linked from the README, with integration guides for Rust global allocation, native/raw APIs, and `LD_PRELOAD`, plus configuration, diagnostics, benchmarking, security, and troubleshooting guidance.
+- Added detailed architecture chapters covering bootstrap, RSEQ caches, transfer storage, deferred refill initialization, backing memory, large allocations, ownership and resizing, reclamation, and concurrency. The introduction and book navigation link to these chapters.
+- Documented workload fit and failure modes, including where CPU-local caching and cross-thread reuse can help and where local fast-path cost or retained memory can outweigh those benefits. Build the guide with `mdbook build book`.
+
+### Benchmarks
+
+- Refreshed alpha-3 measurements using column-wise medians across ten runs and updated the overview and detailed comparison tables/charts. The current comparison covers 21 workloads across five allocators, including refreshed ten-run `z3` results; removed the older `rbstressN` entries. Separate column medians need not describe one actual run, and these tables do not establish performance of the ML experiment.
+- Added `size_class_matching_*` cases to `book_speed`'s `alloc_free` group, covering both fixed repeated sizes and a genuinely randomized-size variant, for measuring `match_size_class` dispatch cost in isolation.
+- Added `malloc_only` and `free_only` benchmark groups using `iter_custom` to separate untimed setup/teardown from the timed operation, instead of only measuring paired `malloc`+`free` round trips.
+
 ## v0.2.0-alpha
 
 v0.2.0-alpha is a full allocator overhaul relative to the `main` branch's `0.1.0-alpha` line. It reworks the RSEQ/slab path, transfer-cache reuse, refill metadata ownership, NUMA placement, buddy backend, trimming and relief, preload ABI behavior, debug reporting, benchmarks, and the public Rust configuration surface.

@@ -1,6 +1,5 @@
 pub mod bulk_fill;
 pub mod pending_queue;
-pub mod rseq_asm;
 pub mod rseq_offsets;
 pub mod slab_cache;
 
@@ -40,7 +39,7 @@ pub mod bitmap {
         }
     }
 
-    pub unsafe fn cpu_is_empty(
+    pub unsafe fn cpu_is_not_set(
         map: *mut AtomicU64,
         class: usize,
         cpu_id: usize,
@@ -64,5 +63,38 @@ pub mod bitmap {
         }
         (*ptr).fetch_or(bit, Ordering::Relaxed);
         true
+    }
+}
+
+pub mod aba {
+    use crate::Header;
+
+    pub struct PackedTag {
+        pub current_header: *mut Header,
+        pub old_packed: u128,
+    }
+
+    pub const TAG_SHIFT: u32 = 64;
+    const PTR_MASK: u128 = u64::MAX as u128;
+
+    pub struct Tagging;
+
+    impl Tagging {
+        #[inline(always)]
+        pub fn tag_ptr(&self, ptr: *mut Header, old_tag: u128) -> u128 {
+            // this shift should be eliminated at compile time
+            let tag = (old_tag >> TAG_SHIFT) as u64;
+            let tag = tag.wrapping_add(1);
+
+            ((ptr as usize as u128) & PTR_MASK) | ((tag as u128) << TAG_SHIFT)
+        }
+
+        #[inline(always)]
+        pub fn untag_ptr(&self, word: u128) -> PackedTag {
+            PackedTag {
+                current_header: (word & PTR_MASK) as usize as *mut Header,
+                old_packed: word,
+            }
+        }
     }
 }

@@ -3,21 +3,22 @@ use std::{
     mem::size_of,
     os::raw::c_void,
     ptr::{null_mut, write},
-    sync::Mutex,
+    sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
 };
 
-#[cfg(feature = "debug")]
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-use rustix::mm::{Advice, MapFlags, ProtFlags, madvise, mmap_anonymous};
+use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 
 use crate::{
-    internals::{binder::prefer_node, once::Once},
+    inner::alloc::MAX_REFILL_RETRIES,
+    internals::{binder::NumaBind, fork_lock::SpinLock, once::Once},
     record_mmap_call,
-    utility::{MIN_REFILL_BYTES, align_to},
+    rseq_core::{rseq_offsets::get_rseq, slab_cache::SLAB_CACHE},
+    traits::Lock,
+    utility::{Alignment, MIN_REFILL_BYTES},
 };
 
 const PAGE_SIZE: usize = 4096;
+pub(crate) const MIN_ARENA_SIZE: usize = 256 * 1024;
 pub static mut ARENA_SIZE: usize = 1024 * 1024 * 256;
 
 #[cfg(feature = "debug")]
@@ -30,19 +31,21 @@ struct PageArena {
     prev: *mut PageArena,
     base: usize,
     end: usize,
-    current: usize,
+    current: AtomicUsize,
 }
 
 struct NodeArenaState {
-    current: *mut PageArena,
     arenas: *mut PageArena,
 }
 
 #[repr(C, align(64))]
 struct NodeArena {
-    state: Mutex<NodeArenaState>,
+    lock: SpinLock<NodeArenaState>,
+    current: AtomicPtr<PageArena>,
     node_id: u16,
 }
+
+unsafe impl Sync for NodeArena {}
 
 struct InnerTable {
     arenas: *mut NodeArena,
@@ -91,10 +94,8 @@ impl PageAllocator {
                     write(
                         arenas.add(node),
                         NodeArena {
-                            state: Mutex::new(NodeArenaState {
-                                current: null_mut(),
-                                arenas: null_mut(),
-                            }),
+                            lock: SpinLock::new(NodeArenaState { arenas: null_mut() }),
+                            current: AtomicPtr::new(null_mut()),
                             node_id: node as u16,
                         },
                     );
@@ -107,6 +108,30 @@ impl PageAllocator {
         });
     }
 
+    #[cfg(feature = "preload")]
+    pub unsafe fn lock_all_for_fork(&self, owner_tid: usize) {
+        let inner = &*self.inner.get();
+        if inner.arenas.is_null() {
+            return;
+        }
+
+        for node in 0..inner.node_count {
+            (*inner.arenas.add(node)).lock.freeze_for_fork(owner_tid);
+        }
+    }
+
+    #[cfg(feature = "preload")]
+    pub unsafe fn reset_locks_on_fork(&self) {
+        let inner = &*self.inner.get();
+        if inner.arenas.is_null() {
+            return;
+        }
+
+        for node in 0..inner.node_count {
+            (*inner.arenas.add(node)).lock.thaw_after_fork();
+        }
+    }
+
     #[cfg(feature = "debug")]
     pub unsafe fn arena_counts(&self) -> Vec<usize> {
         let inner = &*self.inner.get();
@@ -117,7 +142,7 @@ impl PageAllocator {
         let mut counts = Vec::with_capacity(inner.node_count);
         for node in 0..inner.node_count {
             let node_ref = &*inner.arenas.add(node);
-            let state = node_ref.state.lock().unwrap_or_else(|e| e.into_inner());
+            let state = node_ref.lock.lock();
 
             let mut count = 0usize;
             let mut arena = state.arenas;
@@ -133,13 +158,19 @@ impl PageAllocator {
     }
 
     #[inline(always)]
-    pub unsafe fn alloc(&self, node_id: u16, size: usize) -> Option<*mut c_void> {
-        let size = align_to(size.max(1), PAGE_SIZE);
-        let inner = &mut *self.inner.get();
+    pub fn alloc(&self, node_id: Option<u16>, size: usize) -> Option<*mut c_void> {
+        let size = (size.max(1)).checked_align_to(PAGE_SIZE)?;
+        let inner = unsafe { &*self.inner.get() };
 
         if inner.arenas.is_null() || inner.node_count == 0 {
             return None;
         }
+
+        let node_id = node_id.unwrap_or_else(|| {
+            let inner = SLAB_CACHE.get_inner();
+            let cpu_id = get_rseq().cpu_id_start as usize;
+            unsafe { SLAB_CACHE.node_for_cpu(cpu_id, inner) }
+        });
 
         let node = if node_id as usize >= inner.node_count {
             0
@@ -147,72 +178,104 @@ impl PageAllocator {
             node_id as usize
         };
 
-        let node = &*inner.arenas.add(node);
-        let mut state = node.state.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { Self::alloc_inner(&*inner.arenas.add(node), size) }
+    }
 
-        if let Some(ptr) = Self::allocate_current(&mut state, size) {
-            return Some(ptr);
+    unsafe fn maybe_remove(state: &mut NodeArenaState, node: &NodeArena, current: *mut PageArena) {
+        if !current.is_null()
+            && (*current).end - (*current).current.load(Ordering::Relaxed) < MIN_REFILL_BYTES
+        {
+            Self::remove_arena(state, node, current);
         }
-
-        if let Some(ptr) = Self::allocate_search(&mut state, size) {
-            return Some(ptr);
-        }
-
-        Self::new_arena_locked(&mut state, node.node_id, size)?;
-        Self::allocate_current(&mut state, size)
     }
 
     #[inline(always)]
-    unsafe fn allocate_current(state: &mut NodeArenaState, size: usize) -> Option<*mut c_void> {
-        if state.current.is_null() {
-            return None;
+    unsafe fn alloc_inner(node: &NodeArena, size: usize) -> Option<*mut c_void> {
+        let current = node.current.load(Ordering::Acquire);
+        if let Some(ptr) = Self::allocate_from_arena(current, size) {
+            return Some(ptr);
+        }
+        Self::alloc_slow(current, node, size)
+    }
+
+    #[inline(never)]
+    unsafe fn alloc_slow(
+        old_arena: *mut PageArena,
+        node: &NodeArena,
+        size: usize,
+    ) -> Option<*mut c_void> {
+        let state = &mut *node.lock.lock();
+
+        let current = node.current.load(Ordering::Acquire);
+        if current != old_arena {
+            if let Some(ptr) = Self::allocate_from_arena(current, size) {
+                return Some(ptr);
+            }
+        }
+        Self::maybe_remove(state, node, current);
+
+        if let Some(ptr) = Self::allocate_search(state, node, size) {
+            return Some(ptr);
         }
 
-        let arena = &mut *state.current;
-        let next = arena.current.checked_add(size)?;
-        if next > arena.end {
-            return None;
-        }
-
-        let ptr = arena.current as *mut c_void;
-        arena.current = next;
-
-        if arena.end - arena.current < MIN_REFILL_BYTES {
-            Self::remove_arena(state, arena);
-        }
-
-        Some(ptr)
+        let arena = Self::new_arena_locked(state, node.node_id, size)?;
+        node.current.store(arena, Ordering::Release);
+        Self::allocate_from_arena(arena, size)
     }
 
     #[inline(always)]
-    unsafe fn allocate_search(state: &mut NodeArenaState, size: usize) -> Option<*mut c_void> {
+    unsafe fn allocate_search(
+        state: &mut NodeArenaState,
+        node: &NodeArena,
+        size: usize,
+    ) -> Option<*mut c_void> {
         let mut arena = state.arenas;
 
         while !arena.is_null() {
-            let arena_ref = &mut *arena;
+            let next_arena = (*arena).next;
 
-            if arena != state.current {
-                if let Some(next) = arena_ref.current.checked_add(size)
-                    && next <= arena_ref.end
-                {
-                    let ptr = arena_ref.current as *mut c_void;
-                    arena_ref.current = next;
-
-                    if arena_ref.end - arena_ref.current < MIN_REFILL_BYTES {
-                        Self::remove_arena(state, arena);
-                    }
-
-                    return Some(ptr);
-                }
+            if let Some(ptr) = Self::allocate_from_arena(arena, size) {
+                node.current.store(arena, Ordering::Release);
+                return Some(ptr);
             }
 
-            arena = arena_ref.next;
+            Self::maybe_remove(state, node, arena);
+
+            arena = next_arena;
         }
 
         None
     }
 
-    pub unsafe fn try_grow_inplace(
+    #[inline(always)]
+    unsafe fn allocate_from_arena(arena: *mut PageArena, size: usize) -> Option<*mut c_void> {
+        if arena.is_null() {
+            return None;
+        }
+        let end = (*arena).end;
+        let mut observed = (*arena).current.load(Ordering::Acquire);
+
+        loop {
+            let start = observed;
+
+            let next = start.checked_add(size)?;
+            if next > end {
+                return None;
+            }
+
+            match (*arena).current.compare_exchange_weak(
+                observed,
+                next,
+                Ordering::Release,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return Some(start as *mut c_void),
+                Err(current) => observed = current,
+            }
+        }
+    }
+
+    pub fn try_grow_inplace(
         &self,
         node_id: u16,
         ptr: *mut c_void,
@@ -223,13 +286,15 @@ impl PageAllocator {
             return false;
         }
 
-        let old_size = align_to(old_size.max(1), PAGE_SIZE);
-        let new_size = align_to(new_size.max(1), PAGE_SIZE);
+        let old_size = old_size.max(1).align_to(PAGE_SIZE);
+        let Some(new_size) = new_size.max(1).checked_align_to(PAGE_SIZE) else {
+            return false;
+        };
         if new_size <= old_size {
             return true;
         }
 
-        let inner = &mut *self.inner.get();
+        let inner = unsafe { &*self.inner.get() };
         if inner.arenas.is_null() || inner.node_count == 0 {
             return false;
         }
@@ -240,13 +305,14 @@ impl PageAllocator {
             node_id as usize
         };
 
-        let node = &*inner.arenas.add(node);
-        let mut state = node.state.lock().unwrap_or_else(|e| e.into_inner());
+        let node = unsafe { &*inner.arenas.add(node) };
+        let state = &mut *node.lock.lock();
+
         let addr = ptr as usize;
         let mut arena = state.arenas;
 
         while !arena.is_null() {
-            let arena_ref = &mut *arena;
+            let arena_ref = unsafe { &mut *arena };
             if addr >= arena_ref.base && addr < arena_ref.end {
                 if (addr - arena_ref.base) % PAGE_SIZE != 0 {
                     return false;
@@ -256,10 +322,6 @@ impl PageAllocator {
                     return false;
                 };
 
-                if old_end != arena_ref.current {
-                    return false;
-                }
-
                 let Some(new_end) = addr.checked_add(new_size) else {
                     return false;
                 };
@@ -268,10 +330,16 @@ impl PageAllocator {
                     return false;
                 }
 
-                arena_ref.current = new_end;
+                if arena_ref
+                    .current
+                    .compare_exchange(old_end, new_end, Ordering::Release, Ordering::Relaxed)
+                    .is_err()
+                {
+                    return false;
+                }
 
-                if arena_ref.end - arena_ref.current < MIN_REFILL_BYTES {
-                    Self::remove_arena(&mut state, arena);
+                if arena_ref.end - new_end < MIN_REFILL_BYTES {
+                    unsafe { Self::remove_arena(state, node, arena) };
                 }
 
                 return true;
@@ -283,12 +351,17 @@ impl PageAllocator {
         false
     }
 
-    unsafe fn remove_arena(state: &mut NodeArenaState, arena_base: *mut PageArena) {
+    unsafe fn remove_arena(
+        state: &mut NodeArenaState,
+        node: &NodeArena,
+        arena_base: *mut PageArena,
+    ) {
         if arena_base.is_null() {
             return;
         }
 
         let arena = &mut *arena_base;
+        arena.current.swap(arena.end, Ordering::AcqRel);
 
         let next = arena.next;
         let prev = arena.prev;
@@ -303,20 +376,12 @@ impl PageAllocator {
             (*next).prev = prev;
         }
 
-        if state.current == arena_base {
-            state.current = next;
-        }
+        let _ =
+            node.current
+                .compare_exchange(arena_base, next, Ordering::Release, Ordering::Relaxed);
 
         #[cfg(feature = "debug")]
         TOTAL_REMOVED.fetch_add(1, Ordering::Relaxed);
-
-        // avoid too much madvise calls on small arena sizes
-        // important for overall performance of the allocator;
-        // we shouldnt stall too much even in the slowest path
-        if ARENA_SIZE >= 1024 * 1024 * 16 {
-            let metadata_size = align_to(size_of::<PageArena>(), PAGE_SIZE);
-            let _ = madvise(arena_base as *mut c_void, metadata_size, Advice::DontNeed);
-        }
     }
 
     #[cold]
@@ -325,33 +390,45 @@ impl PageAllocator {
         state: &mut NodeArenaState,
         node_id: u16,
         requested: usize,
-    ) -> Option<()> {
-        let data_size = align_to(requested.max(ARENA_SIZE), PAGE_SIZE);
-        let metadata_size = align_to(size_of::<PageArena>(), PAGE_SIZE);
+    ) -> Option<*mut PageArena> {
+        let data_size = requested.max(ARENA_SIZE).checked_align_to(PAGE_SIZE)?;
+
+        let metadata_size = size_of::<PageArena>().align_to(PAGE_SIZE);
         let map_size = metadata_size.checked_add(data_size)?;
 
         record_mmap_call(map_size);
-        let mem = mmap_anonymous(
-            null_mut(),
-            map_size,
-            ProtFlags::READ | ProtFlags::WRITE,
-            MapFlags::PRIVATE,
-        )
-        .ok()?;
+        let mut mem = null_mut();
+        for _ in 0..MAX_REFILL_RETRIES.max(1) {
+            let allocated_mem = mmap_anonymous(
+                null_mut(),
+                map_size,
+                ProtFlags::READ | ProtFlags::WRITE,
+                MapFlags::PRIVATE,
+            )
+            .ok();
+            if let Some(memory) = allocated_mem {
+                mem = memory;
+                break;
+            }
+        }
+
+        if mem.is_null() {
+            return None;
+        }
 
         #[cfg(all(
             feature = "page-backend-no-huge-page",
             not(feature = "page-backend-huge-page")
         ))]
-        let _ = madvise(mem, map_size, Advice::LinuxNoHugepage);
+        let _ = rustix::mm::madvise(mem, map_size, rustix::mm::Advice::LinuxNoHugepage);
 
         #[cfg(all(
             feature = "page-backend-huge-page",
             not(feature = "page-backend-no-huge-page")
         ))]
-        let _ = madvise(mem, map_size, Advice::LinuxHugepage);
+        let _ = rustix::mm::madvise(mem, map_size, rustix::mm::Advice::LinuxHugepage);
 
-        prefer_node(mem, map_size, node_id);
+        NumaBind.prefer_node(mem, map_size, node_id);
 
         let arena = mem as *mut PageArena;
         let base = mem as usize + metadata_size;
@@ -363,7 +440,7 @@ impl PageAllocator {
                 prev: null_mut(),
                 base,
                 end: base.checked_add(data_size)?,
-                current: base,
+                current: AtomicUsize::new(base),
             },
         );
 
@@ -372,12 +449,11 @@ impl PageAllocator {
         }
 
         state.arenas = arena;
-        state.current = arena;
 
         #[cfg(feature = "debug")]
         TOTAL_LIVED.fetch_add(1, Ordering::Relaxed);
 
-        Some(())
+        Some(arena)
     }
 }
 

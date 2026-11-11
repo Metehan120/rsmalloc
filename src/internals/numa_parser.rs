@@ -43,9 +43,9 @@ unsafe fn read_file_stack(path: &str, buf: &mut [u8]) -> Option<usize> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct NumberRange {
+pub(crate) struct NumberRange {
     start: usize,
-    end: usize,
+    pub(crate) end: usize,
 }
 
 impl NumberRange {
@@ -91,16 +91,16 @@ impl Iterator for NumberRangeIter {
 impl FusedIterator for NumberRangeIter {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ParseListError;
+pub(crate) struct ParseListError;
 
-struct NumberRangeList<'a> {
+pub(crate) struct NumberRangeList<'a> {
     bytes: &'a [u8],
     index: usize,
     finished: bool,
 }
 
 impl<'a> NumberRangeList<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
+    pub(crate) fn new(bytes: &'a [u8]) -> Self {
         Self {
             bytes,
             index: 0,

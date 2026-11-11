@@ -1,0 +1,286 @@
+use std::{
+    os::raw::c_void,
+    ptr::null_mut,
+    sync::atomic::Ordering::{Acquire, Relaxed, Release},
+};
+
+use rustix::mm::{Advice, madvise};
+
+#[cfg(feature = "debug")]
+use crate::backend::background_thread::{TOTAL_TRIM_CALLS, TOTAL_TRIMMED_VA};
+use crate::{
+    Flags, Header,
+    core_prim::predictor::TRIM_SMOOTHING,
+    global_vals::{
+        AVERAGE_BLOCK_TIMES, CURRENT_STAMP, GLOBAL_TRIM_LOCK, NCPU, SMALL_TRIM_THRESHOLD,
+        TOTAL_CACHED_VA,
+    },
+    internals::{atomics::AtomicOrdering, lock::LockGuard},
+    rseq_core::{
+        aba::Tagging,
+        slab_cache::{SlabCache, TransferCache},
+    },
+    traits::Lock,
+    utility::{ITERATIONS, NUM_SIZE_CLASSES, SIZE_CLASSES, get_size_4096_class},
+};
+#[cfg(feature = "debug-exact")]
+use crate::{
+    backend::background_thread::{TOTAL_TRIMMED_BLOCKS, TOTAL_TRIMMED_TIME},
+    core_prim::hw::HardwareFeature,
+};
+
+#[inline(always)]
+fn should_trim_block(eligible: bool, request_pending: bool, retained: usize) -> bool {
+    eligible && !(request_pending && retained == 0)
+}
+
+impl SlabCache {
+    pub unsafe fn trim_small(&self, requested_size: usize) -> usize {
+        if TOTAL_CACHED_VA.load(Relaxed) < SMALL_TRIM_THRESHOLD {
+            return 0;
+        }
+
+        let LockGuard::Free(_global_trim_guard) = GLOBAL_TRIM_LOCK.try_lock() else {
+            return 0;
+        };
+
+        #[cfg(feature = "debug")]
+        TOTAL_TRIM_CALLS.fetch_add(1, Relaxed);
+
+        let mut total_trimmed = 0;
+        let inner = self.get_inner();
+
+        for cpu in 0..NCPU {
+            for class in get_size_4096_class()..NUM_SIZE_CLASSES {
+                let main_list = self.get_list(cpu, class);
+                if !main_list.trim_message.begin() {
+                    continue;
+                }
+                let output = main_list.detach_normal_for_trim();
+
+                if output.is_null() {
+                    if !cfg!(feature = "trim-aggressively") {
+                        TRIM_SMOOTHING[class].update_refill(100, 1, 100);
+                    }
+                    main_list.trim_message.finish();
+                    continue;
+                }
+
+                let mut lifetime_sum: u32 = 0;
+                let mut lifetime_samples = 0;
+                #[cfg(feature = "debug-exact")]
+                let mut total_popped = 0;
+
+                let mut trim_list = null_mut();
+                let mut total_push = 0;
+                let mut push_list_end = null_mut();
+                let mut push_list_head = null_mut();
+                let stamp = CURRENT_STAMP.load(Relaxed);
+                let avg_life = TRIM_SMOOTHING[class].time(100) as u32;
+                let return_batch_limit = ITERATIONS[class] + ITERATIONS[class] / 2;
+
+                let mut next = output;
+                while !next.is_null() {
+                    #[cfg(feature = "debug-exact")]
+                    {
+                        total_popped += 1;
+                    }
+                    let old_next = (*next).next.load(Acquire);
+                    let life_time = (*next).life_time;
+                    let ticket = main_list.trim_message.pending();
+
+                    // These blocks are already free. Allocated means the payload
+                    // has been used, not that a caller still owns it. Skip fresh
+                    // never-used blocks and blocks already marked reclaimed.
+                    if should_trim_block(
+                        stamp.saturating_sub(life_time) > avg_life
+                            && (*next).flags == Flags::Allocated,
+                        ticket.is_some(),
+                        total_push,
+                    ) {
+                        (*next).next.store(trim_list, Release);
+                        trim_list = next;
+                    } else {
+                        (*next).next.store(push_list_head, Release);
+                        push_list_head = next;
+                        if total_push == 0 {
+                            push_list_end = next;
+                        }
+                        total_push += 1;
+                        if total_push == return_batch_limit && ticket.is_none() {
+                            self.transfer_push_batch(
+                                class,
+                                push_list_head,
+                                push_list_end,
+                                total_push,
+                                cpu,
+                                inner,
+                            );
+                            total_push = 0;
+                            push_list_head = null_mut();
+                            push_list_end = null_mut();
+                        }
+                    }
+
+                    // Zero stamps do not contribute to the lifetime estimate.
+                    // Sample both retained blocks and trim candidates.
+                    if life_time != 0 {
+                        lifetime_sum = lifetime_sum.saturating_add(stamp.saturating_sub(life_time));
+                        lifetime_samples += 1;
+                    }
+
+                    if let Some(ticket) = ticket {
+                        self.transfer_push_batch(
+                            class,
+                            push_list_head,
+                            push_list_end,
+                            total_push,
+                            cpu,
+                            inner,
+                        );
+                        total_push = 0;
+                        push_list_head = null_mut();
+                        push_list_end = null_mut();
+                        if main_list.trim_message.signal_ready(ticket) {
+                            main_list.trim_message.wait_done(ticket, 1024);
+                        }
+                    }
+
+                    next = old_next;
+                }
+
+                if total_push > 0 {
+                    self.transfer_push_batch(
+                        class,
+                        push_list_head,
+                        push_list_end,
+                        total_push,
+                        cpu,
+                        inner,
+                    );
+                }
+
+                main_list.trim_message.finish();
+
+                crate::global_vals::record_transfer_pop!(class, total_popped);
+                if lifetime_samples > 0 {
+                    let new_avg = (lifetime_sum / lifetime_samples).clamp(1, 100);
+                    TRIM_SMOOTHING[class].update_refill(new_avg as usize, 1, 100);
+                }
+
+                while !trim_list.is_null() {
+                    #[cfg(feature = "debug-exact")]
+                    TOTAL_TRIMMED_BLOCKS.fetch_add(1, Relaxed);
+                    let next = (*trim_list).next.load(Acquire);
+                    let mut did_trim = false;
+                    // Zero means no byte limit. Otherwise finish whole blocks,
+                    // so the final successful trim can exceed the requested size.
+                    if requested_size == 0 || total_trimmed < requested_size {
+                        #[cfg(feature = "debug-exact")]
+                        let mut start_of = HardwareFeature::new_cycle_clock();
+
+                        let is_ok = Self::release_memory(trim_list, SIZE_CLASSES[class]);
+                        if is_ok {
+                            #[cfg(feature = "debug")]
+                            TOTAL_TRIMMED_VA.fetch_add(SIZE_CLASSES[class], Relaxed);
+                            (*trim_list).flags = Flags::Reclaimed;
+                            total_trimmed += SIZE_CLASSES[class];
+                            did_trim = true;
+                        }
+
+                        #[cfg(feature = "debug-exact")]
+                        let elapsed = start_of.elapsed();
+
+                        #[cfg(feature = "debug-exact")]
+                        TOTAL_TRIMMED_TIME.fetch_add(elapsed as usize, Relaxed);
+                    }
+                    // Restart the age even if advice failed or the byte limit
+                    // stopped us, giving this candidate a cooldown before retry.
+                    (*trim_list).life_time = stamp;
+                    // Publish only after advice and header updates are done.
+                    // Successful trims use the separate reclaimed-block list.
+                    if did_trim {
+                        self.transfer_push_single_trimmed(class, trim_list, cpu, inner);
+                    } else {
+                        self.transfer_push_single(class, trim_list, cpu, inner);
+                    }
+                    trim_list = next;
+                }
+            }
+        }
+
+        let mut global_avg: u64 = 0;
+        let mut global_count: u64 = 0;
+        for class in get_size_4096_class()..NUM_SIZE_CLASSES {
+            global_avg += TRIM_SMOOTHING[class].time(100) as u64;
+            global_count += 1;
+        }
+
+        if global_count > 0 {
+            AVERAGE_BLOCK_TIMES.store((global_avg / global_count) as u32, Relaxed);
+        }
+
+        total_trimmed
+    }
+
+    unsafe fn release_memory(header_ptr: *mut Header, size: usize) -> bool {
+        const PAGE_SIZE: usize = 4096;
+        const PAGE_MASK: usize = !(PAGE_SIZE - 1);
+
+        let header = header_ptr as usize;
+        let user_start = header + Header::SIZE;
+        let user_end = user_start + size;
+
+        // Discard only full pages inside the payload: round the start up and
+        // the end down, keeping the header and any shared edge pages intact.
+        let page_start = (user_start + PAGE_SIZE - 1) & PAGE_MASK;
+        let page_end = user_end & PAGE_MASK;
+
+        if page_start >= page_end {
+            return false;
+        }
+        let length = page_end - page_start;
+
+        // LinuxFree allows delayed reclaim; LinuxDontNeed discards immediately.
+        // Success means the advice was accepted, not that RSS fell by `size`.
+        let advice = if cfg!(feature = "lazy-page-trim") {
+            Advice::LinuxFree
+        } else {
+            Advice::LinuxDontNeed
+        };
+        madvise(page_start as *mut c_void, length, advice).is_ok()
+    }
+}
+
+impl TransferCache {
+    // The caller keeps the trim phase active until the detached chain is partitioned
+    // and retained blocks republished. Only the normal list is detached here.
+    unsafe fn detach_normal_for_trim(&self) -> *mut Header {
+        let mut list = self.list.load(Acquire);
+        loop {
+            let pack = Tagging.untag_ptr(list);
+            if pack.current_header.is_null() {
+                return null_mut();
+            }
+
+            let count = self
+                .size
+                .normal_blocks
+                .load(AtomicOrdering::TransferFetchLoad);
+            match self.list.compare_exchange(
+                list,
+                Tagging.tag_ptr(null_mut(), pack.old_packed),
+                Acquire,
+                Relaxed,
+            ) {
+                Ok(_) => {
+                    self.size
+                        .normal_blocks
+                        .fetch_sub(count, AtomicOrdering::TransferFetchOp);
+                    return pack.current_header;
+                }
+                Err(observed) => list = observed,
+            }
+        }
+    }
+}

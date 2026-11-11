@@ -1,17 +1,21 @@
-// Readers use acquire loads while writers publish new radix nodes with CAS and
-// update bitmap words with release RMWs. A reader racing with a writer may
-// observe either the old or new state; the allocator only requires eventual
-// visibility, not a perfectly up-to-date view of the radix.
+use crate::{
+    RSMallocError,
+    backend::page_allocator::{ARENA_SIZE, PAGE_ALLOCATOR},
+    core_prim::wrappers::MaybeNull,
+    internals::fork_lock::SpinLock,
+    record_mmap_call,
+    traits::Lock,
+    utility::unlikely,
+};
 
-use crate::{RSMallocError, core_prim::wrappers::UnsafePointer, record_mmap_call};
-use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous, munmap};
+use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 use std::{
-    hint::{cold_path, unlikely},
-    os::raw::c_void,
+    cell::UnsafeCell,
+    hint::cold_path,
     ptr::null_mut,
     sync::atomic::{
-        AtomicU64, AtomicUsize,
-        Ordering::{Acquire, Release},
+        AtomicBool, AtomicU64, AtomicUsize,
+        Ordering::{self, Acquire, Release},
     },
 };
 
@@ -33,11 +37,20 @@ const MAX_ADDR: usize = 1usize << 56;
 const RADIX_MAX_CHUNKS: usize = 1 << (L0_BITS + L1_BITS + L2_BITS + L3_BITS);
 
 pub struct Radix {
-    pub l0: UnsafePointer<AtomicUsize>,
+    l0: UnsafeCell<MaybeNull<AtomicUsize>>,
+    initialized: AtomicBool,
+    alloc_lock: SpinLock<()>,
 }
 
 impl Radix {
+    #[inline(never)]
     unsafe fn map_memory(size: usize) -> *mut u8 {
+        if size < ARENA_SIZE {
+            if let Some(arena_mem) = PAGE_ALLOCATOR.alloc(None, size) {
+                return arena_mem as *mut u8;
+            }
+        }
+
         record_mmap_call(size);
         match mmap_anonymous(
             null_mut(),
@@ -46,29 +59,52 @@ impl Radix {
             MapFlags::PRIVATE,
         ) {
             Ok(ptr) => ptr as *mut u8,
-            Err(err) => RSMallocError::VAIinitFailed.log_and_abort(
-                null_mut(),
-                "Cannot allocate memory for RadixTree (L3)",
-                Some(err.raw_os_error()),
-            ),
+            Err(err) => RSMallocError::OutOfMemory {
+                subsystem: "radix_tree.rs map_memory",
+                size,
+                errno: Some(err.raw_os_error()),
+            }
+            .log_and_abort(),
         }
     }
 
-    #[inline(always)]
-    unsafe fn unmap_memory(ptr: *mut u8, size: usize) {
-        let _ = munmap(ptr as *mut c_void, size);
-    }
-
-    #[inline(always)]
-    unsafe fn alloc_l3_bitmap_leaf() -> *mut AtomicU64 {
-        Self::map_memory(L3_BITMAP_WORDS * size_of::<AtomicU64>()) as *mut AtomicU64
-    }
-
-    pub unsafe fn new() -> Self {
-        let ptr = Self::map_memory(L0_SIZE * size_of::<AtomicUsize>()) as *mut AtomicUsize;
+    const fn new_const() -> Self {
         Self {
-            l0: UnsafePointer::new(ptr),
+            l0: UnsafeCell::new(MaybeNull::NULL),
+            initialized: AtomicBool::new(false),
+            alloc_lock: SpinLock::new(()),
         }
+    }
+
+    #[cfg(test)]
+    pub unsafe fn new() -> Self {
+        let radix = Self::new_const();
+        radix.init();
+        radix
+    }
+
+    #[cold]
+    #[inline(never)]
+    unsafe fn init(&self) {
+        if self.initialized.load(Acquire) {
+            return;
+        }
+        let _guard = self.alloc_lock.lock();
+        if self.initialized.load(Ordering::Relaxed) {
+            return;
+        }
+        let ptr = Self::map_memory(L0_SIZE * size_of::<AtomicUsize>()) as *mut AtomicUsize;
+        *self.l0.get() = MaybeNull::new(ptr);
+        // Readers must observe publication before touching the cell. The root
+        // stays mapped and is never replaced after this store.
+        self.initialized.store(true, Release);
+    }
+
+    // The caller has observed initialization, either through bootstrap's gate
+    // or an acquire load of initialized. The published root cannot be null.
+    #[inline(always)]
+    unsafe fn root(&self) -> *mut AtomicUsize {
+        (*self.l0.get()).as_ptr()
     }
 
     #[inline(always)]
@@ -85,6 +121,7 @@ impl Radix {
         ptr: *mut AtomicUsize,
         idx: usize,
         level_size: usize,
+        lock: &SpinLock<()>,
     ) -> *mut AtomicUsize {
         let entry = ptr.add(idx);
         let val = (*entry).load(Acquire) as *mut AtomicUsize;
@@ -92,34 +129,42 @@ impl Radix {
             return val;
         }
 
+        let _guard = lock.lock();
+
+        let existing = (*entry).load(Acquire);
+        if existing != 0 {
+            return existing as *mut _;
+        }
+
         let size = level_size * size_of::<AtomicUsize>();
         let new = Self::map_memory(size) as *mut AtomicUsize;
-        match (*entry).compare_exchange(0, new as usize, Release, Acquire) {
-            Ok(_) => new,
-            Err(existing) => {
-                Self::unmap_memory(new as *mut u8, size);
-                existing as *mut AtomicUsize
-            }
-        }
+        (*entry).store(new as usize, Release);
+        new
     }
 
     #[inline(always)]
-    unsafe fn get_or_alloc_l3(l2: *mut AtomicUsize, idx: usize) -> *mut AtomicU64 {
+    unsafe fn get_or_alloc_l3(
+        l2: *mut AtomicUsize,
+        idx: usize,
+        lock: &SpinLock<()>,
+    ) -> *mut AtomicU64 {
         let entry = l2.add(idx);
         let val = (*entry).load(Acquire) as *mut AtomicU64;
         if !val.is_null() {
             return val;
         }
 
-        let size = L3_BITMAP_WORDS * size_of::<AtomicU64>();
-        let new = Self::alloc_l3_bitmap_leaf();
-        match (*entry).compare_exchange(0, new as usize, Release, Acquire) {
-            Ok(_) => new,
-            Err(existing) => {
-                Self::unmap_memory(new as *mut u8, size);
-                existing as *mut AtomicU64
-            }
+        let _guard = lock.lock();
+
+        let existing = (*entry).load(Acquire);
+        if existing != 0 {
+            return existing as *mut _;
         }
+
+        let size = L3_BITMAP_WORDS * size_of::<AtomicU64>();
+        let new = Self::map_memory(size) as *mut AtomicU64;
+        (*entry).store(new as usize, Release);
+        new
     }
 
     #[inline(always)]
@@ -128,9 +173,10 @@ impl Radix {
             return;
         }
         let (i0, i1, i2, i3) = Self::split(chunk_idx);
-        let l1 = Self::get_or_alloc(self.l0.as_ptr(), i0, L1_SIZE);
-        let l2 = Self::get_or_alloc(l1, i1, L2_SIZE);
-        let l3 = Self::get_or_alloc_l3(l2, i2);
+        let lock = &self.alloc_lock;
+        let l1 = Self::get_or_alloc(self.root(), i0, L1_SIZE, lock);
+        let l2 = Self::get_or_alloc(l1, i1, L2_SIZE, lock);
+        let l3 = Self::get_or_alloc_l3(l2, i2, lock);
 
         let word_idx = i3 / L3_WORD_BITS;
         let bit_idx = i3 % L3_WORD_BITS;
@@ -138,7 +184,9 @@ impl Radix {
         let word = l3.add(word_idx);
 
         if val {
-            (*word).fetch_or(mask, Release);
+            if (*word).load(Ordering::Relaxed) & mask == 0 {
+                (*word).fetch_or(mask, Release);
+            }
         } else {
             (*word).fetch_and(!mask, Release);
         }
@@ -146,12 +194,14 @@ impl Radix {
 
     #[inline(always)]
     unsafe fn set_range(&self, start_idx: usize, end_idx: usize, val: bool) {
+        let root = self.root();
         let mut chunk_idx = start_idx;
         loop {
             let (i0, i1, i2, i3) = Self::split(chunk_idx);
-            let l1 = Self::get_or_alloc(self.l0.as_ptr(), i0, L1_SIZE);
-            let l2 = Self::get_or_alloc(l1, i1, L2_SIZE);
-            let l3 = Self::get_or_alloc_l3(l2, i2);
+            let lock = &self.alloc_lock;
+            let l1 = Self::get_or_alloc(root, i0, L1_SIZE, lock);
+            let l2 = Self::get_or_alloc(l1, i1, L2_SIZE, lock);
+            let l3 = Self::get_or_alloc_l3(l2, i2, lock);
 
             let chunks_left_in_leaf = L3_SIZE - i3;
             let chunks_left_in_range = end_idx - chunk_idx + 1;
@@ -184,7 +234,9 @@ impl Radix {
                 let word = l3.add(word_idx);
 
                 if val {
-                    (*word).fetch_or(mask, Release);
+                    if (*word).load(Ordering::Relaxed) & mask != mask {
+                        (*word).fetch_or(mask, Release);
+                    }
                 } else {
                     (*word).fetch_and(!mask, Release);
                 }
@@ -197,14 +249,23 @@ impl Radix {
         }
     }
 
+    #[cfg(test)]
     #[inline(always)]
     pub unsafe fn get(&self, chunk_idx: usize) -> bool {
+        if unlikely(!self.initialized.load(Acquire)) {
+            return false;
+        }
+        Self::get_from_root(self.root(), chunk_idx)
+    }
+
+    #[inline(always)]
+    unsafe fn get_from_root(root: *mut AtomicUsize, chunk_idx: usize) -> bool {
         if unlikely(chunk_idx >= RADIX_MAX_CHUNKS) {
             return false;
         }
         let (i0, i1, i2, i3) = Self::split(chunk_idx);
 
-        let l1 = (*self.l0.as_ptr().add(i0)).load(Acquire) as *mut AtomicUsize;
+        let l1 = (*root.add(i0)).load(Acquire) as *mut AtomicUsize;
         if l1.is_null() {
             return false;
         }
@@ -213,7 +274,7 @@ impl Radix {
             return false;
         }
         let l3 = (*l2.add(i2)).load(Acquire) as *mut AtomicU64;
-        if l3.is_null() {
+        if unlikely(l3.is_null()) {
             return false;
         }
 
@@ -241,30 +302,44 @@ pub struct RadixTree {
 unsafe impl Sync for RadixTree {}
 
 impl RadixTree {
-    pub const unsafe fn new_const() -> Self {
+    pub const fn new_const() -> Self {
         Self {
-            nodes: Radix {
-                l0: UnsafePointer::new(null_mut()),
-            },
+            nodes: Radix::new_const(),
         }
     }
 
+    #[cfg(test)]
     pub unsafe fn new() -> Self {
         Self {
             nodes: Radix::new(),
         }
     }
 
-    #[inline(always)]
-    pub unsafe fn set_single_big(&mut self, addr: usize, val: bool) {
-        if unlikely(!Self::valid_user_addr(addr)) {
-            return;
-        }
-        self.nodes.set(addr / CHUNK_SIZE, val);
+    #[inline(never)]
+    pub unsafe fn init(&self) {
+        self.nodes.init();
+    }
+
+    #[cfg(feature = "preload")]
+    pub fn lock_for_fork(&self, owner_tid: usize) {
+        self.nodes.alloc_lock.freeze_for_fork(owner_tid);
+    }
+
+    #[cfg(feature = "preload")]
+    pub fn reset_lock_on_fork(&self) {
+        self.nodes.alloc_lock.thaw_after_fork();
     }
 
     #[inline(always)]
-    pub unsafe fn set_range(&self, addr: usize, size: usize, val: bool) {
+    pub fn set_single_big(&self, addr: usize, val: bool) {
+        if unlikely(!Self::valid_user_addr(addr)) {
+            return;
+        }
+        unsafe { self.nodes.set(addr / CHUNK_SIZE, val) };
+    }
+
+    #[inline(always)]
+    pub fn set(&self, addr: usize, size: usize, val: bool) {
         if unlikely(size == 0 || !Self::valid_user_addr(addr)) {
             return;
         }
@@ -280,29 +355,47 @@ impl RadixTree {
 
         let start_idx = addr / CHUNK_SIZE;
         let end_idx = end_addr / CHUNK_SIZE;
-        self.nodes.set_range(start_idx, end_idx, val);
+
+        unsafe {
+            if end_idx == start_idx {
+                self.nodes.set(start_idx, val);
+            } else {
+                self.nodes.set_range(start_idx, end_idx, val);
+            }
+        }
     }
 
     #[inline(always)]
-    pub unsafe fn is_owned(&self, addr: usize) -> bool {
-        if unlikely(self.nodes.l0.is_null()) {
+    pub unsafe fn is_owned_inner<const VALIDATE: bool>(&self, addr: usize) -> bool {
+        if unlikely(!self.nodes.initialized.load(Acquire)) {
             return false;
         }
+        let root = self.nodes.root();
 
-        if unlikely(!Self::valid_user_addr(addr)) {
-            RSMallocError::InvalidPointer.log_and_abort(
-                addr as *mut c_void,
-                "invalid pointer address",
-                None,
-            );
+        if unlikely(!Self::valid_user_addr(addr)) && VALIDATE {
+            RSMallocError::InvalidPointer {
+                ptr: addr as *mut u8,
+            }
+            .log_and_abort();
         }
 
-        self.nodes.get(addr / CHUNK_SIZE)
+        Radix::get_from_root(root, addr / CHUNK_SIZE)
+    }
+
+    #[inline(always)]
+    pub fn is_owned(&self, addr: usize) -> bool {
+        unsafe { self.is_owned_inner::<true>(addr) }
+    }
+
+    #[cfg(not(feature = "validate-foreign-first"))]
+    #[inline(never)]
+    pub fn is_owned_noninline_no_validation(&self, addr: usize) -> bool {
+        unsafe { self.is_owned_inner::<false>(addr) }
     }
 
     #[cfg(feature = "debug")]
     pub unsafe fn report(&self) -> RadixReport {
-        if self.nodes.l0.is_null() {
+        if !self.nodes.initialized.load(Acquire) {
             return RadixReport {
                 l1_nodes: 0,
                 l2_nodes: 0,
@@ -312,13 +405,14 @@ impl RadixTree {
             };
         }
 
+        let root = self.nodes.root();
         let mut l1_nodes = 0usize;
         let mut l2_nodes = 0usize;
         let mut leaves = 0usize;
         let mut owned_chunks = 0usize;
 
         for i0 in 0..L0_SIZE {
-            let l1 = (*self.nodes.l0.as_ptr().add(i0)).load(Acquire) as *mut AtomicUsize;
+            let l1 = (*root.add(i0)).load(Acquire) as *mut AtomicUsize;
             if l1.is_null() {
                 continue;
             }
@@ -361,15 +455,21 @@ impl RadixTree {
 
     #[inline(always)]
     const fn valid_user_addr(addr: usize) -> bool {
-        addr < MAX_ADDR
+        valid_user_addr(addr)
     }
 }
 
-pub static mut RADIX: RadixTree = unsafe { RadixTree::new_const() };
+pub const fn valid_user_addr(addr: usize) -> bool {
+    addr < MAX_ADDR
+}
+
+pub static RADIX: RadixTree = RadixTree::new_const();
 
 #[cfg(test)]
 mod tests {
-    use super::{CHUNK_SIZE, L3_SIZE, RadixTree};
+    use super::{
+        CHUNK_SIZE, L1_BITS, L2_BITS, L3_BITS, L3_SIZE, MAX_ADDR, RADIX_MAX_CHUNKS, RadixTree,
+    };
 
     unsafe fn new_tree() -> RadixTree {
         unsafe { RadixTree::new() }
@@ -382,7 +482,7 @@ mod tests {
             let start_chunk = 62;
             let chunks = 5;
 
-            tree.set_range(start_chunk * CHUNK_SIZE, chunks * CHUNK_SIZE, true);
+            tree.set(start_chunk * CHUNK_SIZE, chunks * CHUNK_SIZE, true);
 
             assert!(!tree.is_owned((start_chunk - 1) * CHUNK_SIZE));
             for chunk in start_chunk..start_chunk + chunks {
@@ -399,7 +499,7 @@ mod tests {
             let start_chunk = L3_SIZE - 2;
             let chunks = 5;
 
-            tree.set_range(start_chunk * CHUNK_SIZE, chunks * CHUNK_SIZE, true);
+            tree.set(start_chunk * CHUNK_SIZE, chunks * CHUNK_SIZE, true);
 
             assert!(!tree.is_owned((start_chunk - 1) * CHUNK_SIZE));
             for chunk in start_chunk..start_chunk + chunks {
@@ -416,8 +516,8 @@ mod tests {
             let start_chunk = 60;
             let chunks = 10;
 
-            tree.set_range(start_chunk * CHUNK_SIZE, chunks * CHUNK_SIZE, true);
-            tree.set_range((start_chunk + 2) * CHUNK_SIZE, 6 * CHUNK_SIZE, false);
+            tree.set(start_chunk * CHUNK_SIZE, chunks * CHUNK_SIZE, true);
+            tree.set((start_chunk + 2) * CHUNK_SIZE, 6 * CHUNK_SIZE, false);
 
             assert!(tree.is_owned(start_chunk * CHUNK_SIZE));
             assert!(tree.is_owned((start_chunk + 1) * CHUNK_SIZE));
@@ -430,11 +530,153 @@ mod tests {
     }
 
     #[test]
+    fn set_range_fills_partially_owned_word() {
+        unsafe {
+            let tree = new_tree();
+            let start_chunk = 8;
+
+            tree.set(start_chunk * CHUNK_SIZE, CHUNK_SIZE, true);
+            tree.set(start_chunk * CHUNK_SIZE, 4 * CHUNK_SIZE, true);
+
+            for chunk in start_chunk..start_chunk + 4 {
+                assert!(tree.is_owned(chunk * CHUNK_SIZE));
+            }
+        }
+    }
+
+    #[test]
+    fn adjacent_pages_do_not_share_ownership() {
+        unsafe {
+            assert_eq!(CHUNK_SIZE, 4096);
+            let tree = new_tree();
+            let slab_base = 8 * 512 * 1024 + 0x54000;
+            let direct_size = 512 * 1024;
+            let direct_base = slab_base - direct_size;
+
+            tree.set(slab_base, 2 * CHUNK_SIZE, true);
+            tree.set(direct_base, direct_size, true);
+            tree.set(direct_base, direct_size, false);
+
+            assert!(!tree.is_owned(slab_base - 1));
+            assert!(tree.is_owned(slab_base + 0x40));
+            assert!(tree.is_owned(slab_base + CHUNK_SIZE));
+            assert!(!tree.is_owned(slab_base + 2 * CHUNK_SIZE));
+        }
+    }
+
+    #[test]
+    fn set_and_clear_range_cross_every_radix_level() {
+        unsafe {
+            for boundary in [
+                L3_SIZE,
+                1usize << (L2_BITS + L3_BITS),
+                1usize << (L1_BITS + L2_BITS + L3_BITS),
+            ] {
+                let tree = new_tree();
+                let start = boundary - 2;
+                tree.set(start * CHUNK_SIZE, 5 * CHUNK_SIZE, true);
+                for chunk in start..start + 5 {
+                    assert!(tree.is_owned(chunk * CHUNK_SIZE));
+                }
+                assert!(!tree.is_owned((start - 1) * CHUNK_SIZE));
+                assert!(!tree.is_owned((start + 5) * CHUNK_SIZE));
+
+                tree.set((boundary - 1) * CHUNK_SIZE, 3 * CHUNK_SIZE, false);
+                assert!(tree.is_owned(start * CHUNK_SIZE));
+                for chunk in boundary - 1..boundary + 2 {
+                    assert!(!tree.is_owned(chunk * CHUNK_SIZE));
+                }
+                assert!(tree.is_owned((start + 4) * CHUNK_SIZE));
+            }
+        }
+    }
+
+    #[test]
+    fn highest_user_pages_do_not_alias_low_addresses() {
+        unsafe {
+            let tree = new_tree();
+            tree.set(0, CHUNK_SIZE, true);
+            tree.set(MAX_ADDR - 2 * CHUNK_SIZE, 2 * CHUNK_SIZE, true);
+            assert!(tree.is_owned(MAX_ADDR - 1));
+            assert!(tree.is_owned(MAX_ADDR - 2 * CHUNK_SIZE));
+            assert!(!tree.is_owned(MAX_ADDR - 3 * CHUNK_SIZE));
+
+            tree.set(MAX_ADDR - 2 * CHUNK_SIZE, 2 * CHUNK_SIZE, false);
+            assert!(!tree.is_owned(MAX_ADDR - 1));
+            assert!(tree.is_owned(0));
+            assert!(!tree.nodes.get(RADIX_MAX_CHUNKS));
+            tree.nodes.set(RADIX_MAX_CHUNKS, false);
+            assert!(tree.is_owned(0));
+        }
+    }
+
+    #[test]
+    fn concurrent_registration_preserves_disjoint_page_bits() {
+        unsafe {
+            let tree = new_tree();
+            std::thread::scope(|scope| {
+                for lane in 0..8 {
+                    let tree = &tree;
+                    scope.spawn(move || {
+                        for index in 0..64 {
+                            let chunk = lane + index * 8;
+                            tree.set(chunk * CHUNK_SIZE, CHUNK_SIZE, true);
+                            tree.set(chunk * CHUNK_SIZE, CHUNK_SIZE, true);
+                            if index % 3 == 0 {
+                                tree.set(chunk * CHUNK_SIZE, CHUNK_SIZE, false);
+                            }
+                        }
+                    });
+                }
+            });
+            for lane in 0..8 {
+                for index in 0..64 {
+                    assert_eq!(
+                        tree.is_owned((lane + index * 8) * CHUNK_SIZE),
+                        index % 3 != 0
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "debug")]
+    #[test]
+    fn report_counts_all_four_levels() {
+        use super::{L0_SIZE, L1_SIZE, L2_SIZE, L3_BITMAP_WORDS};
+        use std::sync::atomic::{AtomicU64, AtomicUsize};
+
+        unsafe {
+            let tree = new_tree();
+            let empty = tree.report();
+            assert_eq!(empty.l1_nodes, 0);
+            assert_eq!(empty.metadata_bytes, L0_SIZE * size_of::<AtomicUsize>());
+
+            tree.set(0, CHUNK_SIZE, true);
+            tree.set(
+                (1usize << (L1_BITS + L2_BITS + L3_BITS)) * CHUNK_SIZE,
+                CHUNK_SIZE,
+                true,
+            );
+            let report = tree.report();
+            assert_eq!(report.l1_nodes, 2);
+            assert_eq!(report.l2_nodes, 2);
+            assert_eq!(report.leaves, 2);
+            assert_eq!(report.owned_chunks, 2);
+            assert_eq!(
+                report.metadata_bytes,
+                (L0_SIZE + 2 * L1_SIZE + 2 * L2_SIZE) * size_of::<AtomicUsize>()
+                    + 2 * L3_BITMAP_WORDS * size_of::<AtomicU64>(),
+            );
+        }
+    }
+
+    #[test]
     fn unaligned_range_marks_both_intersected_chunks() {
         unsafe {
             let tree = new_tree();
 
-            tree.set_range(CHUNK_SIZE - 1, 2, true);
+            tree.set(CHUNK_SIZE - 1, 2, true);
 
             assert!(tree.is_owned(0));
             assert!(tree.is_owned(CHUNK_SIZE));

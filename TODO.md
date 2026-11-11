@@ -1,3 +1,5 @@
+### Next Release target after alpha-3: Beta
+
 ### TODO list for adding lacking features:
 1. Add buddy backend for Big Allocation path - Done
 2. Check safety of AI written lines or rewrite entirely - only hashmap left
@@ -12,3 +14,7 @@
 11. Lock-free buddy if possible / For stable release
 12. Add special benchmark to stress test every subsystem at once - Done
 13. Audit entire allocator before stable release
+
+14. Alpha-3: Rewrite Buddy with a better scalable design - PoC Segmented Bitmap allocator
+15. Beta-2: arm64 support
+16. Alpha-3: Lock-free page allocator - Done

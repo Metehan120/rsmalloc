@@ -1,0 +1,207 @@
+// ! DO NOT TOUCH, CHANGE OR BREATHE NEAR ASSEMBLY unless you know how rseq or assembly works !
+//
+// rseq_cs intentionally remains installed after every exit. Linux only requires
+// clearing it before reclaiming the descriptor or referenced code; both have
+// process lifetime here. Every new operation still installs its descriptor.
+
+use std::{arch::asm, ptr::addr_of};
+
+use crate::{
+    Header, RseqResult,
+    rseq_core::rseq_offsets::{get_cs_ptr, rseq},
+    rseq_core::slab_cache::RseqCache,
+    traits::RseqCoreTrait,
+};
+
+pub struct RseqCore;
+
+impl RseqCoreTrait for RseqCore {
+    #[inline(always)]
+    unsafe fn push_tailed(
+        &self,
+        list_ptr: *mut *mut Header,
+        rseq: &rseq,
+        cpu_id: usize,
+        header: *mut Header,
+        tail: *mut Header,
+        usage_ptr: *mut usize,
+        batch_total: usize,
+    ) -> RseqResult {
+        let res: usize;
+        let cs = get_cs_ptr(rseq);
+        let cpu_id_ptr = addr_of!(rseq.cpu_id);
+
+        asm!(
+            ".pushsection .data.rel.ro,\"aw\",@progbits",
+            ".balign 32",
+            "4:",
+            ".long 0, 0",
+            ".quad 1f",
+            ".quad 2f - 1f",
+            ".quad 3f",
+            ".popsection",
+
+            "lea {tmp}, [rip + 4b]",
+            "mov [{cs_ptr}], {tmp}",
+
+            "1:",
+            // Validate the sampled CPU inside the critical section.
+            "cmp [{cpu_id_ptr}], {cpu_id:e}",
+            "jne 3f",
+
+            "mov {tmp}, [{list}]",
+            "mov [{tail}], {tmp}",
+            "mov [{list}], {header}",
+
+            "2:",
+            "lock add qword ptr [{usage}], {batch_total}",
+            "mov {res}, 1",
+            "jmp 5f",
+
+            ".balign 4",
+            ".byte 0x0f, 0x1f, 0x05",
+            // RSEQ abort signature, matches glibc/linux rseq convention.
+            ".long 0x53053053",
+            "3:",
+            "mov {res}, -1",
+
+            "5:",
+
+            cs_ptr = in(reg) cs,
+            tmp = out(reg) _,
+            list = in(reg) list_ptr,
+            header = in(reg) header,
+            res = lateout(reg) res,
+            tail = in(reg) tail,
+            cpu_id_ptr = in(reg) cpu_id_ptr,
+            cpu_id = in(reg) cpu_id,
+            usage = in(reg) usage_ptr,
+            batch_total = in(reg) batch_total,
+            options(nostack),
+        );
+
+        RseqResult::new(res)
+    }
+
+    #[inline(always)]
+    unsafe fn push(
+        &self,
+        list_ptr: *mut *mut Header,
+        rseq: &rseq,
+        cpu_id: usize,
+        header: *mut Header,
+        usage_ptr: *mut usize,
+    ) -> RseqResult {
+        let res: usize;
+
+        asm!(
+            ".pushsection .data.rel.ro,\"aw\",@progbits",
+            ".balign 32",
+            "4:",
+            ".long 0, 0",
+            ".quad 1f",
+            ".quad 2f - 1f",
+            ".quad 3f",
+            ".popsection",
+
+            "lea {tmp}, [rip + 4b]",
+            "mov [{rseq} + {cs_offset}], {tmp}",
+
+            "1:",
+            // Validate the sampled CPU inside the critical section.
+            "cmp dword ptr [{rseq} + {cpu_offset}], {cpu_id:e}",
+            "jne 3f",
+
+            "mov {tmp}, [{list}]",
+            "mov [{header}], {tmp}",
+            "mov [{list}], {header}",
+
+            "2:",
+            "lock inc qword ptr [{usage}]",
+            "mov {res}, 1",
+            "jmp 5f",
+
+            ".balign 4",
+            ".byte 0x0f, 0x1f, 0x05",
+            // RSEQ abort signature, matches glibc/linux rseq convention.
+            ".long 0x53053053",
+            "3:",
+            "mov {res}, -1",
+
+            "5:",
+
+            rseq = in(reg) rseq,
+            cs_offset = const std::mem::offset_of!(rseq, rseq_cs),
+            tmp = out(reg) _,
+            list = in(reg) list_ptr,
+            header = in(reg) header,
+            res = lateout(reg) res,
+            cpu_offset = const std::mem::offset_of!(rseq, cpu_id),
+            cpu_id = in(reg) cpu_id,
+            usage = in(reg) usage_ptr,
+            options(nostack),
+        );
+
+        RseqResult::new(res)
+    }
+
+    #[inline(always)]
+    unsafe fn pop(&self, cache_ptr: *const RseqCache, rseq: &rseq, cpu_id: usize) -> RseqResult {
+        let list_ptr = addr_of!((*cache_ptr).list) as *mut *mut Header;
+        let res: *mut Header;
+
+        asm!(
+            ".pushsection .data.rel.ro,\"aw\",@progbits",
+            ".balign 32",
+            "4:",
+            ".long 0, 0",
+            ".quad 1f",
+            ".quad 2f - 1f",
+            ".quad 3f",
+            ".popsection",
+
+            "lea {res}, [rip + 4b]",
+            "mov [{rseq} + {cs_offset}], {res}",
+            "1:",
+            "cmp dword ptr [{rseq} + {cpu_offset}], {cpu_id:e}",
+            "jne 3f",
+            "mov {res}, [{list}]",
+            "test {res}, {res}",
+            // Empty list: return null without changing the head or count.
+            "jz 5f",
+            "mov {next}, [{res}]",
+            // Updating the head makes the pop final. Label 2 must come right
+            // after this store so Linux cannot abort a pop that already took a block.
+            "mov [{list}], {next}",
+
+            "2:",
+            // The block is ours now. Update the count outside the RSEQ section;
+            // this must be atomic because we can move to another CPU after the pop.
+            "lock dec qword ptr [{list} + {usage_offset}]",
+            "jmp 5f",
+
+            ".balign 4",
+            ".byte 0x0f, 0x1f, 0x05",
+            // RSEQ abort signature, matches glibc/linux rseq convention.
+            ".long 0x53053053",
+            "3:",
+            // Aborted or CPU check failed: return -1 so the caller can retry.
+            // Unlike an empty list, this does not mean the cache has no blocks.
+            "mov {res}, -1",
+            "5:",
+
+            rseq = in(reg) rseq,
+            cs_offset = const std::mem::offset_of!(rseq, rseq_cs),
+            cpu_offset = const std::mem::offset_of!(rseq, cpu_id),
+            list = in(reg) list_ptr,
+            res = out(reg) res,
+            next = out(reg) _,
+            cpu_id = in(reg) cpu_id,
+            usage_offset = const (std::mem::offset_of!(RseqCache, usage) as isize
+                - std::mem::offset_of!(RseqCache, list) as isize),
+            options(nostack),
+        );
+
+        RseqResult::new_header(res)
+    }
+}

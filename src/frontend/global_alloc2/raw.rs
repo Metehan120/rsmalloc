@@ -1,0 +1,157 @@
+use std::num::NonZero;
+
+use crate::{
+    big_allocations::segmented_bitmap::SEGMENTED_BITMAP_BACKEND,
+    core_prim::wrappers::MaybeNull,
+    inner::{
+        align::rs_memalign, alloc::rs_alloc, calloc::rs_calloc, free::rs_free, realloc::rs_realloc,
+    },
+    rseq_core::slab_cache::SLAB_CACHE,
+    v2::alloc::{RSMalloc, RSMallocCoreAPI},
+};
+
+pub trait RawInterface {
+    type TrimIn;
+    type TrimOut;
+
+    unsafe fn rs_alloc(&self, size: usize) -> *mut u8;
+    unsafe fn rs_free(&self, ptr: *mut u8);
+    /// Resizes with an optional new alignment, deriving old allocation details internally.
+    /// `Some(alignment)` requires a nonzero power of two; `None` preserves the
+    /// alignment observed from `old` (or uses 16 when `old` is null).
+    /// Invalid alignment or allocation failure returns null without freeing `old`.
+    /// With valid alignment, a non-null `old` and zero size frees `old` and returns null.
+    unsafe fn rs_realloc(
+        &self,
+        old: *mut u8,
+        new_size: usize,
+        new_alignment: Option<usize>,
+    ) -> *mut u8;
+    unsafe fn rs_aligned(&self, alignment: usize, size: usize) -> *mut u8;
+    unsafe fn rs_zeroed(&self, size: usize) -> *mut u8;
+    unsafe fn rs_trim(&self, trim_size: Self::TrimIn) -> Self::TrimOut;
+}
+
+pub struct RSMallocRaw<'a> {
+    global: &'a RSMalloc,
+}
+
+impl<'a> RSMalloc {
+    pub const fn raw(&'a self) -> RSMallocRaw<'a> {
+        RSMallocRaw::from_global(self)
+    }
+}
+
+impl<'a> RSMallocRaw<'a> {
+    pub const fn from_global(global: &'a RSMalloc) -> RSMallocRaw<'a> {
+        RSMallocRaw { global }
+    }
+}
+
+pub enum AdvancedTrimSize {
+    All,
+    AllSlab,
+    AllSegmentedBitmap,
+    Bytes(NonZero<usize>),
+    SlabBytes(NonZero<usize>),
+    SegmentedBitmapBytes(NonZero<usize>),
+}
+
+pub struct TrimReport {
+    pub segmented_bitmap_bytes: usize,
+    pub slab_bytes: usize,
+}
+
+impl<'a> RawInterface for RSMallocRaw<'a> {
+    type TrimIn = AdvancedTrimSize;
+    type TrimOut = TrimReport;
+
+    unsafe fn rs_alloc(&self, size: usize) -> *mut u8 {
+        self.global.manual_init();
+        rs_alloc(size, false).cast_as_ptr()
+    }
+
+    unsafe fn rs_free(&self, ptr: *mut u8) {
+        rs_free(MaybeNull::new(ptr).cast());
+    }
+
+    unsafe fn rs_aligned(&self, alignment: usize, size: usize) -> *mut u8 {
+        self.global.manual_init();
+        rs_memalign(alignment, size, false).cast_as_ptr()
+    }
+
+    unsafe fn rs_realloc(
+        &self,
+        old: *mut u8,
+        new_size: usize,
+        new_alignment: Option<usize>,
+    ) -> *mut u8 {
+        self.global.manual_init();
+        rs_realloc(MaybeNull::new(old).cast(), new_size, new_alignment).cast_as_ptr()
+    }
+
+    unsafe fn rs_zeroed(&self, size: usize) -> *mut u8 {
+        self.global.manual_init();
+        rs_calloc(1, size).cast_as_ptr()
+    }
+
+    #[inline(never)]
+    unsafe fn rs_trim(&self, trim_size: Self::TrimIn) -> Self::TrimOut {
+        self.global.manual_init();
+        match trim_size {
+            AdvancedTrimSize::All => {
+                let segmented_bitmap = SEGMENTED_BITMAP_BACKEND.trim(0);
+                let slab = SLAB_CACHE.trim_small(0);
+                TrimReport {
+                    segmented_bitmap_bytes: segmented_bitmap,
+                    slab_bytes: slab,
+                }
+            }
+            AdvancedTrimSize::AllSegmentedBitmap => {
+                let segmented_bitmap = SEGMENTED_BITMAP_BACKEND.trim(0);
+                TrimReport {
+                    segmented_bitmap_bytes: segmented_bitmap,
+                    slab_bytes: 0,
+                }
+            }
+            AdvancedTrimSize::AllSlab => {
+                let slab = SLAB_CACHE.trim_small(0);
+                TrimReport {
+                    segmented_bitmap_bytes: 0,
+                    slab_bytes: slab,
+                }
+            }
+            AdvancedTrimSize::Bytes(requested) => {
+                let requested = requested.get();
+
+                let segmented_bitmap = SEGMENTED_BITMAP_BACKEND.trim(requested);
+                let mut slab = 0;
+                if segmented_bitmap < requested && requested != 0 {
+                    slab = SLAB_CACHE.trim_small(requested.saturating_sub(segmented_bitmap));
+                }
+                TrimReport {
+                    segmented_bitmap_bytes: segmented_bitmap,
+                    slab_bytes: slab,
+                }
+            }
+            AdvancedTrimSize::SegmentedBitmapBytes(requested) => {
+                let requested = requested.get();
+
+                let segmented_bitmap = SEGMENTED_BITMAP_BACKEND.trim(requested);
+                TrimReport {
+                    segmented_bitmap_bytes: segmented_bitmap,
+                    slab_bytes: 0,
+                }
+            }
+            AdvancedTrimSize::SlabBytes(requested) => {
+                let requested = requested.get();
+
+                let slab = SLAB_CACHE.trim_small(requested);
+                TrimReport {
+                    segmented_bitmap_bytes: 0,
+                    slab_bytes: slab,
+                }
+            }
+        }
+    }
+}

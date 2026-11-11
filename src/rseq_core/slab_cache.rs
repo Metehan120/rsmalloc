@@ -2,63 +2,94 @@
 use std::sync::atomic::Ordering::Relaxed;
 
 use std::{
-    arch::x86_64::{_MM_HINT_T0, _mm_prefetch},
     cell::UnsafeCell,
-    hint::{likely, spin_loop},
-    ptr::{addr_of, eq, null_mut, read_volatile},
+    ptr::{addr_of, null_mut, read_volatile},
     sync::atomic::{
-        AtomicU64, AtomicUsize,
+        AtomicPtr, AtomicU64,
         Ordering::{self},
     },
 };
+
+use portable_atomic::AtomicU128;
 
 use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 
 #[cfg(feature = "debug")]
 use crate::ABORTS;
 use crate::{
-    GenericCache, Header, NCPU, RSMallocError, RseqCoreTrait,
-    core_prim::wrappers::UnsafePointer,
+    Header, MetaData, NCPU, RSMallocError,
+    core_prim::{
+        predictor::AdaptiveBatching,
+        wrappers::{MaybeNull, Owned},
+    },
     internals::{
-        binder::bind_node,
+        atomics::{AtomicOrdering, AtomicUsize},
+        binder::NumaBind,
+        cpu_parser::{configured_cpu_count, possible_cpu_count},
         numa_parser::{NumaTopology, parse_numa_topology},
         once::Once,
     },
     record_mmap_call,
     rseq_core::{
-        bitmap::{cpu_bit_clear, cpu_bit_set, cpu_is_empty, cpu_try_marking},
+        bitmap::{cpu_bit_clear, cpu_bit_set, cpu_is_not_set, cpu_try_marking},
         pending_queue::PENDING_QUEUE,
-        rseq_asm::RseqCore,
         rseq_offsets::get_rseq,
+        slab_cache::rseq_asm::RseqCore,
     },
-    utility::{CACHE_HIGH_BLOCKS, NUM_SIZE_CLASSES},
+    traits::{GenericCache, RseqCoreTrait},
+    utility::{CACHE_HIGH_BLOCKS, NUM_SIZE_CLASSES, likely},
 };
 
+pub mod reclaim;
+mod rseq_asm;
+pub mod transfer;
+mod trim_message;
+
+pub struct SizeList {
+    normal_blocks: AtomicUsize,
+    trimmed_blocks: AtomicUsize,
+}
+
 pub struct RseqCache {
-    list: UnsafePointer<Header>,
+    list: MaybeNull<Header>,
     usage: AtomicUsize,
 }
 
+#[repr(align(64))]
 pub struct TransferCache {
-    pub list: AtomicUsize,
-    pub trimmed: AtomicUsize,
+    pub list: AtomicU128,
+    pub trimmed: AtomicU128,
+    pub size: SizeList,
+    trim_message: trim_message::TrimMessage,
 }
 
 // NOTE: Use 4096-byte alignment to avoid false sharing between cache lines and NUMA node balancing.
+
 #[repr(C, align(4096))]
 pub struct MainCache {
     cache: [RseqCache; NUM_SIZE_CLASSES],
     mail: [TransferCache; NUM_SIZE_CLASSES],
+    transfer_batching: [AdaptiveBatching; NUM_SIZE_CLASSES],
+    bulk_fill_batching: [AdaptiveBatching; NUM_SIZE_CLASSES],
+    pending_refill: [AtomicPtr<MetaData>; NUM_SIZE_CLASSES],
 }
 
-#[derive(Debug, Clone, Copy)]
+#[cfg(feature = "experimental-predictive-demand")]
+const _: () = assert!(size_of::<MainCache>() == 8192);
+#[cfg(not(feature = "experimental-predictive-demand"))]
+const _: () = assert!(size_of::<MainCache>() == 4096);
+
+pub struct Bitmap {
+    pub words: usize,
+    pub nonempty: *mut AtomicU64,
+    pub being_stolen: *mut AtomicU64,
+}
+
 pub struct SlabCacheInner {
-    cache: *mut MainCache,
+    cache: Owned<MainCache>,
     numa: NumaTopology,
     pub is_numa: bool,
-    bitmap_words: usize,
-    nonempty_bitmap: *mut AtomicU64,
-    being_stolen_bitmap: *mut AtomicU64,
+    bitmap: Bitmap,
 }
 
 pub struct SlabCache {
@@ -69,21 +100,11 @@ pub struct SlabCache {
 unsafe impl Send for SlabCache {}
 unsafe impl Sync for SlabCache {}
 
-// here be dragons: TODO: use it until found a better way
-unsafe extern "C" {
-    fn get_nprocs_conf() -> i32;
-}
-
-unsafe fn get_max_cpu() -> u32 {
-    let ncpu = get_nprocs_conf();
-    if ncpu > 0 { ncpu as u32 } else { 256 }
-}
-
 impl SlabCache {
     pub const fn new() -> Self {
         Self {
             inner: UnsafeCell::new(SlabCacheInner {
-                cache: null_mut(),
+                cache: Owned::NULL,
                 numa: NumaTopology {
                     cpu_to_node: null_mut(),
                     ncpu: 0,
@@ -93,9 +114,11 @@ impl SlabCache {
                     nranges: 0,
                 },
                 is_numa: false,
-                nonempty_bitmap: null_mut(),
-                being_stolen_bitmap: null_mut(),
-                bitmap_words: 0,
+                bitmap: Bitmap {
+                    words: 0,
+                    nonempty: null_mut(),
+                    being_stolen: null_mut(),
+                },
             }),
             once: Once::new(),
         }
@@ -105,9 +128,20 @@ impl SlabCache {
         self.once.call_once(|| {
             let cache = self.inner.get();
             let inner = &mut *cache;
-            let ncpu = get_max_cpu() as usize;
-            let alloc_size = ncpu + 1;
-            let cache_bytes = size_of::<MainCache>() * alloc_size;
+            let ncpu = possible_cpu_count()
+                .or_else(configured_cpu_count)
+                .unwrap_or_else(|| {
+                    RSMallocError::Bootstrap {
+                        reason: "unable to determine CPU count",
+                    }
+                    .log_and_abort()
+                });
+            let cache_bytes = size_of::<MainCache>().checked_mul(ncpu).unwrap_or_else(|| {
+                RSMallocError::Bootstrap {
+                    reason: "possible CPU cache size overflow",
+                }
+                .log_and_abort()
+            });
             record_mmap_call(cache_bytes);
             let list = mmap_anonymous(
                 null_mut(),
@@ -116,14 +150,16 @@ impl SlabCache {
                 MapFlags::PRIVATE,
             )
             .unwrap_or_else(|err| {
-                RSMallocError::OutOfMemory.log_and_abort(
-                    null_mut(),
-                    "cannot create main cache",
-                    Some(err.raw_os_error()),
-                )
+                RSMallocError::OutOfMemory {
+                    errno: Some(err.raw_os_error()),
+                    size: cache_bytes,
+                    subsystem: "slab_cache.rs mmap rseq_cache",
+                }
+                .log_and_abort()
             });
 
-            inner.cache = list as *mut MainCache;
+            inner.cache = Owned::from(list as *mut MainCache);
+
             if let Some(numa) = parse_numa_topology(ncpu) {
                 inner.numa = numa;
 
@@ -148,19 +184,18 @@ impl SlabCache {
                     let end = cpu_range.end_cpu.min(ncpu.saturating_sub(1));
 
                     if start <= end {
-                        let cache = inner.cache.add(start) as *mut _;
+                        let cache = inner.cache.get_offset(start);
                         let len = size_of::<MainCache>() * (end - start + 1);
-                        bind_node(cache, len, cpu_range.node_id);
+                        NumaBind.bind_node(cache.cast_as_ptr(), len, cpu_range.node_id);
                     }
                 }
             }
 
-            let alloc_size = ncpu + 1;
-            let bitmap_words = ((alloc_size + 63) / 64).max(1);
+            let bitmap_words = ncpu.div_ceil(64).max(1);
             let bitmap_bytes = size_of::<AtomicU64>() * bitmap_words * NUM_SIZE_CLASSES;
             let bitmaps_each = bitmap_bytes / 8;
 
-            record_mmap_call(bitmap_bytes * 2);
+            record_mmap_call(bitmap_bytes * 3);
             let bitmap = mmap_anonymous(
                 null_mut(),
                 bitmap_bytes * 2,
@@ -168,15 +203,16 @@ impl SlabCache {
                 MapFlags::PRIVATE,
             )
             .unwrap_or_else(|err| {
-                RSMallocError::OutOfMemory.log_and_abort(
-                    null_mut(),
-                    "cannot initialize empty bitmap",
-                    Some(err.raw_os_error()),
-                )
+                RSMallocError::OutOfMemory {
+                    errno: Some(err.raw_os_error()),
+                    size: cache_bytes,
+                    subsystem: "slab_cache.rs mmap bitmap",
+                }
+                .log_and_abort()
             }) as *mut AtomicU64;
-            inner.nonempty_bitmap = bitmap;
-            inner.being_stolen_bitmap = bitmap.add(bitmaps_each);
-            inner.bitmap_words = bitmap_words;
+            inner.bitmap.nonempty = bitmap;
+            inner.bitmap.being_stolen = bitmap.add(bitmaps_each);
+            inner.bitmap.words = bitmap_words;
 
             PENDING_QUEUE.init(inner.numa.nranges, inner.is_numa);
             NCPU = ncpu;
@@ -185,16 +221,16 @@ impl SlabCache {
 
     #[inline(always)]
     unsafe fn mark_class_nonempty(&self, inner: &SlabCacheInner, class: usize, cpu_id: usize) {
-        cpu_bit_set(inner.nonempty_bitmap, class, cpu_id, inner.bitmap_words);
+        cpu_bit_set(inner.bitmap.nonempty, class, cpu_id, inner.bitmap.words);
     }
 
     #[inline(always)]
     unsafe fn clear_class_hint(&self, inner: &SlabCacheInner, class: usize, cpu_id: usize) {
-        cpu_bit_clear(inner.nonempty_bitmap, class, cpu_id, inner.bitmap_words);
+        cpu_bit_clear(inner.bitmap.nonempty, class, cpu_id, inner.bitmap.words);
     }
 
     unsafe fn is_empty(&self, inner: &SlabCacheInner, class: usize, cpu_id: usize) -> bool {
-        cpu_is_empty(inner.nonempty_bitmap, class, cpu_id, inner.bitmap_words)
+        cpu_is_not_set(inner.bitmap.nonempty, class, cpu_id, inner.bitmap.words)
     }
 
     #[inline(never)]
@@ -204,12 +240,12 @@ impl SlabCache {
         class: usize,
         cpu_id: usize,
     ) -> bool {
-        cpu_try_marking(inner.being_stolen_bitmap, class, cpu_id, inner.bitmap_words)
+        cpu_try_marking(inner.bitmap.being_stolen, class, cpu_id, inner.bitmap.words)
     }
 
     #[inline(never)]
     unsafe fn clear_being_stolen(&self, inner: &SlabCacheInner, class: usize, cpu_id: usize) {
-        cpu_bit_clear(inner.being_stolen_bitmap, class, cpu_id, inner.bitmap_words);
+        cpu_bit_clear(inner.bitmap.being_stolen, class, cpu_id, inner.bitmap.words);
     }
 
     #[inline(always)]
@@ -221,8 +257,8 @@ impl SlabCache {
         batch_size: usize,
         start: usize,
         end: usize,
-    ) -> Option<(UnsafePointer<Header>, UnsafePointer<Header>, usize)> {
-        let base = class * inner.bitmap_words;
+    ) -> Option<TransferReturn> {
+        let base = class * inner.bitmap.words;
 
         let start_word = start >> 6;
         let end_word = end >> 6;
@@ -230,7 +266,7 @@ impl SlabCache {
         for word_idx in start_word..=end_word {
             for force_steal in [false, true] {
                 let mut bits =
-                    (*inner.nonempty_bitmap.add(base + word_idx)).load(Ordering::Relaxed);
+                    (*inner.bitmap.nonempty.add(base + word_idx)).load(Ordering::Relaxed);
 
                 if bits == 0 {
                     continue;
@@ -263,15 +299,11 @@ impl SlabCache {
                         continue;
                     }
 
-                    let result = self.transfer_pop_batch(class, victim, batch_size);
+                    let result = self.transfer_pop_batch(class, victim, batch_size, force_steal);
                     self.clear_being_stolen(inner, class, victim);
 
                     if let Some(block) = result {
-                        return Some((
-                            UnsafePointer::new(block.0),
-                            UnsafePointer::new(block.1),
-                            block.2,
-                        ));
+                        return Some(block);
                     }
                 }
             }
@@ -290,34 +322,39 @@ impl GenericCache for SlabCache {
         tail: *mut Header,
         batch_size: usize,
     ) {
-        let inner = &mut *self.inner.get();
+        let inner = self.get_inner();
         let rseq = get_rseq();
 
-        let current_cpu = read_volatile(&rseq.cpu_id) as usize;
-        let list = &mut (*inner.cache.add(current_cpu)).cache[class];
-        let usage_ptr = &mut list.usage;
+        let mut current_cpu = 0;
+        for _ in 0..3 {
+            current_cpu = read_volatile(&rseq.cpu_id_start) as usize;
+            let list = &inner.cache[current_cpu].cache.get_unchecked(class);
+            let usage_ptr = &list.usage;
 
-        if usage_ptr.load(Ordering::Relaxed) >= CACHE_HIGH_BLOCKS[class] {
-            self.transfer_push_batch(class, header, tail, current_cpu, inner);
-            return;
+            if usage_ptr.load(AtomicOrdering::Relaxed) > CACHE_HIGH_BLOCKS[class] {
+                self.transfer_push_batch(class, header, tail, batch_size, current_cpu, inner);
+                return;
+            }
+
+            let list_ptr = addr_of!(list.list) as *mut *mut Header;
+            if likely(
+                RseqCore
+                    .push_tailed(
+                        list_ptr,
+                        rseq,
+                        current_cpu,
+                        header,
+                        tail,
+                        usage_ptr.as_ptr(),
+                        batch_size,
+                    )
+                    .is_success(),
+            ) {
+                return;
+            }
         }
 
-        let list_ptr = addr_of!(list.list) as *mut *mut Header;
-        if likely(
-            RseqCore.push_tailed(
-                list_ptr,
-                rseq,
-                current_cpu,
-                header,
-                tail,
-                usage_ptr.as_ptr(),
-                batch_size,
-            ) == 1,
-        ) {
-            return;
-        }
-
-        self.transfer_push_batch(class, header, tail, current_cpu, inner);
+        self.transfer_push_batch_noninline(class, header, tail, batch_size, current_cpu, inner);
 
         #[cfg(feature = "debug")]
         ABORTS.fetch_add(1, Relaxed);
@@ -325,94 +362,73 @@ impl GenericCache for SlabCache {
 
     #[inline(always)]
     unsafe fn push(&self, class: usize, header: *mut Header) {
-        let inner = &mut *self.inner.get();
+        let inner = self.get_inner();
         let rseq = get_rseq();
-        let mut loop_count = 0;
 
         loop {
-            let current_cpu = read_volatile(&rseq.cpu_id) as usize;
-            let list = &mut (*inner.cache.add(current_cpu)).cache[class];
-            let usage_ptr = &mut list.usage;
+            let current_cpu = read_volatile(&rseq.cpu_id_start) as usize;
+            let list = &inner.cache[current_cpu].cache.get_unchecked(class);
+            let usage_ptr = &list.usage;
 
-            if usage_ptr.load(Ordering::Relaxed) >= CACHE_HIGH_BLOCKS[class] {
+            if usage_ptr.load(AtomicOrdering::Relaxed) >= CACHE_HIGH_BLOCKS[class] {
                 self.transfer_push_single(class, header, current_cpu, inner);
                 return;
             }
 
             let list_ptr = addr_of!(list.list) as *mut *mut Header;
-            if likely(RseqCore.push(list_ptr, rseq, current_cpu, header, usage_ptr.as_ptr()) == 1) {
+            if likely(
+                RseqCore
+                    .push(list_ptr, rseq, current_cpu, header, usage_ptr.as_ptr())
+                    .is_success(),
+            ) {
                 break;
-            }
-
-            if loop_count > 3 {
-                self.transfer_push_single(class, header, current_cpu, inner);
-                return;
             }
 
             #[cfg(feature = "debug")]
             ABORTS.fetch_add(1, Relaxed);
-
-            loop_count += 1;
         }
     }
 
     #[inline(always)]
-    unsafe fn pop(&self, class: usize) -> UnsafePointer<Header> {
-        let inner = &mut *self.inner.get();
+    unsafe fn pop(&self, class: usize) -> MaybeNull<Header> {
+        let inner = self.get_inner();
         let rseq = get_rseq();
-        let mut loop_count = 0;
 
         loop {
-            let current_cpu = read_volatile(&rseq.cpu_id) as usize;
-            let list = &mut (*inner.cache.add(current_cpu)).cache[class];
-            let list_ptr = addr_of!(list.list) as *mut *mut Header;
-            let usage_ptr = &list.usage;
-            let header = RseqCore.pop(list_ptr, rseq, current_cpu, usage_ptr.as_ptr());
+            let current_cpu = read_volatile(&rseq.cpu_id_start) as usize;
+            let list = inner.cache[current_cpu].cache.get_unchecked(class);
+            let result = RseqCore.pop(addr_of!(*list), rseq, current_cpu);
 
-            if header as isize == -1 {
-                if loop_count == 3 {
-                    let mail = self.transfer_pop_single(class, current_cpu);
-                    if !mail.is_null() {
-                        return mail;
-                    }
-                    loop_count = 0;
-                }
-
-                #[cfg(feature = "debug")]
-                ABORTS.fetch_add(1, Relaxed);
-
-                loop_count += 1;
+            if result.is_failed() {
                 continue;
             }
 
-            return UnsafePointer::new(header);
+            return MaybeNull::new(result.get());
         }
     }
 }
 
-const TAG_SHIFT: u32 = 56;
-const TAG_STEP: usize = 1usize << TAG_SHIFT;
-const TAG_MASK: usize = 0xffusize << TAG_SHIFT;
-const PTR_MASK: usize = !TAG_MASK;
-
-#[inline(always)]
-pub fn pack(ptr: *mut Header, old_tag: usize) -> usize {
-    ((ptr as usize) & PTR_MASK) | (old_tag.wrapping_add(TAG_STEP) & TAG_MASK)
-}
-
-#[inline(always)]
-pub fn unpack_ptr(word: usize) -> (*mut Header, usize) {
-    ((word & PTR_MASK) as *mut Header, word)
+pub struct TransferReturn {
+    pub start: *mut Header,
+    pub end: *mut Header,
+    pub total: usize,
+    /// Selected-list inventory sampled by the pop's counter update.
+    pub available: usize,
+    #[cfg(feature = "predictor-debug")]
+    pub cpu_id: usize,
 }
 
 impl SlabCache {
     #[cfg(feature = "debug")]
     pub unsafe fn get_rseq_cpu_class_usage_bytes(&self, cpu_id: usize, class: usize) -> usize {
-        use crate::utility::{SIZE_CLASSES, align_to};
+        use crate::{
+            internals::atomics::AtomicOrdering::Relaxed,
+            utility::{Alignment, SIZE_CLASSES},
+        };
         let inner = self.get_inner();
-        let cpu = &(*inner.cache.add(cpu_id)).cache[class];
+        let cpu = &inner.cache.get_offset(cpu_id).cache[class];
         let blocks = cpu.usage.load(Relaxed);
-        let block_size = align_to(SIZE_CLASSES[class] + Header::SIZE, 16);
+        let block_size = (SIZE_CLASSES[class] + Header::SIZE).align_to(16);
         blocks.saturating_mul(block_size)
     }
 
@@ -437,7 +453,7 @@ impl SlabCache {
             use crate::{bitmap_word, rseq_core::bitmap::cpu_word_bit};
 
             let (word, bit) = cpu_word_bit(cpu);
-            let ptr = bitmap_word!(inner.nonempty_bitmap, class, word, inner.bitmap_words);
+            let ptr = bitmap_word!(inner.bitmap.nonempty, class, word, inner.bitmap.words);
             let bits = (*ptr).load(Ordering::Relaxed);
             out.push(if bits & bit != 0 { '1' } else { '0' });
         }
@@ -445,8 +461,8 @@ impl SlabCache {
         out
     }
 
-    pub fn get_inner(&self) -> &mut SlabCacheInner {
-        unsafe { &mut *self.inner.get() }
+    pub fn get_inner(&self) -> &SlabCacheInner {
+        unsafe { &*self.inner.get() }
     }
 
     #[inline(always)]
@@ -463,10 +479,81 @@ impl SlabCache {
         (&inner.numa, inner)
     }
 
-    pub unsafe fn get_list(&self, cpu_id: usize, class: usize) -> &mut TransferCache {
-        let inner = &mut *self.inner.get();
-        let list = &mut (*inner.cache.add(cpu_id)).mail[class];
+    pub unsafe fn get_list(&self, cpu_id: usize, class: usize) -> &TransferCache {
+        let inner = self.get_inner();
+        let list = &inner.cache[cpu_id].mail[class];
         list
+    }
+
+    #[cfg(feature = "experimental-predictive-demand")]
+    #[inline(never)]
+    pub(crate) unsafe fn profile_refill_demand(
+        &self,
+        cpu_id: usize,
+        refill_class: usize,
+    ) -> crate::core_prim::predictor::DemandSample<'_> {
+        use crate::utility::{Alignment, SIZE_CLASSES};
+        let cpu = &self.get_inner().cache[cpu_id];
+        let cached = cpu.cache[refill_class].usage.load(AtomicOrdering::Relaxed);
+        #[cfg(feature = "confidence-predictor")]
+        let max = crate::utility::PREDICTOR_BATCHING[refill_class];
+        #[cfg(not(feature = "confidence-predictor"))]
+        let max = crate::utility::ITERATIONS[refill_class];
+        cpu.transfer_batching[refill_class].begin_demand_sample(
+            crate::core_prim::predictor::demand_clock_ns(),
+            crate::core_prim::predictor::PREDICTOR_INIT_BATCH,
+            max,
+            (SIZE_CLASSES[refill_class] + crate::Header::SIZE).align_to(16),
+            cached == 0,
+        )
+    }
+
+    #[cfg(feature = "experimental-predictive-demand")]
+    pub(crate) unsafe fn finish_refill_demand(
+        &self,
+        sample: crate::core_prim::predictor::DemandSample<'_>,
+        cpu_id: usize,
+        class: usize,
+        delivered: usize,
+    ) {
+        // Endpoint checks reject obvious migration or a diverted remainder;
+        // unrelated frees and migration away and back can still hide changes.
+        let cached = self.get_inner().cache[cpu_id].cache[class]
+            .usage
+            .load(AtomicOrdering::Relaxed);
+        let reliable = read_volatile(&get_rseq().cpu_id_start) as usize == cpu_id
+            && cached >= delivered.saturating_sub(1);
+        sample.finish(
+            crate::core_prim::predictor::demand_clock_ns(),
+            delivered,
+            reliable,
+        );
+    }
+
+    #[cfg(all(feature = "experimental-predictive-demand", feature = "preload"))]
+    pub(crate) unsafe fn reset_demand_after_fork(&self) {
+        for cpu_id in 0..NCPU {
+            let cpu = &self.get_inner().cache[cpu_id];
+            for class in 0..NUM_SIZE_CLASSES {
+                cpu.transfer_batching[class].reset_demand_after_fork();
+                cpu.bulk_fill_batching[class].reset_demand_after_fork();
+            }
+        }
+    }
+
+    #[inline(always)]
+    pub unsafe fn transfer_predictor(&self, cpu_id: usize, class: usize) -> &AdaptiveBatching {
+        &self.get_inner().cache[cpu_id].transfer_batching[class]
+    }
+
+    #[inline(always)]
+    pub unsafe fn bulk_fill_predictor(&self, cpu_id: usize, class: usize) -> &AdaptiveBatching {
+        &self.get_inner().cache[cpu_id].bulk_fill_batching[class]
+    }
+
+    #[inline(always)]
+    pub unsafe fn pending_refill(&self, cpu_id: usize, class: usize) -> &AtomicPtr<MetaData> {
+        &self.get_inner().cache[cpu_id].pending_refill[class]
     }
 
     #[inline(never)]
@@ -476,311 +563,6 @@ impl SlabCache {
 
         (range.start_cpu, range.end_cpu, numa_id)
     }
-
-    #[inline(always)]
-    pub unsafe fn try_pop(
-        &self,
-        class: usize,
-        batch_size: usize,
-        cpu_id: usize,
-    ) -> (UnsafePointer<Header>, UnsafePointer<Header>, usize) {
-        let inner = &*self.inner.get();
-
-        if !self.is_empty(inner, class, cpu_id) {
-            if let Some(popped) = self.transfer_pop_batch(class, cpu_id, batch_size) {
-                return (
-                    UnsafePointer::new(popped.0),
-                    UnsafePointer::new(popped.1),
-                    popped.2,
-                );
-            }
-        }
-
-        self.pop_slow(inner, class, cpu_id, batch_size)
-    }
-
-    #[inline(always)]
-    unsafe fn pop_slow(
-        &self,
-        inner: &SlabCacheInner,
-        class: usize,
-        cpu_id: usize,
-        batch_size: usize,
-    ) -> (UnsafePointer<Header>, UnsafePointer<Header>, usize) {
-        let (start, end, node_id) = if inner.is_numa {
-            self.numa_cpu(&inner, cpu_id)
-        } else {
-            (0, inner.numa.ncpu - 1, 0)
-        };
-
-        if let Some(block) =
-            self.first_nonempty_cpu_in_range(&inner, class, cpu_id, batch_size, start, end)
-        {
-            #[cfg(feature = "transfer-debug")]
-            crate::TOTAL_TRANSFER_STEALS.fetch_add(1, Ordering::Relaxed);
-            return block;
-        }
-
-        if inner.is_numa {
-            let pointer = self.slowest_numa_steal_path(class, &inner, cpu_id, node_id, batch_size);
-            if !pointer.0.is_null() {
-                return pointer;
-            }
-        }
-
-        #[cfg(feature = "transfer-debug")]
-        crate::DRY_TRANSFER_STEALS.fetch_add(1, Ordering::Relaxed);
-
-        (UnsafePointer::NULL, UnsafePointer::NULL, 0)
-    }
-
-    #[inline(never)]
-    pub unsafe fn slowest_numa_steal_path(
-        &self,
-        class: usize,
-        inner: &SlabCacheInner,
-        cpu_id: usize,
-        node_id: u16,
-        batch_size: usize,
-    ) -> (UnsafePointer<Header>, UnsafePointer<Header>, usize) {
-        for i in 1..inner.numa.nranges {
-            let node_id = (i + node_id as usize) % inner.numa.nranges;
-            let (start, end) = {
-                let cpu = *inner.numa.cpu_ranges.add(node_id);
-                (cpu.start_cpu, cpu.end_cpu)
-            };
-
-            if let Some(block) =
-                self.first_nonempty_cpu_in_range(&inner, class, cpu_id, batch_size, start, end)
-            {
-                #[cfg(feature = "transfer-debug")]
-                crate::TOTAL_TRANSFER_STEALS.fetch_add(1, Ordering::Relaxed);
-
-                return block;
-            }
-        }
-
-        (UnsafePointer::NULL, UnsafePointer::NULL, 0)
-    }
-
-    #[inline(always)]
-    pub unsafe fn transfer_push_batch(
-        &self,
-        class: usize,
-        start: *mut Header,
-        tail: *mut Header,
-        cpu_id: usize,
-        inner: &mut SlabCacheInner,
-    ) {
-        #[cfg(feature = "transfer-debug-exact")]
-        crate::TOTAL_TRANSFER_PUSH_CALLS.fetch_add(1, Ordering::Relaxed);
-
-        let list = &mut (*inner.cache.add(cpu_id)).mail[class];
-        let list_ptr = &list.list;
-
-        loop {
-            let old = list_ptr.load(Ordering::Relaxed);
-            let (old_head, tag) = unpack_ptr(old);
-
-            (*tail).next = old_head;
-
-            if list_ptr
-                .compare_exchange(old, pack(start, tag), Ordering::Release, Ordering::Relaxed)
-                .is_ok()
-            {
-                if old_head.is_null() {
-                    self.mark_class_nonempty(inner, class, cpu_id);
-                }
-                return;
-            }
-
-            #[cfg(feature = "transfer-debug")]
-            crate::TOTAL_TRANSFER_RETRIES.fetch_add(1, Ordering::Relaxed);
-
-            spin_loop();
-        }
-    }
-
-    #[inline(always)]
-    pub unsafe fn transfer_push_single_to(
-        &self,
-        list_ptr: &AtomicUsize,
-        class: usize,
-        header: *mut Header,
-        cpu_id: usize,
-        inner: &mut SlabCacheInner,
-    ) {
-        #[cfg(feature = "transfer-debug-exact")]
-        crate::TOTAL_TRANSFER_PUSH_CALLS.fetch_add(1, Ordering::Relaxed);
-
-        loop {
-            let old = list_ptr.load(Ordering::Relaxed);
-            let (old_head, tag) = unpack_ptr(old);
-
-            (*header).next = old_head;
-            if list_ptr
-                .compare_exchange(old, pack(header, tag), Ordering::Release, Ordering::Relaxed)
-                .is_ok()
-            {
-                if old_head.is_null() {
-                    self.mark_class_nonempty(inner, class, cpu_id);
-                }
-                return;
-            }
-
-            #[cfg(feature = "transfer-debug")]
-            crate::TOTAL_TRANSFER_RETRIES.fetch_add(1, Ordering::Relaxed);
-
-            spin_loop();
-        }
-    }
-
-    pub unsafe fn transfer_push_single(
-        &self,
-        class: usize,
-        header: *mut Header,
-        cpu_id: usize,
-        inner: &mut SlabCacheInner,
-    ) {
-        let list = &mut (*inner.cache.add(cpu_id)).mail[class];
-        let list_ptr = &list.list;
-
-        self.transfer_push_single_to(list_ptr, class, header, cpu_id, inner);
-    }
-
-    pub unsafe fn transfer_push_single_trimmed(
-        &self,
-        class: usize,
-        header: *mut Header,
-        cpu_id: usize,
-        inner: &mut SlabCacheInner,
-    ) {
-        let list = &mut (*inner.cache.add(cpu_id)).mail[class];
-        let list_ptr = &list.trimmed;
-
-        self.transfer_push_single_to(list_ptr, class, header, cpu_id, inner);
-    }
-
-    #[inline(never)]
-    pub unsafe fn transfer_pop_single(&self, class: usize, cpu_id: usize) -> UnsafePointer<Header> {
-        #[cfg(feature = "transfer-debug-exact")]
-        crate::TOTAL_TRANSFER_POP_CALLS.fetch_add(1, Ordering::Relaxed);
-
-        let inner = &mut *self.inner.get();
-        let list = &mut (*inner.cache.add(cpu_id)).mail[class];
-        let normal_ptr = &list.list;
-        let trimmed_ptr = &list.trimmed;
-        let mut list_ptr = normal_ptr;
-
-        loop {
-            let old = list_ptr.load(Ordering::Acquire);
-            let (head, tag) = unpack_ptr(old);
-
-            if head.is_null() {
-                if eq(list_ptr, normal_ptr) {
-                    list_ptr = &trimmed_ptr;
-                    continue;
-                }
-
-                self.clear_class_hint(inner, class, cpu_id);
-                if !unpack_ptr(normal_ptr.load(Ordering::Acquire)).0.is_null() {
-                    self.mark_class_nonempty(inner, class, cpu_id);
-                }
-                return UnsafePointer::NULL;
-            }
-
-            let next = (*head).next;
-            if list_ptr
-                .compare_exchange(old, pack(next, tag), Ordering::Acquire, Ordering::Relaxed)
-                .is_ok()
-            {
-                if !next.is_null() {
-                    _mm_prefetch(next as *const i8, _MM_HINT_T0);
-                }
-                return UnsafePointer::new(head);
-            }
-
-            #[cfg(feature = "transfer-debug")]
-            crate::TOTAL_TRANSFER_RETRIES.fetch_add(1, Ordering::Relaxed);
-
-            spin_loop();
-        }
-    }
-
-    #[inline(never)]
-    unsafe fn clear_hint(
-        &self,
-        ptr: &AtomicUsize,
-        inner: &SlabCacheInner,
-        class: usize,
-        cpu_id: usize,
-    ) {
-        self.clear_class_hint(inner, class, cpu_id);
-        if !unpack_ptr(ptr.load(Ordering::Acquire)).0.is_null() {
-            self.mark_class_nonempty(inner, class, cpu_id);
-        }
-    }
-
-    #[inline(always)]
-    pub unsafe fn transfer_pop_batch(
-        &self,
-        class: usize,
-        cpu_id: usize,
-        batch_size: usize,
-    ) -> Option<(*mut Header, *mut Header, usize)> {
-        #[cfg(feature = "transfer-debug-exact")]
-        crate::TOTAL_TRANSFER_POP_CALLS.fetch_add(1, Ordering::Relaxed);
-
-        let inner = &mut *self.inner.get();
-        let list = &mut (*inner.cache.add(cpu_id)).mail[class];
-        let normal_ptr = &list.list;
-        let trimmed_ptr = &list.trimmed;
-        let mut list_ptr = normal_ptr;
-
-        loop {
-            let old = list_ptr.load(Ordering::Acquire);
-            let (head, tag) = unpack_ptr(old);
-
-            if head.is_null() {
-                if eq(list_ptr, normal_ptr) {
-                    list_ptr = &trimmed_ptr;
-                    continue;
-                }
-                self.clear_hint(normal_ptr, inner, class, cpu_id);
-                return None;
-            }
-
-            let mut tail = head;
-            let mut count = 1usize;
-            let mut next = (*tail).next;
-            if !next.is_null() {
-                _mm_prefetch(next as *const i8, _MM_HINT_T0)
-            };
-
-            while count < batch_size && !next.is_null() {
-                tail = next;
-                next = (*tail).next;
-                count += 1;
-            }
-
-            if list_ptr
-                .compare_exchange(old, pack(next, tag), Ordering::Acquire, Ordering::Relaxed)
-                .is_ok()
-            {
-                if !next.is_null() {
-                    _mm_prefetch(next as *const i8, _MM_HINT_T0);
-                } else {
-                    self.clear_hint(normal_ptr, inner, class, cpu_id);
-                }
-                return Some((head, tail, count));
-            }
-
-            #[cfg(feature = "transfer-debug")]
-            crate::TOTAL_TRANSFER_RETRIES.fetch_add(1, Ordering::Relaxed);
-
-            spin_loop();
-        }
-    }
 }
 
 pub static SLAB_CACHE: SlabCache = SlabCache::new();
@@ -788,18 +570,174 @@ pub static SLAB_CACHE: SlabCache = SlabCache::new();
 #[cfg(test)]
 #[cfg(not(feature = "extended-header"))]
 mod tests {
-    use std::hint::black_box;
+    use std::{hint::black_box, sync::mpsc, thread, time::Duration};
+
+    use crate::rseq_core::aba::{TAG_SHIFT, Tagging};
 
     use super::*;
 
     fn header() -> *mut Header {
         Box::into_raw(Box::new(Header {
-            next: null_mut(),
+            next: AtomicPtr::new(null_mut()),
             class: 0,
             magic: 0,
             life_time: 0,
-            flags: 0,
+            flags: crate::Flags::NotAllocated,
         }))
+    }
+
+    // Mirror the zero-initialized cache and bitmap storage used by ensure_cache,
+    // without initializing its process-global NUMA and pending-queue state.
+    struct TransferFixture {
+        cache: SlabCache,
+        _main: Box<MainCache>,
+        _nonempty: Box<[AtomicU64]>,
+        _stolen: Box<[AtomicU64]>,
+    }
+
+    impl TransferFixture {
+        fn new() -> Self {
+            let mut main: Box<MainCache> = unsafe { Box::new(std::mem::zeroed()) };
+            let mut nonempty: Box<[AtomicU64]> =
+                (0..NUM_SIZE_CLASSES).map(|_| AtomicU64::new(0)).collect();
+            let mut stolen: Box<[AtomicU64]> =
+                (0..NUM_SIZE_CLASSES).map(|_| AtomicU64::new(0)).collect();
+            let cache = SlabCache::new();
+            unsafe {
+                let inner = &mut *cache.inner.get();
+                inner.cache = Owned::from(&mut *main as *mut MainCache);
+                inner.bitmap = Bitmap {
+                    words: 1,
+                    nonempty: nonempty.as_mut_ptr(),
+                    being_stolen: stolen.as_mut_ptr(),
+                };
+            }
+            Self {
+                cache,
+                _main: main,
+                _nonempty: nonempty,
+                _stolen: stolen,
+            }
+        }
+    }
+
+    #[test]
+    fn transfer_ordinary_pop_skips_active_trim_and_cancelled_request() {
+        let fixture = TransferFixture::new();
+        let cache = &fixture.cache;
+        unsafe {
+            let inner = cache.get_inner();
+            let message = &inner.cache[0].mail[0].trim_message;
+            let block = header();
+            cache.transfer_push_batch(0, block, block, 1, 0, inner);
+            assert!(message.begin());
+            assert!(cache.transfer_pop_batch(0, 0, 1, false).is_none());
+            assert!(message.pending().is_none());
+            // No trimmer responds, so the bounded forced request cancels itself.
+            assert!(cache.transfer_pop_batch(0, 0, 1, true).is_none());
+            assert!(message.pending().is_none());
+            assert!(message.finish());
+            let popped = cache.transfer_pop_batch(0, 0, 1, false).unwrap();
+            assert_eq!(popped.start, block);
+            assert_eq!(popped.end, block);
+            assert_eq!(popped.total, 1);
+            assert_eq!(popped.available, 1);
+            drop(Box::from_raw(block));
+        }
+    }
+
+    #[test]
+    fn transfer_forced_pop_receives_published_batch() {
+        let fixture = TransferFixture::new();
+        let cache = &fixture.cache;
+        let message = &cache.get_inner().cache[0].mail[0].trim_message;
+        assert!(message.begin());
+        let block = header();
+        let block_addr = block as usize;
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        thread::scope(|scope| {
+            scope.spawn(move || {
+                let mut published = false;
+                while matches!(stop_rx.try_recv(), Err(mpsc::TryRecvError::Empty)) {
+                    if let Some(ticket) = message.pending() {
+                        if !published {
+                            unsafe {
+                                let block = block_addr as *mut Header;
+                                cache.transfer_push_batch(0, block, block, 1, 0, cache.get_inner());
+                            }
+                            published = true;
+                        }
+                        if message.signal_ready(ticket) {
+                            let done = message.wait_done(ticket, 1024);
+                            if done {
+                                result_tx.send(()).unwrap();
+                                return;
+                            }
+                        }
+                    }
+                    thread::yield_now();
+                }
+            });
+            let mut popped = None;
+            for _ in 0..100_000 {
+                if let Some(batch) = unsafe { cache.transfer_pop_batch(0, 0, 1, true) } {
+                    popped = Some(batch);
+                    break;
+                }
+                thread::yield_now();
+            }
+            let completed = result_rx.recv_timeout(Duration::from_secs(2));
+            let _ = stop_tx.send(());
+            let batch = popped.expect("forced pop never claimed a published batch");
+            assert!(completed.is_ok(), "trimmer did not observe completion");
+            assert_eq!(batch.start as usize, block_addr);
+            assert_eq!(batch.end as usize, block_addr);
+            assert_eq!(batch.total, 1);
+            assert_eq!(batch.available, 1);
+        });
+        assert!(message.finish());
+        unsafe {
+            drop(Box::from_raw(block));
+        }
+    }
+
+    #[test]
+    fn transfer_trimmer_waits_for_claimed_completion() {
+        let fixture = TransferFixture::new();
+        let cache = &fixture.cache;
+        let message = &cache.get_inner().cache[0].mail[0].trim_message;
+        let block = header();
+        assert!(message.begin());
+        let ticket = message.request().unwrap();
+        unsafe {
+            cache.transfer_push_batch(0, block, block, 1, 0, cache.get_inner());
+        }
+        assert!(message.signal_ready(ticket));
+        assert!(message.claim(ticket));
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                started_tx.send(()).unwrap();
+                let done = message.wait_done(ticket, 0);
+                let _ = done_tx.send(done);
+            });
+            started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            let early = done_rx.recv_timeout(Duration::from_millis(50));
+            // Always release the waiter before asserting, including on failure.
+            let completed = message.complete(ticket);
+            let done = done_rx.recv_timeout(Duration::from_secs(2));
+            assert!(early.is_err(), "trimmer returned before completion");
+            assert!(completed);
+            assert_eq!(done.unwrap(), true);
+        });
+        assert!(message.finish());
+        unsafe {
+            let batch = cache.transfer_pop_batch(0, 0, 1, false).unwrap();
+            assert_eq!(batch.start, block);
+            drop(Box::from_raw(block));
+        }
     }
 
     #[test]
@@ -818,27 +756,38 @@ mod tests {
     fn packed_transfer_pointer_preserves_low_address_bits() {
         let addr = 0x00ab_cdef_1234_5670usize;
         let ptr = addr as *mut Header;
-        let packed = pack(ptr, 0);
-        let (unpacked, _) = unpack_ptr(packed);
+        let packed = Tagging.tag_ptr(ptr, 0);
+        let unpacked = Tagging.untag_ptr(packed).current_header;
 
         assert_eq!(unpacked as usize, addr);
         assert_eq!(packed >> TAG_SHIFT, 1);
     }
 
     #[test]
-    fn packed_transfer_tag_wraps_after_256_updates() {
+    fn packed_transfer_tag_increments_and_pointer_survives_full_64_bit_address() {
+        let addr = 0xffff_ab12_3456_7890usize;
+        let ptr = addr as *mut Header;
+        let mut packed = 0u128;
+
+        for expected in 1..=10_000u128 {
+            packed = Tagging.tag_ptr(ptr, packed);
+            assert_eq!(packed >> TAG_SHIFT, expected);
+            assert_eq!(Tagging.untag_ptr(packed).current_header as usize, addr);
+        }
+    }
+
+    #[test]
+    fn packed_transfer_tag_does_not_wrap_within_u64_range() {
         let addr = 0x00ab_cdef_1234_5670usize;
         let ptr = addr as *mut Header;
-        let mut packed = 0;
+        let near_wrap = ((u64::MAX as u128) << TAG_SHIFT) | addr as u128;
 
-        for expected in 1..=u8::MAX {
-            packed = pack(ptr, packed);
-            assert_eq!((packed >> TAG_SHIFT) as u8, expected);
-            assert_eq!(unpack_ptr(packed).0 as usize, addr);
-        }
-
-        packed = pack(ptr, packed);
-        assert_eq!(packed >> TAG_SHIFT, 0);
-        assert_eq!(unpack_ptr(packed).0 as usize, addr);
+        let packed = Tagging.tag_ptr(ptr, near_wrap);
+        assert_eq!(
+            packed >> TAG_SHIFT,
+            0,
+            "u64 tag wraps exactly at u64::MAX + 1"
+        );
+        assert_eq!(Tagging.untag_ptr(packed).current_header as usize, addr);
     }
 }

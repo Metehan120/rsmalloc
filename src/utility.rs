@@ -1,3 +1,5 @@
+use std::hint::cold_path;
+
 use crate::{Header, internals::oncelock::OnceLock};
 
 pub const SIZE_CLASSES: [usize; 34] = [
@@ -8,6 +10,37 @@ pub const SIZE_CLASSES: [usize; 34] = [
     3840, 4096, 8192, 12288, 16384, 24576, // Very Large (32KB+)
     32768, 65536, 131072, 262144, 524288, 1048576, 2097152,
 ];
+
+const _: () = {
+    let classes = &SIZE_CLASSES;
+    assert!(!classes.is_empty(), "size classes must not be empty");
+    assert!(
+        classes.len() <= u8::MAX as usize,
+        "size class indices must fit in u8"
+    );
+    assert!(classes[0] == 16, "first size class must be 16 bytes");
+    assert!(
+        classes[classes.len() - 1] == 2 * 1024 * 1024,
+        "last size class must be 2 MiB"
+    );
+
+    let mut i = 0;
+    let mut has_4096 = false;
+    while i < classes.len() {
+        assert!(classes[i] % 16 == 0, "size classes must be 16-byte aligned");
+        if i > 0 {
+            assert!(
+                classes[i - 1] < classes[i],
+                "size classes must be strictly increasing"
+            );
+        }
+        if classes[i] == 4096 {
+            has_4096 = true;
+        }
+        i += 1;
+    }
+    assert!(has_4096, "size classes must include 4096");
+};
 
 pub const NUM_SIZE_CLASSES: usize = SIZE_CLASSES.len();
 
@@ -104,13 +137,6 @@ pub const SIZE_LUT: [u8; 256] = {
 // buckets. Classes above 32 KiB are powers of two and are matched arithmetically.
 const LARGE_SIZE_LUT: [u8; 8] = [0, 23, 24, 25, 26, 26, 27, 27];
 
-#[must_use]
-#[inline(always)]
-pub const fn align_to(size: usize, align: usize) -> usize {
-    let al = align - 1;
-    (size + al) & !al
-}
-
 pub const BIG_CLASS_BYTES: usize = 1024 * 96;
 pub const MEDIUM_CLASS_BYTES: usize = 1024 * 96;
 pub const SMALL_CLASS_BYTES: usize = 1024 * 128;
@@ -144,6 +170,19 @@ pub const CACHE_HIGH_BLOCKS: [usize; NUM_SIZE_CLASSES] = {
     arr
 };
 
+// A transfer refill returns one block immediately; the remainder can fill an
+// empty CPU cache without exceeding its per-class high-water mark.
+#[cfg(feature = "confidence-predictor")]
+pub const PREDICTOR_BATCHING: [usize; NUM_SIZE_CLASSES] = {
+    let mut arr = [1; NUM_SIZE_CLASSES];
+    let mut i = 0;
+    while i < NUM_SIZE_CLASSES {
+        arr[i] = CACHE_HIGH_BLOCKS[i] + 1;
+        i += 1;
+    }
+    arr
+};
+
 #[allow(dead_code)]
 pub const CACHE_LOW_BLOCKS: [usize; NUM_SIZE_CLASSES] = {
     let mut arr = [0; NUM_SIZE_CLASSES];
@@ -165,12 +204,12 @@ pub fn get_size_4096_class() -> usize {
 }
 
 #[inline(always)]
-pub unsafe fn match_size_class(size: usize) -> Option<usize> {
+pub const fn match_size_class(size: usize) -> Option<usize> {
     if size == 0 {
         return Some(0);
     } else if size <= 4096 {
         let index = (size - 1) >> 4;
-        return Some(*SIZE_LUT.get_unchecked(index) as usize);
+        return Some(SIZE_LUT[index] as usize);
     }
 
     if size > 2097152 {
@@ -179,7 +218,7 @@ pub unsafe fn match_size_class(size: usize) -> Option<usize> {
 
     if size <= 32768 {
         let index = (size - 1) >> 12;
-        return Some(*LARGE_SIZE_LUT.get_unchecked(index) as usize);
+        return Some(LARGE_SIZE_LUT[index] as usize);
     }
 
     let exponent = usize::BITS as usize - (size - 1).leading_zeros() as usize;
@@ -199,10 +238,87 @@ mod tests {
             .position(|&class_size| size <= class_size)
     }
 
+    #[cfg(feature = "confidence-predictor")]
+    #[test]
+    fn predictor_batching_fills_cache_after_returning_one_block() {
+        use super::{CACHE_HIGH_BLOCKS, ITERATIONS, PREDICTOR_BATCHING};
+
+        for class in 0..NUM_SIZE_CLASSES {
+            assert_eq!(PREDICTOR_BATCHING[class] - 1, CACHE_HIGH_BLOCKS[class]);
+            assert!(PREDICTOR_BATCHING[class] >= ITERATIONS[class]);
+        }
+    }
+
     #[test]
     fn fast_size_matching_matches_reference_for_every_slab_size() {
         for size in 0..=SIZE_CLASSES[NUM_SIZE_CLASSES - 1] + 1 {
-            assert_eq!(unsafe { match_size_class(size) }, reference_match(size));
+            assert_eq!(match_size_class(size), reference_match(size));
         }
+    }
+}
+
+#[must_use]
+#[inline(always)]
+const fn align_to(size: usize, align: usize) -> usize {
+    let al = align - 1;
+    (size + al) & !al
+}
+
+pub trait Alignment<T> {
+    fn align_to(self, align: T) -> T;
+    fn checked_align_to(self, align: T) -> Option<T>;
+    #[allow(dead_code)]
+    fn checked_align_of_page(self, align: T) -> Option<T>;
+}
+
+macro_rules! impl_align {
+    ($($u:ty),*) => {
+        $(impl Alignment<$u> for $u {
+            #[inline(always)]
+            fn align_to(self, align: $u) -> $u {
+                let al = align - 1;
+                (self + al) & !al
+            }
+
+            #[inline(always)]
+            fn checked_align_to(self, align: $u) -> Option<$u> {
+                let al = align - 1;
+                let aligned = self.checked_add(al)? & !al;
+                if unlikely(aligned < self) {
+                    return None;
+                }
+                Some(aligned)
+            }
+
+            #[inline(always)]
+            fn checked_align_of_page(self, align: $u) -> Option<$u> {
+                if !align.is_multiple_of(4096){
+                    return None;
+                }
+                self.checked_align_to(align)
+            }
+        })*
+    };
+}
+
+impl_align!(usize, u64, u32, u16);
+
+#[inline(always)]
+pub const fn unlikely(x: bool) -> bool {
+    if x {
+        cold_path();
+        true
+    } else {
+        false
+    }
+}
+
+#[inline(always)]
+pub const fn likely(x: bool) -> bool {
+    if x {
+        true
+    } else {
+        cold_path();
+        false
     }
 }

@@ -13,6 +13,14 @@ cargo test
 cargo test --features preload
 ```
 
+For changes to preload fork handling, also run the older-atfork-callback regression:
+
+```sh
+cargo build --release --features preload
+cc -O2 -pthread tests/preload_fork.c -ldl -o target/preload-fork
+timeout 30s target/preload-fork ./target/release/librsmalloc.so
+```
+
 If a check cannot be run on your machine, mention that in the PR.
 
 ## Contribution guidelines

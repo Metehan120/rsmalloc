@@ -1,13 +1,14 @@
+
 [package]
 name = "rsmalloc"
 description = "An RSEQ-based general-purpose memory allocator written in Rust"
 license = "MIT"
-version = "0.2.0-alpha"
-readme = "README.md"
+version = "0.3.0-alpha"
 repository = "https://github.com/Metehan120/rsmalloc"
 edition = "2024"
 
 [dependencies]
+
 syscalls = { version = "=0.8.1", default-features = false }
 rustix = { version = "=1.1.4", features = [
     "linux_latest",
@@ -15,35 +16,59 @@ rustix = { version = "=1.1.4", features = [
     "rand",
     "system",
     "fs",
-    "thread",
 ] }
+
+portable-atomic = {version = "1", features = ["require-cas"]}
+thiserror = { version = "2", default-features = false }
 
 [features]
 default = []
+allocator-api = []
+allocator-api-feature-gate = ["allocator-api"]
+native-allocation-api = []
 preload = []
-print-cpu-on-double-free = []
 check-owned-on-alloc = []
+# Opt-in ownership validation before free's metadata reads; otherwise foreign handling is best-effort.
+validate-foreign-first = []
+# Opt-in confidence-based transfer batching; may affect overall allocator performance.
+confidence-predictor = []
+# Opt-in direct next-demand forecasting from completed refill observations.
+experimental-predictive-demand = []
+
+# Debug options
 debug-print = ["debug"]
 debug-printer-thread = ["debug-print"]
 debug = []
+debug-preload = ["preload", "debug-print"]
 debug-exact = ["debug", "debug-print"]
-debug-predictor-exact = ["debug", "debug-print"]
+debug-predictor-exact = ["debug-exact", "debug-print"]
 predictor-debug = []
 transfer-debug = ["debug-exact"]
 transfer-debug-exact = ["transfer-debug"]
 debug-full = ["transfer-debug-exact"]
 debug-full-critic = ["transfer-debug-exact", "debug-predictor-exact"]
+debug-print-trim-calls = ["rustix/time"]
+
 extended-header = []
 lazy-page-trim = []
+
 # Useful on systems (e.g. CachyOS) that aggressively promote transparent huge pages.
 # Can significantly reduce RSS at the cost of higher TLB pressure.
 page-backend-no-huge-page = []
+# Just advising the kernel to use huge pages,
+# trim can break them down to 4kb pages
 page-backend-huge-page = []
+
 abort-on-rseq-failure = []
 disable-magic-security-checks = []
 trim-aggressively = []
 explicit-zero = []
-semi-hardened = ["extended-header", "check-owned-on-alloc"]
+# Zeroes 16~64b sized allocations (cryptographic key sized) on free; good for security without big performance penalty
+zero-small-on-free = []
+# Additional ownership checks, wider magic values, and small-free zeroing; not a hardened allocator.
+extra-checks = ["extended-header", "check-owned-on-alloc", "zero-small-on-free", "validate-foreign-first"]
+
+expose-security-critical-settings = []
 
 [[bench]]
 name = "book_speed"
@@ -53,15 +78,9 @@ harness = false
 name = "rstress"
 harness = false
 
-[[bench]]
-name = "rstress_app"
-harness = false
-
 [dev-dependencies]
 criterion = "0.8"
-loom = "0.7"
 rand = "0.10"
-rusqlite = { version = "=0.40.1", features = ["bundled"] }
 
 [lib]
 name = "rsmalloc"
@@ -70,8 +89,8 @@ doctest = false
 
 [profile.release]
 opt-level = 3
-panic = "abort"
 overflow-checks = false
 lto = "fat"
 codegen-units = 1
 debug = 2
+panic = "abort"

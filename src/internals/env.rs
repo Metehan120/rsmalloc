@@ -4,6 +4,9 @@ unsafe extern "C" {
 
 unsafe fn getenv_raw(key: &[u8]) -> Option<*const u8> {
     let mut env = environ;
+    if env.is_null() {
+        return None;
+    }
 
     while !(*env).is_null() {
         let entry = *env;

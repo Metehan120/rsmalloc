@@ -1,0 +1,381 @@
+use std::{
+    hint::spin_loop,
+    ptr::eq,
+    sync::atomic::Ordering::{self, Acquire, Release},
+};
+
+use portable_atomic::AtomicU128;
+
+use crate::{
+    Header,
+    core_prim::hw::{HardwareFeature, PrefetchHint, SafeToPrefetch},
+    internals::atomics::{AtomicOrdering, AtomicUsize},
+    rseq_core::{
+        aba::Tagging,
+        slab_cache::{SlabCache, SlabCacheInner, TransferReturn},
+    },
+};
+
+use super::trim_message::{Ticket, TrimMessage};
+
+struct TransferHandshake<'a> {
+    message: &'a TrimMessage,
+    ticket: Ticket,
+}
+
+impl Drop for TransferHandshake<'_> {
+    fn drop(&mut self) {
+        self.message.complete(self.ticket);
+    }
+}
+
+impl SlabCache {
+    #[inline(always)]
+    pub unsafe fn try_pop(
+        &self,
+        class: usize,
+        batch_size: usize,
+        cpu_id: usize,
+    ) -> Option<TransferReturn> {
+        let inner = &*self.inner.get();
+
+        if !self.is_empty(inner, class, cpu_id) {
+            if let Some(popped) = self.transfer_pop_batch(class, cpu_id, batch_size, false) {
+                return Some(popped);
+            }
+        }
+
+        self.pop_slow(inner, class, cpu_id, batch_size)
+    }
+
+    #[inline(always)]
+    unsafe fn pop_slow(
+        &self,
+        inner: &SlabCacheInner,
+        class: usize,
+        cpu_id: usize,
+        batch_size: usize,
+    ) -> Option<TransferReturn> {
+        let (start, end, node_id) = if inner.is_numa {
+            self.numa_cpu(&inner, cpu_id)
+        } else {
+            (0, inner.numa.ncpu - 1, 0)
+        };
+
+        if let Some(block) =
+            self.first_nonempty_cpu_in_range(&inner, class, cpu_id, batch_size, start, end)
+        {
+            #[cfg(feature = "transfer-debug")]
+            crate::TOTAL_TRANSFER_STEALS.fetch_add(1, Ordering::Relaxed);
+            return Some(block);
+        }
+
+        if inner.is_numa {
+            if let Some(numa_block) =
+                self.slowest_numa_steal_path(class, &inner, cpu_id, node_id, batch_size)
+            {
+                return Some(numa_block);
+            }
+        }
+
+        #[cfg(feature = "transfer-debug")]
+        crate::DRY_TRANSFER_STEALS.fetch_add(1, Ordering::Relaxed);
+
+        None
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub unsafe fn slowest_numa_steal_path(
+        &self,
+        class: usize,
+        inner: &SlabCacheInner,
+        cpu_id: usize,
+        node_id: u16,
+        batch_size: usize,
+    ) -> Option<TransferReturn> {
+        for i in 1..inner.numa.nranges {
+            let node_id = (i + node_id as usize) % inner.numa.nranges;
+            let (start, end) = {
+                let cpu = *inner.numa.cpu_ranges.add(node_id);
+                (cpu.start_cpu, cpu.end_cpu)
+            };
+
+            if let Some(block) =
+                self.first_nonempty_cpu_in_range(&inner, class, cpu_id, batch_size, start, end)
+            {
+                #[cfg(feature = "transfer-debug")]
+                crate::TOTAL_TRANSFER_STEALS.fetch_add(1, Ordering::Relaxed);
+                return Some(block);
+            }
+        }
+
+        None
+    }
+
+    #[inline(never)]
+    pub unsafe fn transfer_push_batch_noninline(
+        &self,
+        class: usize,
+        start: *mut Header,
+        tail: *mut Header,
+        batch_size: usize,
+        cpu_id: usize,
+        inner: &SlabCacheInner,
+    ) {
+        self.transfer_push_batch(class, start, tail, batch_size, cpu_id, inner);
+    }
+
+    #[inline(always)]
+    pub unsafe fn transfer_push_batch(
+        &self,
+        class: usize,
+        start: *mut Header,
+        tail: *mut Header,
+        batch_size: usize,
+        cpu_id: usize,
+        inner: &SlabCacheInner,
+    ) {
+        #[cfg(feature = "transfer-debug-exact")]
+        crate::TOTAL_TRANSFER_PUSH_CALLS.fetch_add(1, Ordering::Relaxed);
+
+        let list = &inner.cache[cpu_id].mail.get_unchecked(class);
+        let list_ptr = &list.list;
+
+        let mut old = list_ptr.load(Ordering::Acquire);
+        loop {
+            let pack = Tagging.untag_ptr(old);
+
+            (*tail).next.store(pack.current_header, Release);
+
+            match list_ptr.compare_exchange(
+                old,
+                Tagging.tag_ptr(start, pack.old_packed),
+                Ordering::Release,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    list.size
+                        .normal_blocks
+                        .fetch_add(batch_size, AtomicOrdering::TransferFetchOp);
+                    if pack.current_header.is_null() {
+                        self.mark_class_nonempty(inner, class, cpu_id);
+                    }
+                    crate::global_vals::record_transfer_push!(class, batch_size);
+                    return;
+                }
+                Err(new_head) => old = new_head,
+            }
+
+            #[cfg(feature = "transfer-debug")]
+            crate::TOTAL_TRANSFER_RETRIES.fetch_add(1, Ordering::Relaxed);
+
+            spin_loop();
+        }
+    }
+
+    pub unsafe fn transfer_push_single(
+        &self,
+        class: usize,
+        header: *mut Header,
+        cpu_id: usize,
+        inner: &SlabCacheInner,
+    ) {
+        let list = &inner.cache[cpu_id].mail[class];
+        let list_ptr = &list.list;
+
+        self.transfer_push_single_to(
+            list_ptr,
+            &list.size.normal_blocks,
+            class,
+            header,
+            cpu_id,
+            inner,
+        );
+    }
+
+    pub unsafe fn transfer_push_single_trimmed(
+        &self,
+        class: usize,
+        header: *mut Header,
+        cpu_id: usize,
+        inner: &SlabCacheInner,
+    ) {
+        let list = &inner.cache[cpu_id].mail[class];
+        let list_ptr = &list.trimmed;
+
+        self.transfer_push_single_to(
+            list_ptr,
+            &list.size.trimmed_blocks,
+            class,
+            header,
+            cpu_id,
+            inner,
+        );
+    }
+
+    #[inline(always)]
+    pub unsafe fn transfer_push_single_to(
+        &self,
+        list_ptr: &AtomicU128,
+        size_ptr: &AtomicUsize,
+        class: usize,
+        header: *mut Header,
+        cpu_id: usize,
+        inner: &SlabCacheInner,
+    ) {
+        #[cfg(feature = "transfer-debug-exact")]
+        crate::TOTAL_TRANSFER_PUSH_CALLS.fetch_add(1, Ordering::Relaxed);
+
+        let mut old = list_ptr.load(Ordering::Acquire);
+        loop {
+            let pack = Tagging.untag_ptr(old);
+
+            // This node is ours until publication succeeds. On failure, only
+            // the observed head changes; relink our node before trying again.
+            (*header).next.store(pack.current_header, Release);
+            match list_ptr.compare_exchange(
+                old,
+                Tagging.tag_ptr(header, pack.old_packed),
+                Ordering::Release,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    size_ptr.fetch_add(1, AtomicOrdering::TransferFetchOp);
+                    if pack.current_header.is_null() {
+                        self.mark_class_nonempty(inner, class, cpu_id);
+                    }
+                    crate::global_vals::record_transfer_push!(class, 1);
+                    return;
+                }
+                Err(new_head) => old = new_head,
+            }
+
+            #[cfg(feature = "transfer-debug")]
+            crate::TOTAL_TRANSFER_RETRIES.fetch_add(1, Ordering::Relaxed);
+
+            spin_loop();
+        }
+    }
+
+    #[inline(never)]
+    unsafe fn clear_hint(
+        &self,
+        ptr: &AtomicU128,
+        other_ptr: &AtomicU128,
+        inner: &SlabCacheInner,
+        class: usize,
+        cpu_id: usize,
+    ) {
+        // The bitmap is a search hint, not ownership of either list. Clear it
+        // first, then recheck both heads so a concurrent push is not overlooked.
+        self.clear_class_hint(inner, class, cpu_id);
+
+        if !Tagging
+            .untag_ptr(ptr.load(Ordering::Acquire))
+            .current_header
+            .is_null()
+            || !Tagging
+                .untag_ptr(other_ptr.load(Ordering::Acquire))
+                .current_header
+                .is_null()
+        {
+            self.mark_class_nonempty(inner, class, cpu_id);
+        }
+    }
+
+    #[inline(always)]
+    pub unsafe fn transfer_pop_batch(
+        &self,
+        class: usize,
+        cpu_id: usize,
+        batch_size: usize,
+        force: bool,
+    ) -> Option<TransferReturn> {
+        #[cfg(feature = "transfer-debug-exact")]
+        crate::TOTAL_TRANSFER_POP_CALLS.fetch_add(1, Ordering::Relaxed);
+
+        let inner = self.get_inner();
+        let list = &inner.cache[cpu_id].mail[class];
+        let normal_ptr = &list.list;
+        let trimmed_ptr = &list.trimmed;
+        let (mut list_ptr, mut size_ptr) = (normal_ptr, &list.size.normal_blocks);
+
+        let mut handshake: Option<TransferHandshake<'_>> = None;
+        let mut old = list_ptr.load(Ordering::Acquire);
+        loop {
+            if handshake.is_none() && list.trim_message.is_active() {
+                if !force {
+                    // Ordinary callers skip this cache rather than wait for trimming.
+                    return None;
+                }
+                let Some(ticket) = list.trim_message.request() else {
+                    return None;
+                };
+                if !list.trim_message.wait_ready(ticket, 1024 * 5) {
+                    return None;
+                }
+                handshake = Some(TransferHandshake {
+                    message: &list.trim_message,
+                    ticket,
+                });
+                old = list_ptr.load(Ordering::Acquire);
+            }
+            let pack = Tagging.untag_ptr(old);
+
+            if pack.current_header.is_null() {
+                if eq(list_ptr, normal_ptr) {
+                    // Prefer normal blocks; consult reclaimed blocks only when
+                    // this normal-head snapshot is empty. Each list has its own count.
+                    (list_ptr, size_ptr) = (trimmed_ptr, &list.size.trimmed_blocks);
+                    old = list_ptr.load(Ordering::Acquire);
+                    continue;
+                }
+                self.clear_hint(normal_ptr, trimmed_ptr, inner, class, cpu_id);
+                return None;
+            }
+
+            let mut tail = pack.current_header;
+            let mut count = 1usize;
+            let mut next = (*tail).next.load(Acquire);
+            while count < batch_size && !next.is_null() {
+                tail = next;
+                next = (*tail).next.load(Acquire);
+                count += 1;
+            }
+
+            match list_ptr.compare_exchange(
+                old,
+                Tagging.tag_ptr(next, pack.old_packed),
+                Ordering::Acquire,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    let available = size_ptr.fetch_sub(count, AtomicOrdering::TransferFetchOp);
+                    if !next.is_null() {
+                        HardwareFeature.prefetch(SafeToPrefetch::new(next), PrefetchHint::PreferL1)
+                    } else {
+                        self.clear_hint(normal_ptr, trimmed_ptr, inner, class, cpu_id);
+                    }
+                    crate::global_vals::record_transfer_pop!(class, count);
+                    return Some(TransferReturn {
+                        start: pack.current_header,
+                        end: tail,
+                        total: count,
+                        available,
+                        #[cfg(feature = "predictor-debug")]
+                        cpu_id,
+                    });
+                }
+                // A changed head/tag invalidates the candidate: the next loop
+                // must walk again rather than reuse the old tail and count.
+                Err(new_head) => old = new_head,
+            }
+
+            #[cfg(feature = "transfer-debug")]
+            crate::TOTAL_TRANSFER_RETRIES.fetch_add(1, Ordering::Relaxed);
+
+            spin_loop();
+        }
+    }
+}

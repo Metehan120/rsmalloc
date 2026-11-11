@@ -24,20 +24,24 @@ unsafe fn mbind_node(ptr: *mut c_void, len: usize, node_id: u16, mode: usize) ->
         Sysno::mbind,
         ptr as usize,
         len,
-        mode,
+        mode | MPOL_F_STATIC_NODES,
         &mask as *const usize as usize,
         maxnode,
-        MPOL_F_STATIC_NODES
+        0usize
     )
     .is_ok()
 }
 
-#[inline(always)]
-pub unsafe fn prefer_node(ptr: *mut c_void, len: usize, node_id: u16) -> bool {
-    mbind_node(ptr, len, node_id, MPOL_PREFERRED)
-}
+pub struct NumaBind;
 
-#[inline(always)]
-pub unsafe fn bind_node(ptr: *mut c_void, len: usize, node_id: u16) -> bool {
-    mbind_node(ptr, len, node_id, MPOL_BIND)
+impl NumaBind {
+    #[inline(always)]
+    pub unsafe fn prefer_node(&self, ptr: *mut c_void, len: usize, node_id: u16) -> bool {
+        mbind_node(ptr, len, node_id, MPOL_PREFERRED)
+    }
+
+    #[inline(always)]
+    pub unsafe fn bind_node(&self, ptr: *mut c_void, len: usize, node_id: u16) -> bool {
+        mbind_node(ptr, len, node_id, MPOL_BIND)
+    }
 }

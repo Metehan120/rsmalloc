@@ -3,7 +3,7 @@ use std::{os::raw::c_void, ptr::null_mut};
 use rustix::io::Errno;
 
 use crate::{
-    Header, OFFSET_SIZE, TAG_SIZE, core_prim::wrappers::UnsafePointer, inner::alloc::rs_alloc,
+    Header, OFFSET_SIZE, TAG_SIZE, core_prim::wrappers::MaybeNull, inner::alloc::rs_alloc_posix,
 };
 
 #[inline(always)]
@@ -24,7 +24,7 @@ pub unsafe fn posix_align_inner(memptr: *mut *mut c_void, alignment: usize, size
         return Errno::NOMEM.raw_os_error();
     };
 
-    let raw = rs_alloc(total_requested, true);
+    let raw = rs_alloc_posix(total_requested, true);
     if raw.is_null() {
         return Errno::NOMEM.raw_os_error();
     }
@@ -43,30 +43,34 @@ pub unsafe fn posix_align_inner(memptr: *mut *mut c_void, alignment: usize, size
 }
 
 #[inline(always)]
-pub unsafe fn memalign_inner(alignment: usize, size: usize) -> UnsafePointer<Header> {
+unsafe fn rs_memalign_inner(alignment: usize, size: usize, skip_checks: bool) -> MaybeNull<Header> {
     let mut ptr: *mut c_void = null_mut();
     let adjusted_alignment = alignment.max(size_of::<*mut c_void>());
 
-    if !adjusted_alignment.is_power_of_two() {
+    if !adjusted_alignment.is_power_of_two() && !skip_checks {
         #[cfg(feature = "preload")]
         {
-            use crate::inner::libc_int::__errno_location;
+            use crate::inner::preload::libc_int::__errno_location;
             *__errno_location() = Errno::INVAL.raw_os_error();
         }
-        return UnsafePointer::NULL;
+        return MaybeNull::NULL;
     }
 
     let success = posix_align_inner(&mut ptr, adjusted_alignment, size);
 
     if success == 0 {
-        UnsafePointer::new(ptr as *mut Header)
+        MaybeNull::new(ptr as *mut Header)
     } else {
         #[cfg(feature = "preload")]
         {
-            use crate::inner::libc_int::__errno_location;
+            use crate::inner::preload::libc_int::__errno_location;
             *__errno_location() = success;
         }
 
-        UnsafePointer::NULL
+        MaybeNull::NULL
     }
+}
+
+pub fn rs_memalign(alignment: usize, size: usize, skip_checks: bool) -> MaybeNull<Header> {
+    unsafe { rs_memalign_inner(alignment, size, skip_checks) }
 }

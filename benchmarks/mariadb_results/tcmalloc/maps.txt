@@ -1,0 +1,130 @@
+55b067853000-55b0679ea000 r--p 00000000 00:22 2396737                    /usr/bin/mariadbd
+55b0679ea000-55b068673000 r-xp 00197000 00:22 2396737                    /usr/bin/mariadbd
+55b068673000-55b068d78000 r--p 00e20000 00:22 2396737                    /usr/bin/mariadbd
+55b068d78000-55b068f15000 r--p 01524000 00:22 2396737                    /usr/bin/mariadbd
+55b068f15000-55b069016000 rw-p 016c1000 00:22 2396737                    /usr/bin/mariadbd
+55b069016000-55b069018000 r--p 017c2000 00:22 2396737                    /usr/bin/mariadbd
+55b069018000-55b0698fc000 rw-p 00000000 00:00 0 
+55b0703ff000-55b075b62000 rw-p 00000000 00:00 0                          [heap]
+7769ed5f9000-7769f0e00000 rw-p 00000000 00:00 0 
+7769f0e00000-7769f2e00000 rw-p 00000000 00:00 0 
+7769f2f68000-7769f4000000 rw-p 00000000 00:00 0 
+7769f4000000-776a04000000 rw-p 00000000 00:00 0 
+776a04000000-7f69f4400000 ---p 00000000 00:00 0 
+7f69f440f000-7f69f545c000 rw-p 00000000 00:00 0 
+7f69f545c000-7f6a038ed000 rw-p 00000000 00:00 0 
+7f6a038ed000-7f6a038f8000 r--p 00000000 00:22 9152                       /usr/lib/libzstd.so.1.5.7
+7f6a038f8000-7f6a039e8000 r-xp 0000b000 00:22 9152                       /usr/lib/libzstd.so.1.5.7
+7f6a039e8000-7f6a039fe000 r--p 000fb000 00:22 9152                       /usr/lib/libzstd.so.1.5.7
+7f6a039fe000-7f6a039ff000 r--p 00110000 00:22 9152                       /usr/lib/libzstd.so.1.5.7
+7f6a039ff000-7f6a03a00000 rw-p 00111000 00:22 9152                       /usr/lib/libzstd.so.1.5.7
+7f6a03a00000-7f6a03a24000 r--p 00000000 00:22 2175076                    /usr/lib/libc.so.6
+7f6a03a24000-7f6a03bd3000 r-xp 00024000 00:22 2175076                    /usr/lib/libc.so.6
+7f6a03bd3000-7f6a03c4c000 r--p 001d3000 00:22 2175076                    /usr/lib/libc.so.6
+7f6a03c4c000-7f6a03c50000 r--p 0024b000 00:22 2175076                    /usr/lib/libc.so.6
+7f6a03c50000-7f6a03c52000 rw-p 0024f000 00:22 2175076                    /usr/lib/libc.so.6
+7f6a03c52000-7f6a03c5a000 rw-p 00000000 00:00 0 
+7f6a03c62000-7f6a03c64000 r--p 00000000 00:00 0 
+7f6a03c64000-7f6a03caf000 rw-p 00000000 00:00 0 
+7f6a03caf000-7f6a03ccf000 rw-s 10000000 00:11 132379                     anon_inode:[io_uring]
+7f6a03ccf000-7f6a03ce0000 rw-s 00000000 00:11 132379                     anon_inode:[io_uring]
+7f6a03ce0000-7f6a03cf1000 rw-p 00000000 00:00 0 
+7f6a03cf1000-7f6a03cf2000 r--p 00000000 00:22 8751                       /usr/lib/libbrotlicommon.so.1.2.0
+7f6a03cf2000-7f6a03cf3000 r-xp 00001000 00:22 8751                       /usr/lib/libbrotlicommon.so.1.2.0
+7f6a03cf3000-7f6a03d12000 r--p 00002000 00:22 8751                       /usr/lib/libbrotlicommon.so.1.2.0
+7f6a03d12000-7f6a03d13000 r--p 00021000 00:22 8751                       /usr/lib/libbrotlicommon.so.1.2.0
+7f6a03d13000-7f6a03d14000 rw-p 00022000 00:22 8751                       /usr/lib/libbrotlicommon.so.1.2.0
+7f6a03d14000-7f6a03d15000 r--p 00000000 00:22 8757                       /usr/lib/libbrotlienc.so.1.2.0
+7f6a03d15000-7f6a03dad000 r-xp 00001000 00:22 8757                       /usr/lib/libbrotlienc.so.1.2.0
+7f6a03dad000-7f6a03dfe000 r--p 00099000 00:22 8757                       /usr/lib/libbrotlienc.so.1.2.0
+7f6a03dfe000-7f6a03dff000 r--p 000e9000 00:22 8757                       /usr/lib/libbrotlienc.so.1.2.0
+7f6a03dff000-7f6a03e00000 rw-p 000ea000 00:22 8757                       /usr/lib/libbrotlienc.so.1.2.0
+7f6a03e00000-7f6a03e9a000 r--p 00000000 00:22 1036369                    /usr/lib/libstdc++.so.6.0.36
+7f6a03e9a000-7f6a04078000 r-xp 0009a000 00:22 1036369                    /usr/lib/libstdc++.so.6.0.36
+7f6a04078000-7f6a04117000 r--p 00278000 00:22 1036369                    /usr/lib/libstdc++.so.6.0.36
+7f6a04117000-7f6a04128000 r--p 00317000 00:22 1036369                    /usr/lib/libstdc++.so.6.0.36
+7f6a04128000-7f6a04129000 rw-p 00328000 00:22 1036369                    /usr/lib/libstdc++.so.6.0.36
+7f6a04129000-7f6a0412d000 rw-p 00000000 00:00 0 
+7f6a0412e000-7f6a04134000 rw-s 00000000 00:37 2546                       /tmp/rsmalloc-mariadb-bench/runs/tcmalloc/tc.log
+7f6a04134000-7f6a04138000 r--p 00000000 00:22 8813                       /usr/lib/liblzma.so.5.8.3
+7f6a04138000-7f6a0415a000 r-xp 00004000 00:22 8813                       /usr/lib/liblzma.so.5.8.3
+7f6a0415a000-7f6a04167000 r--p 00026000 00:22 8813                       /usr/lib/liblzma.so.5.8.3
+7f6a04167000-7f6a04168000 r--p 00033000 00:22 8813                       /usr/lib/liblzma.so.5.8.3
+7f6a04168000-7f6a04169000 rw-p 00034000 00:22 8813                       /usr/lib/liblzma.so.5.8.3
+7f6a04169000-7f6a0416a000 r--p 00000000 00:22 8754                       /usr/lib/libbrotlidec.so.1.2.0
+7f6a0416a000-7f6a04174000 r-xp 00001000 00:22 8754                       /usr/lib/libbrotlidec.so.1.2.0
+7f6a04174000-7f6a04177000 r--p 0000b000 00:22 8754                       /usr/lib/libbrotlidec.so.1.2.0
+7f6a04177000-7f6a04178000 r--p 0000d000 00:22 8754                       /usr/lib/libbrotlidec.so.1.2.0
+7f6a04178000-7f6a04179000 rw-p 0000e000 00:22 8754                       /usr/lib/libbrotlidec.so.1.2.0
+7f6a04179000-7f6a0417d000 r--p 00000000 00:22 1036361                    /usr/lib/libgcc_s.so.1
+7f6a0417d000-7f6a041a9000 r-xp 00004000 00:22 1036361                    /usr/lib/libgcc_s.so.1
+7f6a041a9000-7f6a041ad000 r--p 00030000 00:22 1036361                    /usr/lib/libgcc_s.so.1
+7f6a041ad000-7f6a041ae000 r--p 00034000 00:22 1036361                    /usr/lib/libgcc_s.so.1
+7f6a041ae000-7f6a041af000 rw-p 00035000 00:22 1036361                    /usr/lib/libgcc_s.so.1
+7f6a041af000-7f6a041bf000 r--p 00000000 00:22 2175086                    /usr/lib/libm.so.6
+7f6a041bf000-7f6a04255000 r-xp 00010000 00:22 2175086                    /usr/lib/libm.so.6
+7f6a04255000-7f6a042b5000 r--p 000a6000 00:22 2175086                    /usr/lib/libm.so.6
+7f6a042b5000-7f6a042b6000 r--p 00105000 00:22 2175086                    /usr/lib/libm.so.6
+7f6a042b6000-7f6a042b7000 rw-p 00106000 00:22 2175086                    /usr/lib/libm.so.6
+7f6a042b7000-7f6a042cc000 r--p 00000000 00:22 2179273                    /usr/lib/libsystemd.so.0.45.0
+7f6a042cc000-7f6a043a5000 r-xp 00015000 00:22 2179273                    /usr/lib/libsystemd.so.0.45.0
+7f6a043a5000-7f6a043f4000 r--p 000ee000 00:22 2179273                    /usr/lib/libsystemd.so.0.45.0
+7f6a043f4000-7f6a043fe000 r--p 0013c000 00:22 2179273                    /usr/lib/libsystemd.so.0.45.0
+7f6a043fe000-7f6a043ff000 rw-p 00146000 00:22 2179273                    /usr/lib/libsystemd.so.0.45.0
+7f6a043ff000-7f6a04400000 rw-p 00000000 00:00 0 
+7f6a04400000-7f6a04453000 r--p 00000000 00:22 2180336                    /usr/lib/libcrypto.so.3
+7f6a04453000-7f6a048e3000 r-xp 00053000 00:22 2180336                    /usr/lib/libcrypto.so.3
+7f6a048e3000-7f6a04a0d000 r--p 004e3000 00:22 2180336                    /usr/lib/libcrypto.so.3
+7f6a04a0d000-7f6a04a8c000 r--p 0060c000 00:22 2180336                    /usr/lib/libcrypto.so.3
+7f6a04a8c000-7f6a04a8f000 rw-p 0068b000 00:22 2180336                    /usr/lib/libcrypto.so.3
+7f6a04a8f000-7f6a04a9b000 rw-p 00000000 00:00 0 
+7f6a04a9b000-7f6a04a9d000 r--p 00000000 00:22 1645303                    /usr/lib/libunwind.so.8.2.0
+7f6a04a9d000-7f6a04aab000 r-xp 00002000 00:22 1645303                    /usr/lib/libunwind.so.8.2.0
+7f6a04aab000-7f6a04aae000 r--p 00010000 00:22 1645303                    /usr/lib/libunwind.so.8.2.0
+7f6a04aae000-7f6a04aaf000 r--p 00012000 00:22 1645303                    /usr/lib/libunwind.so.8.2.0
+7f6a04aaf000-7f6a04ab0000 rw-p 00013000 00:22 1645303                    /usr/lib/libunwind.so.8.2.0
+7f6a04ab0000-7f6a04abc000 rw-p 00000000 00:00 0 
+7f6a04abc000-7f6a04abf000 r--p 00000000 00:22 147046                     /usr/lib/libz.so.1.3.1.zlib-ng
+7f6a04abf000-7f6a04ae9000 r-xp 00003000 00:22 147046                     /usr/lib/libz.so.1.3.1.zlib-ng
+7f6a04ae9000-7f6a04af2000 r--p 0002d000 00:22 147046                     /usr/lib/libz.so.1.3.1.zlib-ng
+7f6a04af2000-7f6a04af3000 r--p 00035000 00:22 147046                     /usr/lib/libz.so.1.3.1.zlib-ng
+7f6a04af3000-7f6a04af4000 rw-p 00036000 00:22 147046                     /usr/lib/libz.so.1.3.1.zlib-ng
+7f6a04af4000-7f6a04af6000 rw-p 00000000 00:00 0 
+7f6a04af6000-7f6a04af8000 r--p 00000000 00:22 132310                     /usr/lib/liburing.so.2.15
+7f6a04af8000-7f6a04afc000 r-xp 00002000 00:22 132310                     /usr/lib/liburing.so.2.15
+7f6a04afc000-7f6a04afd000 r--p 00006000 00:22 132310                     /usr/lib/liburing.so.2.15
+7f6a04afd000-7f6a04afe000 r--p 00006000 00:22 132310                     /usr/lib/liburing.so.2.15
+7f6a04afe000-7f6a04b12000 r--p 00000000 00:22 2180338                    /usr/lib/libssl.so.3
+7f6a04b12000-7f6a04be0000 r-xp 00014000 00:22 2180338                    /usr/lib/libssl.so.3
+7f6a04be0000-7f6a04c08000 r--p 000e2000 00:22 2180338                    /usr/lib/libssl.so.3
+7f6a04c08000-7f6a04c12000 r--p 0010a000 00:22 2180338                    /usr/lib/libssl.so.3
+7f6a04c12000-7f6a04c16000 rw-p 00114000 00:22 2180338                    /usr/lib/libssl.so.3
+7f6a04c16000-7f6a04c17000 r--p 00000000 00:22 16708                      /usr/lib/libcrypt.so.2.0.0
+7f6a04c17000-7f6a04c2e000 r-xp 00001000 00:22 16708                      /usr/lib/libcrypt.so.2.0.0
+7f6a04c2e000-7f6a04c43000 r--p 00018000 00:22 16708                      /usr/lib/libcrypt.so.2.0.0
+7f6a04c43000-7f6a04c44000 r--p 0002c000 00:22 16708                      /usr/lib/libcrypt.so.2.0.0
+7f6a04c44000-7f6a04c45000 rw-p 0002d000 00:22 16708                      /usr/lib/libcrypt.so.2.0.0
+7f6a04c45000-7f6a04c4d000 rw-p 00000000 00:00 0 
+7f6a04c4d000-7f6a04c50000 r--p 00000000 00:22 2176980                    /usr/lib/libpcre2-8.so.0.16.1
+7f6a04c50000-7f6a04cec000 r-xp 00003000 00:22 2176980                    /usr/lib/libpcre2-8.so.0.16.1
+7f6a04cec000-7f6a04d1b000 r--p 0009f000 00:22 2176980                    /usr/lib/libpcre2-8.so.0.16.1
+7f6a04d1b000-7f6a04d1c000 r--p 000ce000 00:22 2176980                    /usr/lib/libpcre2-8.so.0.16.1
+7f6a04d1c000-7f6a04d1d000 rw-p 000cf000 00:22 2176980                    /usr/lib/libpcre2-8.so.0.16.1
+7f6a04d1d000-7f6a04d2a000 r--p 00000000 00:22 576821                     /usr/lib/libtcmalloc.so.4.6.5
+7f6a04d2a000-7f6a04d46000 r-xp 0000d000 00:22 576821                     /usr/lib/libtcmalloc.so.4.6.5
+7f6a04d46000-7f6a04d50000 r--p 00029000 00:22 576821                     /usr/lib/libtcmalloc.so.4.6.5
+7f6a04d50000-7f6a04d52000 r--p 00032000 00:22 576821                     /usr/lib/libtcmalloc.so.4.6.5
+7f6a04d52000-7f6a04d53000 rw-p 00034000 00:22 576821                     /usr/lib/libtcmalloc.so.4.6.5
+7f6a04d53000-7f6a04f00000 rw-p 00000000 00:00 0 
+7f6a04f00000-7f6a04f38000 r--p 00000000 00:22 2605364                    /etc/ld.so.cache
+7f6a04f38000-7f6a04f3c000 r--p 00000000 00:00 0                          [vvar]
+7f6a04f3c000-7f6a04f3e000 r--p 00000000 00:00 0                          [vvar_vclock]
+7f6a04f3e000-7f6a04f40000 r-xp 00000000 00:00 0                          [vdso]
+7f6a04f40000-7f6a04f41000 r--p 00000000 00:22 2175067                    /usr/lib/ld-linux-x86-64.so.2
+7f6a04f41000-7f6a04f73000 r-xp 00001000 00:22 2175067                    /usr/lib/ld-linux-x86-64.so.2
+7f6a04f73000-7f6a04f83000 r--p 00033000 00:22 2175067                    /usr/lib/ld-linux-x86-64.so.2
+7f6a04f83000-7f6a04f85000 r--p 00042000 00:22 2175067                    /usr/lib/ld-linux-x86-64.so.2
+7f6a04f85000-7f6a04f86000 rw-p 00044000 00:22 2175067                    /usr/lib/ld-linux-x86-64.so.2
+7f6a04f86000-7f6a04f87000 rw-p 00000000 00:00 0 
+7ffccf53d000-7ffccf55e000 rw-p 00000000 00:00 0                          [stack]
+ffffffffff600000-ffffffffff601000 --xp 00000000 00:00 0                  [vsyscall]

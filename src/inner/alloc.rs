@@ -1,27 +1,30 @@
-use std::hint::unlikely;
-use std::sync::atomic::AtomicBool;
 #[cfg(feature = "debug-full-critic")]
 use std::sync::atomic::AtomicUsize;
-use std::{hint::likely, ptr::null_mut};
+use std::{
+    ptr::null_mut,
+    sync::atomic::Ordering::{Acquire, Release},
+};
 
-use crate::ALLOCATED_FLAG;
 #[cfg(feature = "preload")]
-use crate::inner::libc_int::set_nomem;
+use crate::inner::preload::libc_int::set_nomem;
+#[cfg(feature = "confidence-predictor")]
+use crate::utility::PREDICTOR_BATCHING;
 use crate::{
-    BIG_MAGIC, GenericCache, Header, MAGIC, RSMallocError,
+    BIG_MAGIC, Header, MAGIC, RSMallocError,
     big_allocations::big_allocation::big_malloc,
     core_prim::{
-        predictor::{BULK_FILL_BATCHING, TRANSFER_BATCHING},
-        wrappers::UnsafePointer,
+        predictor::{BULK_FILL_PREDICTOR_INIT_BATCH, PREDICTOR_INIT_BATCH},
+        wrappers::MaybeNull,
     },
     inner::free::find_original_ptr,
-    internals::{radix_tree::RADIX, rbtree::BIG_META_MAP},
+    internals::{big_meta_map::BIG_META_MAP, radix_tree::RADIX},
     rseq_core::{bulk_fill::bulk_fill, rseq_offsets::get_rseq, slab_cache::SLAB_CACHE},
-    utility::{ITERATIONS, SIZE_CLASSES, match_size_class},
+    traits::GenericCache,
+    utility::{ITERATIONS, SIZE_CLASSES, likely, match_size_class, unlikely},
 };
+use crate::{Flags, backend::background_thread::maybe_start_background_reclaimer};
 #[cfg(feature = "debug")]
 use crate::{REFILLS_BY_CLASS, TOTAL_REFILL_CALLS};
-use crate::{TOTAL_CACHED_VA, TRIM_THRESHOLD, trim::trimmer_main};
 #[cfg(feature = "debug")]
 use std::sync::atomic::Ordering;
 
@@ -48,7 +51,16 @@ unsafe fn record_refill_prediction(
         return;
     }
 
-    if count == wanted && wanted >= 8 && wanted < ITERATIONS[class] {
+    #[cfg(feature = "confidence-predictor")]
+    let max_batch = if _can_probe_more {
+        PREDICTOR_BATCHING[class]
+    } else {
+        ITERATIONS[class]
+    };
+    #[cfg(not(feature = "confidence-predictor"))]
+    let max_batch = ITERATIONS[class];
+
+    if count == wanted && wanted >= 8 && wanted < max_batch {
         crate::REFILL_UNDER_PREDICTS.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -76,31 +88,42 @@ unsafe fn record_refill_prediction(
 
     if count < wanted {
         let missing = wanted - count;
-        let (extra, extra_tail, extra_count) = SLAB_CACHE.try_pop(class, missing, cpu_id);
-        if extra_count > 0 && !extra.is_null() {
+        let found = SLAB_CACHE.try_pop(class, missing, cpu_id);
+        let extra_total = found.as_ref().map_or(0, |c| c.total);
+
+        if let Some(cache) = found {
             SLAB_CACHE.transfer_push_batch(
                 class,
-                extra.as_ptr(),
-                extra_tail.as_ptr(),
+                cache.start,
+                cache.end,
+                #[cfg(feature = "debug-exact")]
+                cache.total,
                 cpu_id,
                 inner,
             );
         }
 
-        if count + extra_count < wanted {
+        if count + extra_total < wanted {
             crate::REFILL_OVER_PREDICTS.fetch_add(1, Ordering::Relaxed);
         }
+
         return;
     }
 
-    if wanted >= 8 && wanted < ITERATIONS[class] {
-        let (extra, extra_tail, extra_count) = SLAB_CACHE.try_pop(class, 1, cpu_id);
-        if extra_count > 0 && !extra.is_null() {
+    #[cfg(feature = "confidence-predictor")]
+    let max_batch = PREDICTOR_BATCHING[class];
+    #[cfg(not(feature = "confidence-predictor"))]
+    let max_batch = ITERATIONS[class];
+
+    if wanted >= 8 && wanted < max_batch {
+        if let Some(cache) = SLAB_CACHE.try_pop(class, 1, cpu_id) {
             crate::REFILL_UNDER_PREDICTS.fetch_add(1, Ordering::Relaxed);
             SLAB_CACHE.transfer_push_batch(
                 class,
-                extra.as_ptr(),
-                extra_tail.as_ptr(),
+                cache.start,
+                cache.end,
+                #[cfg(feature = "debug-exact")]
+                cache.total,
                 cpu_id,
                 inner,
             );
@@ -117,7 +140,7 @@ unsafe fn take_one_from_batch(
     #[cfg(feature = "debug")] wanted: usize,
     #[cfg(feature = "debug")] cpu_id: usize,
     #[cfg(feature = "debug")] can_probe_more: bool,
-) -> UnsafePointer<Header> {
+) -> MaybeNull<Header> {
     let first = start;
 
     #[cfg(feature = "debug-printer-thread")]
@@ -127,124 +150,156 @@ unsafe fn take_one_from_batch(
         #[cfg(feature = "debug")]
         record_refill_prediction(class, count, wanted, cpu_id, can_probe_more);
 
-        let rest = (*first).next;
+        let rest = (*first).next.load(Acquire);
         if !rest.is_null() {
             SLAB_CACHE.push_tailed(class, rest, tail, count - 1);
         }
     }
 
-    (*first).next = null_mut();
-    UnsafePointer::new(first)
+    (*first).next.store(null_mut(), Release);
+    MaybeNull::new(first)
 }
 
+#[cfg(not(feature = "confidence-predictor"))]
 macro_rules! refill {
-    ($class:expr) => {
-        TRANSFER_BATCHING[$class].batch(ITERATIONS[$class])
-    };
+    ($class:expr, $cpu_id:expr) => {{
+        let batch = SLAB_CACHE
+            .transfer_predictor($cpu_id, $class)
+            .batch(PREDICTOR_INIT_BATCH, ITERATIONS[$class]);
+        batch
+    }};
 }
 
 macro_rules! bulk_refill {
-    ($class:expr) => {
-        BULK_FILL_BATCHING[$class].batch(ITERATIONS[$class])
-    };
-}
-
-pub static TRIM_GUARD: AtomicBool = AtomicBool::new(false);
-
-pub unsafe fn spawn(entry: unsafe fn() -> !) -> bool {
-    std::thread::Builder::new()
-        .name("rsmalloc-trimmer".into())
-        .stack_size(64 * 1024)
-        .spawn(move || unsafe {
-            entry();
-        })
-        .is_ok()
-}
-
-pub unsafe fn maybe_start_trimmer() {
-    use std::sync::atomic::Ordering;
-
-    if TOTAL_CACHED_VA.load(Ordering::Relaxed) < TRIM_THRESHOLD
-        || TRIM_GUARD.load(Ordering::Relaxed) == true
-    {
-        return;
-    }
-
-    if TRIM_GUARD
-        .compare_exchange(false, true, Ordering::Release, Ordering::Acquire)
-        .is_ok()
-    {
-        if !spawn(trimmer_main) {
-            TRIM_GUARD.store(false, Ordering::Relaxed);
-        }
-    };
+    ($class:expr, $cpu_id:expr) => {{
+        let batch = SLAB_CACHE
+            .bulk_fill_predictor($cpu_id, $class)
+            .batch(BULK_FILL_PREDICTOR_INIT_BATCH, ITERATIONS[$class]);
+        batch
+    }};
 }
 
 #[inline(never)]
-pub unsafe fn refill(class: usize, cpu_id: usize) -> UnsafePointer<Header> {
-    for _ in 0..MAX_REFILL_RETRIES {
-        let bulk_batch = bulk_refill!(class);
+pub unsafe fn refill(
+    class: usize,
+    cpu_id: usize,
+    fill_demand: usize,
+    #[cfg(feature = "experimental-predictive-demand")]
+    demand_sample: crate::core_prim::predictor::DemandSample<'_>,
+) -> MaybeNull<Header> {
+    let bulk_batch = bulk_refill!(class, cpu_id);
 
-        match bulk_fill(class, cpu_id, bulk_batch) {
-            Ok((start, tail, count)) => {
-                let observed = if count == bulk_batch && bulk_batch < ITERATIONS[class] {
-                    bulk_batch.saturating_add((bulk_batch / 4).max(1))
-                } else {
-                    count
-                };
+    if let Ok((start, tail, count)) = bulk_fill(class, cpu_id, bulk_batch) {
+        let observed = if count == bulk_batch && bulk_batch < ITERATIONS[class] {
+            bulk_batch.saturating_add((bulk_batch / 4).max(1))
+        } else {
+            count
+        };
+        let penalty = (fill_demand / 2).max(1);
+        let observed = observed.saturating_sub(penalty).max(1);
 
-                BULK_FILL_BATCHING[class].update_refill(observed, ITERATIONS[class]);
-                let result = take_one_from_batch(
-                    class,
-                    start,
-                    tail,
-                    count,
-                    #[cfg(feature = "debug")]
-                    bulk_batch,
-                    #[cfg(feature = "debug")]
-                    cpu_id,
-                    #[cfg(feature = "debug")]
-                    false,
-                );
+        SLAB_CACHE.bulk_fill_predictor(cpu_id, class).update_refill(
+            BULK_FILL_PREDICTOR_INIT_BATCH,
+            observed,
+            ITERATIONS[class],
+        );
 
-                maybe_start_trimmer();
+        let result = take_one_from_batch(
+            class,
+            start,
+            tail,
+            count,
+            #[cfg(feature = "debug")]
+            bulk_batch,
+            #[cfg(feature = "debug")]
+            cpu_id,
+            #[cfg(feature = "debug")]
+            false,
+        );
 
-                return result;
-            }
-            Err(_) => continue,
-        }
+        #[cfg(feature = "experimental-predictive-demand")]
+        SLAB_CACHE.finish_refill_demand(demand_sample, cpu_id, class, count);
+        maybe_start_background_reclaimer();
+
+        return result;
     }
 
-    SLAB_CACHE.try_pop(class, 1, cpu_id).0
+    MaybeNull::NULL
 }
 
 #[unsafe(link_section = ".text.hot")]
 #[inline(never)]
-pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
+pub unsafe fn fill(class: usize) -> MaybeNull<Header> {
     #[cfg(feature = "debug")]
     {
         TOTAL_REFILL_CALLS.fetch_add(1, Ordering::Relaxed);
         REFILLS_BY_CLASS[class].fetch_add(1, Ordering::Relaxed);
     }
 
-    let cache_batch = refill!(class);
-    let cpu_id = get_rseq().cpu_id as usize;
+    let cpu_id = std::ptr::read_volatile(&get_rseq().cpu_id_start) as usize;
+    #[cfg(feature = "experimental-predictive-demand")]
+    let demand_sample = SLAB_CACHE.profile_refill_demand(cpu_id, class);
 
-    let (start, tail, count) = SLAB_CACHE.try_pop(class, cache_batch, cpu_id);
+    #[cfg(not(feature = "confidence-predictor"))]
+    let cache_batch = refill!(class, cpu_id);
 
-    if !start.is_null() {
-        let observed = if count == cache_batch && cache_batch < ITERATIONS[class] {
-            cache_batch.saturating_add((cache_batch / 4).max(1))
-        } else {
-            count
-        };
+    #[cfg(feature = "confidence-predictor")]
+    let (cache_batch, low_request) = SLAB_CACHE
+        .transfer_predictor(cpu_id, class)
+        .transfer_batch(PREDICTOR_INIT_BATCH, PREDICTOR_BATCHING[class]);
 
-        TRANSFER_BATCHING[class].update_refill(observed, ITERATIONS[class]);
-        return take_one_from_batch(
+    #[cfg(all(
+        feature = "predictor-debug",
+        feature = "experimental-predictive-demand"
+    ))]
+    let expected_demand = demand_sample.demand();
+
+    let transfer_result = SLAB_CACHE.try_pop(class, cache_batch, cpu_id);
+    if let Some(transfer_cache) = transfer_result {
+        #[cfg(all(feature = "predictor-debug", not(feature = "confidence-predictor")))]
+        eprintln!(
+            "refill (transfer):\n class: {class}, \n caller cpu_id: {cpu_id}, \n returned cpu_id: {}, \n expected_size: {cache_batch}, \n observed_size: {}, \n available_total: {}",
+            transfer_cache.cpu_id, transfer_cache.total, transfer_cache.available
+        );
+
+        #[cfg(all(feature = "predictor-debug", feature = "confidence-predictor"))]
+        eprintln!(
+            "refill (transfer):\n class: {class}, \n caller cpu_id: {cpu_id}, \n returned cpu_id: {}, \n expected_size: {cache_batch}, \n observed_size: {}, \n available_total: {}, \n is_low: {low_request}",
+            transfer_cache.cpu_id, transfer_cache.total, transfer_cache.available
+        );
+
+        #[cfg(all(
+            feature = "predictor-debug",
+            feature = "experimental-predictive-demand"
+        ))]
+        eprintln!(" expected_demand: {expected_demand}");
+
+        #[cfg(not(feature = "confidence-predictor"))]
+        SLAB_CACHE
+            .transfer_predictor(cpu_id, class)
+            .update_transfer(
+                PREDICTOR_INIT_BATCH,
+                transfer_cache.available,
+                ITERATIONS[class],
+            );
+
+        #[cfg(feature = "confidence-predictor")]
+        SLAB_CACHE
+            .transfer_predictor(cpu_id, class)
+            .update_transfer_feedback(
+                PREDICTOR_INIT_BATCH,
+                transfer_cache.available,
+                cache_batch,
+                transfer_cache.total,
+                low_request,
+                PREDICTOR_BATCHING[class],
+            );
+
+        let one = take_one_from_batch(
             class,
-            start.as_ptr(),
-            tail.as_ptr(),
-            count,
+            transfer_cache.start,
+            transfer_cache.end,
+            transfer_cache.total,
             #[cfg(feature = "debug")]
             cache_batch,
             #[cfg(feature = "debug")]
@@ -252,9 +307,19 @@ pub unsafe fn fill(class: usize) -> UnsafePointer<Header> {
             #[cfg(feature = "debug")]
             true,
         );
+
+        #[cfg(feature = "experimental-predictive-demand")]
+        SLAB_CACHE.finish_refill_demand(demand_sample, cpu_id, class, transfer_cache.total);
+        return one;
     }
 
-    refill(class, cpu_id)
+    refill(
+        class,
+        cpu_id,
+        cache_batch,
+        #[cfg(feature = "experimental-predictive-demand")]
+        demand_sample,
+    )
 }
 
 // In hardened builds, verify that a pointer popped from allocator-managed
@@ -266,11 +331,11 @@ macro_rules! is_owned {
         #[cfg(feature = "check-owned-on-alloc")]
         {
             if !RADIX.is_owned($ptr.cast_usize()) {
-                RSMallocError::AttackOrCorruption.log_and_abort(
-                    $ptr.cast_as_ptr(),
-                    "CRITICAL: possible metadata injection: popped pointer is not owned by rsmalloc",
-                    None,
-                );
+                RSMallocError::Corruption {
+                    ptr: $ptr.cast_as_ptr(),
+                    reason: "CRITICAL: possible metadata injection: popped pointer is not owned by rsmalloc",
+                }
+                .log_and_abort();
             }
         }
     };
@@ -280,9 +345,12 @@ macro_rules! is_owned {
 pub static RS_ALLOC_CALLS_DEBUG: AtomicUsize = AtomicUsize::new(0);
 
 #[inline(always)]
-pub unsafe fn rs_alloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
+unsafe fn rs_alloc_inner<const FLAG: bool, const POSIX: bool>(
+    size: usize,
+    aligned: bool,
+) -> MaybeNull<Header> {
     #[cfg(feature = "preload")]
-    ONCE.call_once(|| crate::core_prim::bootstrap::bootstrap());
+    ONCE.call_once(|| crate::inner::preload::bootstrap::bootstrap());
 
     #[cfg(feature = "debug-full-critic")]
     RS_ALLOC_CALLS_DEBUG.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -297,8 +365,10 @@ pub unsafe fn rs_alloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
 
             if unlikely(class.is_null()) {
                 #[cfg(feature = "preload")]
-                set_nomem();
-                return UnsafePointer::NULL;
+                if !POSIX {
+                    set_nomem();
+                }
+                return MaybeNull::NULL;
             }
 
             class
@@ -310,7 +380,9 @@ pub unsafe fn rs_alloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
 
         let mut safe = cache.apply_safe();
         safe.magic = MAGIC;
-        safe.flags = ALLOCATED_FLAG;
+        if FLAG {
+            safe.flags = Flags::Allocated
+        };
 
         return cache.walk_header();
     }
@@ -325,7 +397,26 @@ pub unsafe fn rs_alloc(size: usize, aligned: bool) -> UnsafePointer<Header> {
 }
 
 #[inline(always)]
-pub unsafe fn usable_size(ptr: UnsafePointer<Header>) -> usize {
+pub fn rs_alloc(size: usize, aligned: bool) -> MaybeNull<Header> {
+    unsafe { rs_alloc_inner::<true, false>(size, aligned) }
+}
+
+#[inline(always)]
+pub fn rs_alloc_posix(size: usize, aligned: bool) -> MaybeNull<Header> {
+    unsafe { rs_alloc_inner::<true, true>(size, aligned) }
+}
+
+#[inline(always)]
+pub fn rs_alloc_no_flag(size: usize, aligned: bool) -> MaybeNull<Header> {
+    unsafe { rs_alloc_inner::<false, false>(size, aligned) }
+}
+
+#[inline(always)]
+pub unsafe fn usable_size(ptr: MaybeNull<Header>) -> usize {
+    if ptr.is_null() {
+        return 0;
+    }
+
     let ptr_addr = ptr.cast_usize();
 
     if likely(RADIX.is_owned(ptr_addr)) {
@@ -336,11 +427,11 @@ pub unsafe fn usable_size(ptr: UnsafePointer<Header>) -> usize {
 
         if header.magic == BIG_MAGIC {
             let meta = BIG_META_MAP.get(original_payload_addr).unwrap_or_else(|| {
-                RSMallocError::MemoryCorruption.log_and_abort(
-                    null_mut(),
-                    "missing header for big allocation",
-                    None,
-                )
+                RSMallocError::Corruption {
+                    ptr: header.cast_as_ptr(),
+                    reason: "missing header for big allocation, possible double free",
+                }
+                .log_and_abort()
             });
 
             return meta.size.saturating_sub(offset);

@@ -1,5 +1,6 @@
+#![allow(dead_code)]
 use std::{
-    ops::{Deref, DerefMut},
+    ops::{Deref, DerefMut, Index},
     ptr::null_mut,
 };
 
@@ -38,26 +39,31 @@ macro_rules! impl_conversions {
             }
         }
 
-        impl<T> Into<*mut T> for $type<T> {
-            fn into(self) -> *mut T {
-                self.0
+        impl<T> From<*const T> for $type<T> {
+            fn from(ptr: *const T) -> Self {
+                Self(ptr as *mut T)
             }
         }
     };
 }
 
-#[repr(transparent)]
-#[derive(Debug, Clone, Copy)]
 #[must_use]
-pub struct SafePointer<T>(*mut T);
+#[repr(transparent)]
+pub struct Owned<T>(*mut T);
 
-unsafe impl<T> Sync for SafePointer<T> {}
-unsafe impl<T> Send for SafePointer<T> {}
+unsafe impl<T> Sync for Owned<T> {}
+unsafe impl<T> Send for Owned<T> {}
 
-impl<T> SafePointer<T> {
+impl<T> Owned<T> {
+    pub const NULL: Self = Self(null_mut());
+
     #[inline(always)]
     pub const fn get_actual_header(&self) -> Self {
         Self(unsafe { self.0.sub(1) })
+    }
+
+    pub const fn get_offset(&self, offset: usize) -> Self {
+        Self(unsafe { self.0.add(offset) })
     }
 
     #[inline(always)]
@@ -65,11 +71,10 @@ impl<T> SafePointer<T> {
         Self(unsafe { self.0.add(1) })
     }
 
-    /*#[inline(always)]
-       pub const fn cast<Y>(&self) -> SafePointer<Y> {
-           SafePointer(self.0 as _)
-       }
-    */
+    #[inline(always)]
+    pub const fn cast<Y>(&self) -> Owned<Y> {
+        Owned(self.0 as _)
+    }
 
     #[inline(always)]
     pub const fn cast_as_ptr<Y>(&self) -> *mut Y {
@@ -82,8 +87,8 @@ impl<T> SafePointer<T> {
     }
 
     #[inline(always)]
-    pub const fn apply_unsafe(&self) -> UnsafePointer<T> {
-        UnsafePointer(self.0)
+    pub const fn apply_unsafe(&self) -> MaybeNull<T> {
+        MaybeNull(self.0)
     }
 
     #[inline(always)]
@@ -92,30 +97,39 @@ impl<T> SafePointer<T> {
     }
 }
 
-impl<T> Deref for SafePointer<T> {
+impl<T> Deref for Owned<T> {
     type Target = T;
+    #[inline(always)]
     fn deref(&self) -> &T {
         unsafe { &*self.0 }
     }
 }
 
-impl<T> DerefMut for SafePointer<T> {
+impl<T> DerefMut for Owned<T> {
+    #[inline(always)]
     fn deref_mut(&mut self) -> &mut T {
         unsafe { &mut *self.0 }
     }
 }
 
-impl_conversions!(SafePointer);
+impl<T> Index<usize> for Owned<T> {
+    type Output = T;
+    #[inline(always)]
+    fn index(&self, index: usize) -> &Self::Output {
+        unsafe { &*self.0.add(index) }
+    }
+}
 
-#[repr(transparent)]
-#[derive(Debug, Clone, Copy)]
+impl_conversions!(Owned);
+
 #[must_use]
-pub struct UnsafePointer<T>(*mut T);
+#[repr(transparent)]
+pub struct MaybeNull<T>(*mut T);
 
-unsafe impl<T> Sync for UnsafePointer<T> {}
-unsafe impl<T> Send for UnsafePointer<T> {}
+unsafe impl<T> Sync for MaybeNull<T> {}
+unsafe impl<T> Send for MaybeNull<T> {}
 
-impl<T> UnsafePointer<T> {
+impl<T> MaybeNull<T> {
     #[inline(always)]
     pub const fn new(ptr: *mut T) -> Self {
         Self(ptr as *mut T)
@@ -142,8 +156,8 @@ impl<T> UnsafePointer<T> {
     }
 
     #[inline(always)]
-    pub const fn cast<Y>(&self) -> UnsafePointer<Y> {
-        UnsafePointer(self.0 as _)
+    pub const fn cast<Y>(&self) -> MaybeNull<Y> {
+        MaybeNull(self.0 as _)
     }
 
     #[inline(always)]
@@ -157,11 +171,11 @@ impl<T> UnsafePointer<T> {
     }
 
     #[inline(always)]
-    pub const fn apply_safe(&self) -> SafePointer<T> {
-        SafePointer(self.0)
+    pub const fn apply_safe(&self) -> Owned<T> {
+        Owned(self.0)
     }
 
     pub const NULL: Self = Self(null_mut());
 }
 
-impl_conversions!(UnsafePointer);
+impl_conversions!(MaybeNull);

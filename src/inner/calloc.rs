@@ -1,15 +1,13 @@
-use std::{alloc::Layout, hint::unlikely, os::raw::c_void};
-
-use crate::{ALLOCATED_FLAG, TRIMMED_FLAG};
+use std::{alloc::Layout, os::raw::c_void};
 
 #[cfg(feature = "preload")]
-use crate::inner::libc_int::set_nomem;
+use crate::inner::preload::libc_int::set_nomem;
 use crate::{
-    Header, RSMallocError,
-    core_prim::wrappers::UnsafePointer,
-    inner::alloc::rs_alloc,
-    internals::rbtree::BIG_META_MAP,
-    utility::{SIZE_CLASSES, match_size_class},
+    Flags, Header, RSMallocError,
+    core_prim::wrappers::MaybeNull,
+    inner::alloc::rs_alloc_no_flag,
+    internals::big_meta_map::BIG_META_MAP,
+    utility::{SIZE_CLASSES, match_size_class, unlikely},
 };
 
 pub unsafe fn zero(pointer: *mut u8, len: usize) {
@@ -26,8 +24,9 @@ pub unsafe fn zero(pointer: *mut u8, len: usize) {
 
 macro_rules! calloc_zero {
     ($header:expr, $ptr:expr, $actual_size:expr, $effective_size:expr) => {
-        let flags = (*$header.as_ptr()).flags;
-        if flags == ALLOCATED_FLAG || flags == TRIMMED_FLAG {
+        let flags = unsafe { (*$header.as_ptr()).flags };
+
+        if flags == Flags::Allocated || flags == Flags::Reclaimed || flags == Flags::BigAlloc {
             zero(
                 $ptr.cast_as_ptr() as *mut u8,
                 $actual_size.min($effective_size),
@@ -37,7 +36,7 @@ macro_rules! calloc_zero {
 }
 
 #[inline(never)]
-unsafe fn calc_and_get(size: Layout, nmem: usize) -> Option<(UnsafePointer<Header>, usize)> {
+unsafe fn calc_and_get(size: Layout, nmem: usize) -> Option<(MaybeNull<Header>, usize)> {
     let size = size.size();
     let total_size = match nmem.checked_mul(size) {
         Some(s) => s,
@@ -51,7 +50,7 @@ unsafe fn calc_and_get(size: Layout, nmem: usize) -> Option<(UnsafePointer<Heade
 
     let effective_size = total_size.max(1);
 
-    let ptr = rs_alloc(effective_size, false);
+    let ptr = rs_alloc_no_flag(effective_size, false);
     if unlikely(ptr.is_null()) {
         return None;
     }
@@ -59,28 +58,29 @@ unsafe fn calc_and_get(size: Layout, nmem: usize) -> Option<(UnsafePointer<Heade
 }
 
 #[inline(always)]
-pub unsafe fn rs_calloc(size: usize, zero_size: usize) -> UnsafePointer<Header> {
+pub unsafe fn rs_calloc_inner(size: usize, zero_size: usize) -> MaybeNull<Header> {
     let layout = match Layout::array::<u8>(size) {
         Ok(layout) => layout,
         Err(_) => {
             #[cfg(feature = "preload")]
             set_nomem();
-            return UnsafePointer::NULL;
+            return MaybeNull::NULL;
         }
     };
 
     let (ptr, effective_size) = match calc_and_get(layout, zero_size) {
         Some(ptr) => ptr,
-        None => return UnsafePointer::NULL,
+        None => return MaybeNull::NULL,
     };
 
-    let header = ptr.get_actual_header();
+    let mut header = ptr.get_actual_header().apply_safe();
 
     match match_size_class(effective_size) {
         Some(class) => {
             let actual_size = SIZE_CLASSES[class];
 
             calloc_zero!(header, ptr, actual_size, effective_size);
+            header.flags = Flags::Allocated;
 
             ptr
         }
@@ -89,11 +89,11 @@ pub unsafe fn rs_calloc(size: usize, zero_size: usize) -> UnsafePointer<Header> 
                 .get(ptr.cast_usize())
                 .map(|meta| meta.size)
                 .unwrap_or_else(|| {
-                    RSMallocError::AttackOrCorruption.log_and_abort(
-                        header.as_ptr() as *mut c_void,
-                        "missing big allocation metadata during calloc",
-                        None,
-                    )
+                    RSMallocError::Corruption {
+                        ptr: header.cast_as_ptr(),
+                        reason: "missing big allocation metadata during calloc, possible double free",
+                    }
+                    .log_and_abort()
                 });
 
             calloc_zero!(header, ptr, payload_size, effective_size);
@@ -101,4 +101,8 @@ pub unsafe fn rs_calloc(size: usize, zero_size: usize) -> UnsafePointer<Header> 
             ptr
         }
     }
+}
+
+pub fn rs_calloc(size: usize, zero_size: usize) -> MaybeNull<Header> {
+    unsafe { rs_calloc_inner(size, zero_size) }
 }

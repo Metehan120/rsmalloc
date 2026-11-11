@@ -12,24 +12,6 @@ The [mdBook guide](book/src/introduction.md) explains the allocation lifecycle, 
 
 **Major milestone:** The default Rust `GlobalAlloc` and C `LD_PRELOAD` configurations build on stable Rust. RSMalloc no longer keeps refill metadata or adaptive batching in allocator-owned thread-local storage: both are maintained per CPU. It still uses libc's RSEQ TLS state. The optional `allocator-api` interface works on stable Rust 1.100 and newer.
 
-> **Planned Alpha-3 (`0.3.0-alpha`) — not yet released.** The current release is `0.2.0-alpha`; see [Release Notes](UPDATES.md).
->
-> Alpha-3 will focus on allocator correctness and hardening, with expanded regression, concurrency, and fuzz coverage. Planned changes include stable Rust support for default `GlobalAlloc` and `LD_PRELOAD` builds, a redesigned `rsmalloc::v2` API, per-CPU refill storage, an experimental segmented-bitmap backend for 4–64 MiB allocations, reduced shared-lock contention, inventory-aware transfer batching, independent trim schedules, opt-in guard pages, fork and signal-handling fixes, and expanded diagnostics. The optional `allocator-api` feature will remain nightly-only.
->
-> The existing Rust root API is planned to be deprecated in Alpha-3, replaced by v2 in Beta 1, and the temporary `rsmalloc::v2` compatibility path removed in Beta 2. The preload C ABI will remain unaffected by this transition.
->
-> These changes are planned, with no fixed release date. RSMalloc remains experimental and not production-ready; performance gains are workload-dependent. See the [Roadmap](ROADMAP.md).
-
-## Alpha 3.0: Rust API transition
-
-Alpha 3.0 will introduce a redesigned Rust global allocator API under `rsmalloc::v2`.
-
-- During Alpha 3.0, the existing root API remains usable but is deprecated.
-- In Beta 1, the v2 API becomes the primary root API and the legacy API is removed. The `rsmalloc::v2` path remains temporarily available but deprecated.
-- In Beta 2, the deprecated `rsmalloc::v2` compatibility path is removed.
-
-The preload C ABI will be unaffected by this transition.
-
 ## Quick Start
 
 ### Requirements

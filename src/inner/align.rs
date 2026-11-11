@@ -3,7 +3,7 @@ use std::{os::raw::c_void, ptr::null_mut};
 use rustix::io::Errno;
 
 use crate::{
-    Header, OFFSET_SIZE, TAG_SIZE, core_prim::wrappers::MaybeNull, inner::alloc::rs_alloc,
+    Header, OFFSET_SIZE, TAG_SIZE, core_prim::wrappers::MaybeNull, inner::alloc::rs_alloc_posix,
 };
 
 #[inline(always)]
@@ -24,7 +24,7 @@ pub unsafe fn posix_align_inner(memptr: *mut *mut c_void, alignment: usize, size
         return Errno::NOMEM.raw_os_error();
     };
 
-    let raw = rs_alloc(total_requested, true);
+    let raw = rs_alloc_posix(total_requested, true);
     if raw.is_null() {
         return Errno::NOMEM.raw_os_error();
     }

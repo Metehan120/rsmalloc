@@ -9,8 +9,8 @@ That design can help concurrent reuse, but it is not a promise that more threads
 **Version: `0.3.0-alpha`. Not production-ready or comprehensively audited.** APIs and internal policies can change.
 
 - Linux `x86_64` is the supported platform.
-- Stable Rust supports the global allocator, native allocation API, and preload build.
-- Only the optional `allocator-api` interface requires nightly.
+- Rust 1.96 or newer supports the global allocator, native allocation API, and preload build on stable Rust.
+- The optional `allocator-api` interface works on stable Rust 1.100 and newer. Earlier versions need nightly with `allocator-api-feature-gate`, or an upgrade.
 - Libc must provide registered RSEQ TLS, such as glibc 2.35+. RSMalloc reads libc's RSEQ offset and size; it does not register RSEQ itself.
 
 Unsupported libc/RSEQ configurations are a bootstrap failure, not an automatic portable fallback. Test your exact kernel, libc, binary, loader, and features. A reported `SIGBUS` association with kernel `7.0.10` is covered in [troubleshooting](troubleshooting.md); it is not proof of a kernel or allocator bug.

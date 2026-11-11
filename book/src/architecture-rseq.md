@@ -23,8 +23,8 @@ Correctness depends on preparing private state before one final publication stor
 ## Cache layout and initialization
 
 `SlabCache::ensure_cache` initializes the subsystem through `Once`.
-It obtains the configured processor count with `get_nprocs_conf` (`get_max_cpu` uses 256 if that call returns a nonpositive value), maps `ncpu + 1` cache records, parses NUMA topology, and initializes hint bitmaps and `PENDING_QUEUE`.
-This is configured-CPU storage, not a compact table of threads or currently allowed CPUs.
+It reads Linux's possible CPU list, maps one cache record for every CPU ID through the highest possible ID, parses NUMA topology, and initializes hint bitmaps and `PENDING_QUEUE`. If the possible CPU list cannot be read or parsed, initialization falls back to the configured CPU count.
+This is CPU-ID-indexed storage, not a compact table of threads or currently allowed CPUs.
 The hot paths use unchecked class indexing and assume valid CPU IDs and completed initialization.
 
 | Type or field | Contents and role |

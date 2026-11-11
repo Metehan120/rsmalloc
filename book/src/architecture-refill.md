@@ -98,7 +98,7 @@ A successful `transfer_pop_batch` proceeds as follows:
 
 1. Acquire-load the normal tagged head; switch to the trimmed list if empty.
 2. If `trim_message` is active, ordinary attempts return `None`. A forced
-   attempt tries to register a globally unique ticket and polls at most 1024
+   attempt tries to register a ticket from the global counter and polls at most 5120
    times for readiness, cancelling on timeout; registration can also fail.
    On a claim, a drop guard completes the ticket after the pop attempt.
 3. Walk actual `Header.next` links up to the requested batch length.

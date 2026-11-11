@@ -171,34 +171,37 @@ Source: `src/big_allocations/segmented_bitmap.rs` — order constants;
 `src/big_allocations/segmented_bitmap/segment.rs` — `SLOTS`, `SLOT_BYTES`,
 `SEGMENT_BYTES`, `candidates`, `slot_mask`.
 
-### Three planes in one atomic word
+### Four planes in one atomic word
 
 A segment's hot cache-line-aligned structure holds its base and `AtomicU64`.
 Sixteen per-slot `AtomicU32` free timestamps live outside that hot structure.
-The word contains three meaningful 16-bit planes:
+The word contains four 16-bit planes:
 
 | Bits | Meaning |
 | --- | --- |
-| 0–15 | Occupied by an allocation or temporarily claimed by trimming |
+| 0–15 | Busy: allocated or under advice |
 | 16–31 | Dirty: needs advice before being classified as reclaimed |
 | 32–47 | History: has ever been allocated |
-| 48–63 | Unused by this implementation |
+| 48–63 | Trim: revocable claim when not busy, advising ownership when busy |
 
-Allocation atomically sets all three planes for its run. Classification uses
+Allocation atomically sets busy, dirty, and history for its run and clears any
+revocable trim claims. Classification uses
 the **previous** word: any dirty slot means `Allocated`, otherwise any history
 slot means `Reclaimed`, otherwise `NotAllocated`.
 Free writes each slot's free timestamp, then release-clears occupancy only.
 Dirty and history remain set. There is no merge operation: adjacent free bits
 implicitly become candidates for larger aligned runs.
 
-Trimming temporarily sets occupancy before advising pages; allocation cannot
-claim those slots during the syscall. Successful trimming clears dirty and
-occupancy, but preserves history. Advice failure clears occupancy only.
+Trimming first sets revocable trim claims without setting busy. Allocation or
+in-place growth can revoke those claims. Before advice, the trimmer atomically
+sets busy on surviving claims; those slots cannot be allocated during advice.
+Afterward it clears busy and trim; successful advice also clears dirty, while
+failure preserves it. Both preserve history.
 History therefore distinguishes never-used space from previously used space;
 it does not promise that the payload is currently zero.
 
 Source: `src/big_allocations/segmented_bitmap/segment.rs` — `classify`,
-`Segment::alloc`, `free`, `claim_trim`, `finish_trim`.
+`Segment::alloc`, `free`, `claim_trim`, `begin_advice`, `finish_trim`.
 
 ### Reading bitmap reports
 
@@ -219,9 +222,9 @@ run by its full size. They do not precisely measure dirty-slot bytes or bytes
 successfully advised: one dirty slot in an otherwise clean free segment can
 classify all 64 MiB as reused.
 
-Reported `used_bytes` is `total_region_bytes - free_bytes`. Temporary trim
-occupancy is indistinguishable from allocation occupancy in this snapshot and
-therefore contributes to used bytes. Region snapshots are not one globally
+Reported `used_bytes` is `total_region_bytes - free_bytes`. Revocable claims
+remain free in this snapshot; slots under advice are busy and therefore
+contribute to used bytes. Region snapshots are not one globally
 atomic view, and used bytes are not exact live requested payload or RSS.
 
 Source: `src/big_allocations/segmented_bitmap.rs` —
@@ -238,6 +241,9 @@ whether an allocation is valid or available.
 
 The slow search walks newest-first regions and scans each segment once, starting
 at `lane % segment_count`, skipping the already-failed preferred segment.
+After ordinary reuse is exhausted, it can poll one suitable advising range for
+up to 64 iterations and retry that segment before falling back.
+
 Internally, `normalize_region_size` rounds up to a power of two with a 64 MiB
 minimum and falls back to one segment on overflow. Normal bootstrap does not
 use that fallback for an overflowing configuration: `BootstrapConfig::prepare`

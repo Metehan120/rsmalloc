@@ -194,7 +194,7 @@ pub unsafe fn background_reclaimer_main() -> ! {
             || (trim_requested && (size == 0 || trimmed < size))
         {
             latest_slab_stamp = stamp;
-            let size = if trim_requested {
+            let size = if trim_requested && size != 0 {
                 size.saturating_sub(trimmed).max(1)
             } else {
                 0

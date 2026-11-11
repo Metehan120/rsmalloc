@@ -2,7 +2,7 @@
 
 This document describes the current `0.3.0-alpha` architecture. RSMalloc is experimental: internal layouts and policies may change before a stable release, but the invariants documented here are the ones the current implementation relies on.
 
-RSMalloc currently targets stable Rust on Linux `x86_64`; the optional `allocator-api` feature requires nightly while `std::alloc::Allocator` remains unstable. RSMalloc requires libc-provided Restartable Sequences (RSEQ) TLS state.
+RSMalloc currently targets Rust 1.96 or newer on Linux `x86_64`; the optional `allocator-api` feature works on stable Rust 1.100 and newer; earlier toolchains need nightly with `allocator-api-feature-gate`. RSMalloc requires libc-provided Restartable Sequences (RSEQ) TLS state.
 
 ## Design Model
 
@@ -70,7 +70,7 @@ Bootstrap:
 
 1. verifies libc's RSEQ offset and size and prepares normalized configuration, checking for overflow;
 2. initializes randomized header magic and aligned-allocation tags when enabled, then applies runtime settings with both trim thresholds temporarily set to `usize::MAX`;
-3. initializes the ownership radix in place and maps the per-CPU slab-cache table, NUMA topology, and pending refill queue;
+3. initializes the ownership radix in place, reads `/sys/devices/system/cpu/possible`, and maps the CPU-ID-indexed slab-cache table, NUMA topology, and pending refill queue; it falls back to the configured CPU count if the CPU list cannot be read or parsed;
 4. calculates the effective big-trim threshold, then initializes per-node page arenas and the segmented-bitmap backend;
 5. registers preload fork handlers when applicable and restores the effective trim thresholds.
 
@@ -222,7 +222,7 @@ This makes the transfer system adaptive in two dimensions: hints predict **where
 
 ### Trimming synchronization
 
-`trim_message` is a per-slot ticket handshake, not a lock on the transfer heads. The global trim lock serializes trimmers from `begin` through `finish`. A nonforced pop observing an active trim returns `None`; a forced pop tries one request and polls up to 1024 times for readiness, cancelling on timeout. When a request is pending, the trimmer publishes any retained batch to the shared normal head before signaling ready; if the batch is empty, it retains the current block even if it is trim-eligible. Requests still pending when classification ends are cancelled. It polls ready up to 1024 times before cancellation, but once the requester claims, it must wait strictly for completion; a stalled claimant can block trimming indefinitely. The requester completes via a drop guard after its pop attempt.
+`trim_message` is a per-slot ticket handshake, not a lock on the transfer heads. The global trim lock serializes trimmers from `begin` through `finish`. A nonforced pop observing an active trim returns `None`; a forced pop tries one request and polls up to 5120 times for readiness, cancelling on timeout. When a request is pending, the trimmer publishes any retained batch to the shared normal head before signaling ready; if the batch is empty, it retains the current block even if it is trim-eligible. Requests still pending when classification ends are cancelled. It polls ready up to 1024 times before cancellation, but once the requester claims, it must wait strictly for completion; a stalled claimant can block trimming indefinitely. The requester completes via a drop guard after its pop attempt.
 
 Tickets come from a global counter and wrap after the maximum encodable value; failed request attempts consume tickets. Avoiding stale-ticket ABA assumes an old exchange cannot remain observable across a full counter cycle. Readiness does not reserve the published batch: other users share the tagged heads, so a successful claim does not guarantee a handoff or a successful pop. The trimmer samples and subtracts only `normal_blocks` when detaching the normal head; the trimmed list is left intact. Retained blocks return in batches of `ITERATIONS[class] + ITERATIONS[class] / 2`, with a final remainder. `finish` cancels unclaimed requests and waits for claimed ones before candidate advice; successfully reclaimed blocks are then published separately.
 

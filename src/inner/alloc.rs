@@ -345,7 +345,10 @@ macro_rules! is_owned {
 pub static RS_ALLOC_CALLS_DEBUG: AtomicUsize = AtomicUsize::new(0);
 
 #[inline(always)]
-unsafe fn rs_alloc_inner<const FLAG: bool>(size: usize, aligned: bool) -> MaybeNull<Header> {
+unsafe fn rs_alloc_inner<const FLAG: bool, const POSIX: bool>(
+    size: usize,
+    aligned: bool,
+) -> MaybeNull<Header> {
     #[cfg(feature = "preload")]
     ONCE.call_once(|| crate::inner::preload::bootstrap::bootstrap());
 
@@ -362,7 +365,9 @@ unsafe fn rs_alloc_inner<const FLAG: bool>(size: usize, aligned: bool) -> MaybeN
 
             if unlikely(class.is_null()) {
                 #[cfg(feature = "preload")]
-                set_nomem();
+                if !POSIX {
+                    set_nomem();
+                }
                 return MaybeNull::NULL;
             }
 
@@ -393,12 +398,17 @@ unsafe fn rs_alloc_inner<const FLAG: bool>(size: usize, aligned: bool) -> MaybeN
 
 #[inline(always)]
 pub fn rs_alloc(size: usize, aligned: bool) -> MaybeNull<Header> {
-    unsafe { rs_alloc_inner::<true>(size, aligned) }
+    unsafe { rs_alloc_inner::<true, false>(size, aligned) }
+}
+
+#[inline(always)]
+pub fn rs_alloc_posix(size: usize, aligned: bool) -> MaybeNull<Header> {
+    unsafe { rs_alloc_inner::<true, true>(size, aligned) }
 }
 
 #[inline(always)]
 pub fn rs_alloc_no_flag(size: usize, aligned: bool) -> MaybeNull<Header> {
-    unsafe { rs_alloc_inner::<false>(size, aligned) }
+    unsafe { rs_alloc_inner::<false, false>(size, aligned) }
 }
 
 #[inline(always)]

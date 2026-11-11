@@ -12,7 +12,7 @@ RSMalloc combines several synchronization mechanisms. No single phrase such as â
 | Pending overflow queue | Tagged atomic head publication/removal | Queue storage availability is not guaranteed after initialization failure. |
 | Page-arena cursor | CAS reserves a unique bump range | Growth/search still uses node locks; a reservation need not be resident. |
 | Bitmap segment state | CAS claims aligned slot masks | A free-run hint or report is not an allocation claim. |
-| Bitmap reclamation | Claim free slots as occupied before advice, then release | Sampled used bytes can include trim reservations rather than application objects. |
+| Bitmap reclamation | Revocable trim claims become busy advising ownership by CAS | Allocation and growth can revoke claims before advice; sampled used bytes can include advising slots. |
 | Ownership radix | Atomic region bits, synchronized node creation | A marked 4 KiB region does not validate an individual pointer boundary or lifetime. |
 | Exact large metadata | Sharded lock-protected pointer map | Large allocation/free/realloc are not globally lock-free. |
 | Bootstrap state | Shared once-election and completion publication | Multiple frontend instances are not isolated heaps or live configuration updates. |
@@ -48,7 +48,7 @@ A stale hint can trigger a futile search or skip useful reuse. A dropped predict
 
 Transfer and pending heads preserve the pointer in 64 bits and carry a wrapping 64-bit generation in the other half of `AtomicU128`. Changing a head advances the generation so a stale equal pointer does not ordinarily satisfy the old head comparison. This is not infinite generation space, hazard-pointer protection, or automatic safety for every non-atomic field read.
 
-Transfer pop walks a candidate prefix before attempting its tagged head CAS. The slab trimmer uses a per-list trim flag and tagged head detachment to coordinate its partitioning pass. Bitmap trimming instead claims free slot masks before issuing advice.
+Transfer pop walks a candidate prefix before attempting its tagged head CAS. The slab trimmer uses a per-list trim flag and tagged head detachment to coordinate its partitioning pass. Bitmap trimming instead claims free slot masks revocably, then makes surviving claims busy before issuing advice.
 
 See [transfer trim coordination](architecture-transfer.md#trim-lock-coordination) and [reclamation](architecture-reclamation.md) for the subsystem-specific algorithms.
 
@@ -88,7 +88,7 @@ Some field names need additional caution:
 | `avg_madvise_cycles_small` | Release-attempt timing divided by candidate count; not a measured mean of actual successful syscalls. |
 | Bitmap free blocks by order | Greedy disjoint decomposition of free slots, not all possible candidates at every order. |
 | Bitmap reused/trimmed classifications | Whole free-run classification from dirty/history planes, not historical events or exact dirty/reclaimed slot byte totals. |
-| Bitmap used bytes | Occupied-slot observation can include temporary trim claims. Not exact application live payload. |
+| Bitmap used bytes | Busy-slot observation includes advising slots, but not revocable claims. Not exact application live payload. |
 | Cached-VA/high-water counters | Allocator capacity observations; not RSS or process/cgroup peak memory. |
 
 Source: `src/frontend/global_alloc2/debug.rs`;

@@ -3,7 +3,7 @@
 //! [`AllocationAPI`] deliberately models malloc-style allocation: allocations
 //! carry their own metadata, deallocation does not require the original layout,
 //! and reallocation preserves the existing alignment. This interface is
-//! independent of Rust's `GlobalAlloc` and unstable `Allocator` traits.
+//! independent of Rust's `GlobalAlloc` and `Allocator` traits.
 //!
 //! Enable the `native-allocation-api` Cargo feature to use this module. A
 //! [`AllocationSize`] is a byte count, not a Rust `Layout`: it carries no

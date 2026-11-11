@@ -101,9 +101,9 @@ Trimming reclaims eligible cached pages on a best-effort basis; dropping contain
 
 If you call `std::alloc::GlobalAlloc` methods yourself, obey Rust's contracts, including valid nonzero allocation layouts, matching deallocation layouts, and pointer lifetime rules. RSMalloc deriving metadata internally does not waive those contracts. Do not import the native API's null/zero resize semantics into `GlobalAlloc` calls.
 
-## Nightly: allocator-aware collections
+## Allocator-aware collections
 
-The optional `allocator-api` feature implements unstable `std::alloc::Allocator`. It is separate from stable global allocation and from the stable `native-allocation-api` feature.
+The optional `allocator-api` feature implements `std::alloc::Allocator`. It is separate from stable global allocation and from the stable `native-allocation-api` feature. This interface works on stable Rust 1.100 and newer. On earlier versions, upgrade or use nightly with `allocator-api-feature-gate` instead; that feature also enables `allocator-api`.
 
 Use this dependency configuration instead:
 
@@ -112,11 +112,9 @@ Use this dependency configuration instead:
 rsmalloc = { version = "0.3.0-alpha", features = ["allocator-api"] }
 ```
 
-Then build with `cargo +nightly run`:
+Then build with `cargo run` on Rust 1.100 or newer:
 
 ```rust
-#![feature(allocator_api)]
-
 use rsmalloc::v2::alloc::RSMalloc;
 
 static ALLOCATOR: RSMalloc = RSMalloc::new_default();
@@ -127,5 +125,7 @@ fn main() {
     assert_eq!(values.len(), 1024);
 }
 ```
+
+On an earlier nightly toolchain, enable `allocator-api-feature-gate` in the dependency and add `#![feature(allocator_api)]` to the application.
 
 This selects RSMalloc for that collection without installing it globally. It still shares RSMalloc's process-wide state with other RSMalloc instances; it is not a private arena. Choose the [native allocation API](native-api.md) instead when stable Rust and explicit byte-buffer ownership are the actual requirements.

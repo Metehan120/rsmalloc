@@ -1,9 +1,7 @@
-use rsmalloc_macro::stable_api_surface;
 use rustix::rand::{GetRandomFlags, getrandom};
 
 use crate::{ALIGN_TAG, BIG_MAGIC, FREED_MAGIC, MAGIC, RSMallocError};
 
-#[stable_api_surface]
 #[inline(never)]
 pub fn init_magic() {
     #[cfg(not(feature = "extended-header"))]
@@ -121,7 +119,6 @@ pub fn init_magic() {
     }
 }
 
-#[stable_api_surface]
 #[inline(never)]
 pub fn init_align() {
     let mut main = 0usize.to_le_bytes();

@@ -709,7 +709,7 @@ impl RSMalloc {
     /// Advises the kernel that cold free pages may be reclaimed.
     ///
     /// Trimming is performed in two stages:
-    /// - the buddy allocator trims eligible free large blocks,
+    /// - the segmented-bitmap backend trims eligible free large blocks,
     /// - small-allocation caches are scanned for aged free blocks and their
     ///   releasable pages are advised back to the kernel.
     ///
@@ -717,10 +717,11 @@ impl RSMalloc {
     /// requested number of bytes. `RSMallocTrim::All` scans all eligible free
     /// memory.
     ///
-    /// Depending on enabled features, physical pages are released with either
-    /// `MADV_FREE` (default) or `MADV_DONTNEED` (`force-physical-trim`).
+    /// Slab payload pages use `MADV_DONTNEED` by default, or `MADV_FREE`
+    /// with `lazy-page-trim`.
     ///
-    /// Returns the number of bytes successfully advised to the kernel.
+    /// Returns the reported trimmed byte count; slab trims count the payload
+    /// size of each successfully advised block, not the exact advised length.
     #[inline]
     pub unsafe fn rs_trim(&self, trim: RSMallocTrim) -> RSTrimStatus {
         self.init();

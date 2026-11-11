@@ -6,8 +6,6 @@
 
 use std::{arch::asm, ptr::addr_of};
 
-use rsmalloc_macro::stable_api_surface;
-
 use crate::{
     Header, RseqResult,
     rseq_core::rseq_offsets::{get_cs_ptr, rseq},
@@ -18,7 +16,6 @@ use crate::{
 pub struct RseqCore;
 
 impl RseqCoreTrait for RseqCore {
-    #[stable_api_surface]
     #[inline(always)]
     unsafe fn push_tailed(
         &self,
@@ -86,7 +83,6 @@ impl RseqCoreTrait for RseqCore {
         RseqResult::new(res)
     }
 
-    #[stable_api_surface]
     #[inline(always)]
     unsafe fn push(
         &self,
@@ -149,7 +145,6 @@ impl RseqCoreTrait for RseqCore {
         RseqResult::new(res)
     }
 
-    #[stable_api_surface]
     #[inline(always)]
     unsafe fn pop(&self, cache_ptr: *const RseqCache, rseq: &rseq, cpu_id: usize) -> RseqResult {
         let list_ptr = addr_of!((*cache_ptr).list) as *mut *mut Header;

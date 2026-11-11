@@ -191,7 +191,6 @@ name = "rsmalloc"
 version = "0.3.0-alpha"
 dependencies = [
  "portable-atomic",
- "rsmalloc-macro",
  "rustix",
  "syscalls",
  "thiserror",
@@ -205,15 +204,6 @@ dependencies = [
  "libfuzzer-sys",
  "rayon",
  "rsmalloc",
-]
-
-[[package]]
-name = "rsmalloc-macro"
-version = "0.3.0-alpha"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 3.0.4",
 ]
 
 [[package]]

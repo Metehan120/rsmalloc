@@ -1,9 +1,7 @@
-use rsmalloc_macro::validate_size_classes;
 use std::hint::cold_path;
 
 use crate::{Header, internals::oncelock::OnceLock};
 
-#[validate_size_classes]
 pub const SIZE_CLASSES: [usize; 34] = [
     // Tiny (16-128) - 16 Byte steps
     16, 32, 48, 64, 80, 96, 128, // Small (160-512) - 32/64 Byte steps
@@ -12,6 +10,37 @@ pub const SIZE_CLASSES: [usize; 34] = [
     3840, 4096, 8192, 12288, 16384, 24576, // Very Large (32KB+)
     32768, 65536, 131072, 262144, 524288, 1048576, 2097152,
 ];
+
+const _: () = {
+    let classes = &SIZE_CLASSES;
+    assert!(!classes.is_empty(), "size classes must not be empty");
+    assert!(
+        classes.len() <= u8::MAX as usize,
+        "size class indices must fit in u8"
+    );
+    assert!(classes[0] == 16, "first size class must be 16 bytes");
+    assert!(
+        classes[classes.len() - 1] == 2 * 1024 * 1024,
+        "last size class must be 2 MiB"
+    );
+
+    let mut i = 0;
+    let mut has_4096 = false;
+    while i < classes.len() {
+        assert!(classes[i] % 16 == 0, "size classes must be 16-byte aligned");
+        if i > 0 {
+            assert!(
+                classes[i - 1] < classes[i],
+                "size classes must be strictly increasing"
+            );
+        }
+        if classes[i] == 4096 {
+            has_4096 = true;
+        }
+        i += 1;
+    }
+    assert!(has_4096, "size classes must include 4096");
+};
 
 pub const NUM_SIZE_CLASSES: usize = SIZE_CLASSES.len();
 

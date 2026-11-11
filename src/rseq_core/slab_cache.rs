@@ -11,7 +11,7 @@ use std::{
 };
 
 use portable_atomic::AtomicU128;
-use rsmalloc_macro::assert_sizes;
+
 use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous};
 
 #[cfg(feature = "debug")]
@@ -25,6 +25,7 @@ use crate::{
     internals::{
         atomics::{AtomicOrdering, AtomicUsize},
         binder::NumaBind,
+        cpu_parser::{configured_cpu_count, possible_cpu_count},
         numa_parser::{NumaTopology, parse_numa_topology},
         once::Once,
     },
@@ -63,8 +64,7 @@ pub struct TransferCache {
 }
 
 // NOTE: Use 4096-byte alignment to avoid false sharing between cache lines and NUMA node balancing.
-#[cfg_attr(feature = "experimental-predictive-demand", assert_sizes(8192))]
-#[cfg_attr(not(feature = "experimental-predictive-demand"), assert_sizes(4096))]
+
 #[repr(C, align(4096))]
 pub struct MainCache {
     cache: [RseqCache; NUM_SIZE_CLASSES],
@@ -73,6 +73,11 @@ pub struct MainCache {
     bulk_fill_batching: [AdaptiveBatching; NUM_SIZE_CLASSES],
     pending_refill: [AtomicPtr<MetaData>; NUM_SIZE_CLASSES],
 }
+
+#[cfg(feature = "experimental-predictive-demand")]
+const _: () = assert!(size_of::<MainCache>() == 8192);
+#[cfg(not(feature = "experimental-predictive-demand"))]
+const _: () = assert!(size_of::<MainCache>() == 4096);
 
 pub struct Bitmap {
     pub words: usize,
@@ -94,16 +99,6 @@ pub struct SlabCache {
 
 unsafe impl Send for SlabCache {}
 unsafe impl Sync for SlabCache {}
-
-// here be dragons: TODO: use it until found a better way
-unsafe extern "C" {
-    fn get_nprocs_conf() -> i32;
-}
-
-unsafe fn get_max_cpu() -> u32 {
-    let ncpu = get_nprocs_conf();
-    if ncpu > 0 { ncpu as u32 } else { 256 }
-}
 
 impl SlabCache {
     pub const fn new() -> Self {
@@ -133,9 +128,20 @@ impl SlabCache {
         self.once.call_once(|| {
             let cache = self.inner.get();
             let inner = &mut *cache;
-            let ncpu = get_max_cpu() as usize;
-            let alloc_size = ncpu + 1;
-            let cache_bytes = size_of::<MainCache>() * alloc_size;
+            let ncpu = possible_cpu_count()
+                .or_else(configured_cpu_count)
+                .unwrap_or_else(|| {
+                    RSMallocError::Bootstrap {
+                        reason: "unable to determine CPU count",
+                    }
+                    .log_and_abort()
+                });
+            let cache_bytes = size_of::<MainCache>().checked_mul(ncpu).unwrap_or_else(|| {
+                RSMallocError::Bootstrap {
+                    reason: "possible CPU cache size overflow",
+                }
+                .log_and_abort()
+            });
             record_mmap_call(cache_bytes);
             let list = mmap_anonymous(
                 null_mut(),
@@ -185,8 +191,7 @@ impl SlabCache {
                 }
             }
 
-            let alloc_size = ncpu + 1;
-            let bitmap_words = ((alloc_size + 63) / 64).max(1);
+            let bitmap_words = ncpu.div_ceil(64).max(1);
             let bitmap_bytes = size_of::<AtomicU64>() * bitmap_words * NUM_SIZE_CLASSES;
             let bitmaps_each = bitmap_bytes / 8;
 

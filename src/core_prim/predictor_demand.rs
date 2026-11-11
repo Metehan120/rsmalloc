@@ -3,8 +3,6 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use rsmalloc_macro::assert_sizes;
-
 use crate::utility::unlikely;
 
 const TICK_MASK: u64 = (1 << 46) - 1;
@@ -21,7 +19,7 @@ const INITIALIZED: u64 = 1 << 32;
 
 // Advisory state: sample ownership coordinates refills, not allocator access.
 // Contending refills can skip prediction work instead of waiting for an owner.
-#[assert_sizes(32)]
+
 #[repr(C)]
 pub(super) struct DemandTracker {
     // Low 16 bits: previous observation; next 16: forecast; bit 32: history valid.
@@ -31,6 +29,8 @@ pub(super) struct DemandTracker {
     // Full finish timestamp + 1; zero means no forecast update has completed.
     last_prediction: AtomicU64,
 }
+
+const _: () = assert!(size_of::<DemandTracker>() == 32);
 
 #[derive(Clone, Copy)]
 struct Model {

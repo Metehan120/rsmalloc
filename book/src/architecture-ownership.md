@@ -235,7 +235,7 @@ ones. Alignment above 16 takes `memalign_inner`; a stronger alignment alone can 
 | C sized frees | Ignore supplied size/alignment and delegate to `free` |
 | Rust `GlobalAlloc` | Layout selects alignment; deallocation uses metadata, not supplied layout; aligned zeroed allocation explicitly zeros |
 | Native `AllocationAPI` | Fallible allocation; null-plus-zero realloc is `NotSupported`; non-null-to-zero is `Ok(null)` |
-| Nightly `Allocator` | Reports requested slice length; zero-size resize uses real backing via `max(1)`; `grow_zeroed` zeros extension |
+| Rust `Allocator` | Reports requested slice length; zero-size resize uses real backing via `max(1)`; `grow_zeroed` zeros extension |
 
 C `reallocarray` checks product overflow without releasing the old allocation. `recallocarray` explicitly
 clears discarded bytes; growth allocates zeroed replacement, copies, clears old storage, then frees. It

@@ -1,6 +1,7 @@
 pub mod atomics;
 pub mod big_meta_map;
 pub mod binder;
+pub mod cpu_parser;
 #[cfg(feature = "preload")]
 pub mod env;
 pub mod fork_lock;

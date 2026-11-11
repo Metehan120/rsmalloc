@@ -17,7 +17,7 @@ There are two trimming subsystems:
 - Slab trimming visits normal transfer lists for payload classes starting at
   4096 bytes. It does not drain every CPU-local cache or pending refill span.
 - Bitmap trimming visits published regions and dirty free slots. Each slot
-  covers 4 MiB; live slots and temporary trim claims are unavailable.
+  covers 4 MiB; live slots and already claimed or advising slots are ineligible.
 
 Direct large mappings do not enter either scan: `big_free` unmaps them directly.
 Page arenas and bitmap regions normally remain virtually reserved after trim.
@@ -147,8 +147,8 @@ uninitialized backend returns zero immediately. Region traversal uses stable
 published lists; it need not hold each node's growth lock. Concurrently published
 regions may or may not enter a particular scan.
 
-A segment's atomic word has occupancy, dirty, and history planes. The initial
-candidate mask is `!occupancy & dirty`. Free stamps every slot before
+A segment's atomic word has busy, dirty, history, and trim planes. The initial
+candidate mask is `!busy & !trim & dirty`. Free stamps every slot before
 release-clearing occupancy; trim sees state through acquire operations.
 A candidate snapshot alone is insufficient permission to advise pages.
 
@@ -160,29 +160,33 @@ sequenceDiagram
     participant OS as Kernel
     Free->>Word: Store free stamps then release-clear occupancy
     Trim->>Word: Snapshot dirty free candidates
-    Trim->>Word: CAS occupancy bits to claim range
-    Word-->>Trim: Claim succeeds only if all slots still dirty and free
-    Trim->>Trim: Recheck ages after claim
-    Trim->>OS: Advise consecutive eligible slots
+    Trim->>Word: CAS trim bits to claim dirty free range
+    Word-->>Trim: Revocable claim
+    Trim->>Trim: Recheck ages and cancel young claims
+    Trim->>Word: CAS busy bits on surviving eligible claims
+    Word-->>Trim: Irrevocable advising ownership
+    Trim->>OS: Advise consecutive owned slots
     OS-->>Trim: Success or failure
-    Trim->>Word: Release-clear claim and clear dirty only on success
+    Trim->>Word: Clear busy and trim; clear dirty only on success
 ```
 
 `trim_segment` initially groups consecutive candidates, then rechecks each slot's
-age after claiming. Too-young slots are released without advice. Eligible runs
-become contiguous `madvise` calls. Allocation and growth cannot acquire claimed
-slots; if an allocator wins first, the trim claim fails instead.
+age after claiming. Too-young claims are cancelled without advice. Allocation
+and in-place growth can revoke claims until `begin_advice` atomically sets busy
+on the surviving subset. Only that subset is advised, in contiguous runs; even a
+slot stolen and freed again is excluded. Once advising ownership begins,
+allocation and growth cannot acquire those slots until it is released.
 
-Advice success clears dirty and occupancy while preserving history. Failure
-preserves dirty; the advised range receives the current free timestamp in either
-case. Failed advice can thus delay an age-based retry. Requested limits round
+Advice completion clears busy and trim while preserving history; success also
+clears dirty, while failure preserves it. The advised range receives the current
+free timestamp in either case. Failed advice can thus delay an age-based retry. Requested limits round
 work to whole 4 MiB slots and can overshoot. Unprocessed claims are released.
 Only successful advice contributes bytes to the bitmap report.
 
 Source: `src/big_allocations/segmented_bitmap.rs` — `trim`, `trim_old`,
 `trim_inner`, `trim_segment`;
 `src/big_allocations/segmented_bitmap/segment.rs` — `dirty_free`, `age`,
-`claim_trim`, `finish_trim`, `free`, `alloc`, `grow`.
+`claim_trim`, `cancel_trim`, `begin_advice`, `finish_trim`, `free`, `alloc`, `grow`.
 
 ### Adaptive bitmap ages
 

@@ -10,7 +10,7 @@ The [mdBook guide](book/src/introduction.md) explains the allocation lifecycle, 
 
 > **Alpha-3 ownership change:** By default, non-null pointers passed to `free` must be live RSMalloc allocations. Foreign-pointer handling is best-effort because metadata is read before ownership is checked. Enable `validate-foreign-first` for ownership checks before those reads; it is also included in `extra-checks`. Neither mode makes arbitrary or interior pointers safe to free. See [Free ownership assumptions](#free-ownership-assumptions).
 
-**Major milestone:** The default Rust `GlobalAlloc` and C `LD_PRELOAD` configurations build on stable Rust. RSMalloc no longer keeps refill metadata or adaptive batching in allocator-owned thread-local storage: both are maintained per CPU. It still uses libc's RSEQ TLS state. Only the optional `allocator-api` interface requires nightly Rust.
+**Major milestone:** The default Rust `GlobalAlloc` and C `LD_PRELOAD` configurations build on stable Rust. RSMalloc no longer keeps refill metadata or adaptive batching in allocator-owned thread-local storage: both are maintained per CPU. It still uses libc's RSEQ TLS state. The optional `allocator-api` interface works on stable Rust 1.100 and newer.
 
 ## Quick Start
 
@@ -19,8 +19,9 @@ The [mdBook guide](book/src/introduction.md) explains the allocation lifecycle, 
 | Requirement | Notes |
 |---|---|
 | Linux `x86_64` | The current RSEQ assembly and allocator design target this platform. |
-| Stable Rust | Supported for `GlobalAlloc`, the native allocation API, and preload builds. `allocator-api` requires nightly. |
+| Rust 1.96 or newer | Stable Rust supports `GlobalAlloc`, the native allocation API, and preload builds. `allocator-api` requires Rust 1.100 or newer on stable; earlier versions need nightly with `allocator-api-feature-gate`. |
 | Libc-provided RSEQ TLS | glibc 2.35+ or equivalent support. RSMalloc reads libc's `__rseq_size` and `__rseq_offset`; it does not register RSEQ itself. Older or unsupported libc configurations will not bootstrap. |
+| CPU topology | RSMalloc reads `/sys/devices/system/cpu/possible` to size CPU-indexed caches, falling back to the configured CPU count if unavailable. |
 
 ### Use it as a Rust global allocator
 
@@ -173,7 +174,7 @@ Enable `native-allocation-api` when you want malloc-style Rust operations withou
 rsmalloc = { version = "0.3.0-alpha", features = ["native-allocation-api"] }
 ```
 
-This interface works on stable Rust and is independent of the nightly-only `allocator-api` feature. Returned storage remains allocated until you explicitly free it or successfully resize it; dropping a raw pointer does not free anything.
+This interface works on stable Rust and is independent of the `allocator-api` feature. Returned storage remains allocated until you explicitly free it or successfully resize it; dropping a raw pointer does not free anything.
 
 `AllocationSize` describes **bytes only**. `array_bytes::<T>(count)` checks multiplication but does not request `T`'s alignment. Use `allocate_aligned` when alignment matters.
 
@@ -273,14 +274,14 @@ All features are **disabled by default**. Enable only what you need with `--feat
 |---|---|
 | `preload` | Enables the C API and `LD_PRELOAD` support. |
 | `native-allocation-api` | Enables the malloc-style Rust `AllocationAPI` interface. Works on stable Rust. |
-| `allocator-api` | Enables Rust's `Allocator` interface. Requires nightly Rust. |
+| `allocator-api` | Enables Rust's `Allocator` interface on stable Rust 1.100+. Earlier toolchains need nightly and `allocator-api-feature-gate`. |
 
 ### Batching and memory usage
 
 | Feature | What it does |
 |---|---|
 | `confidence-predictor` | Uses confidence feedback to size transfer batches, up to each size class's CPU-cache capacity. |
-| `experimental-predictive-demand` | Samples the refilling class's cache occupancy to track expected demand and previous unused blocks. Feeds either transfer predictor without bookkeeping on allocation/free cache hits. |
+| `experimental-predictive-demand` | Forecasts refill demand from completed refill observations and elapsed depletion time. Feeds either transfer predictor without bookkeeping on allocation/free cache hits. |
 | `lazy-page-trim` | Uses lazy page reclamation instead of immediately discarding small-allocation pages. |
 | `trim-aggressively` | Keeps idle-class trimming eligibility tighter. |
 | `page-backend-no-huge-page` | Discourages huge pages for slab arenas. May reduce RSS at the cost of more TLB pressure. |

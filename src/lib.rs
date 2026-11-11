@@ -49,8 +49,9 @@
 //! rsmalloc also supports `LD_PRELOAD`-style use for C applications. See the
 //! README for preload build and runtime details.
 //!
-//! This crate targets stable Rust, Linux, and `x86_64`. The optional
-//! `allocator-api` feature requires nightly while `std::alloc::Allocator` remains unstable.
+//! This crate targets Rust 1.96 or newer, Linux, and `x86_64`. The optional
+//! `allocator-api` feature works on stable Rust 1.100 and newer. Earlier
+//! toolchains require nightly and the `allocator-api-feature-gate` feature.
 
 #![cfg_attr(feature = "allocator-api-feature-gate", feature(allocator_api))]
 #![allow(binary_asm_labels, unsafe_op_in_unsafe_fn, static_mut_refs)]
@@ -109,8 +110,6 @@ pub use frontend::global_alloc::*;
 #[cfg(not(feature = "preload"))]
 pub use frontend::global_alloc2 as v2;
 
-use rsmalloc_macro::assert_sizes;
-
 #[cfg(not(feature = "preload"))]
 use crate::internals::once::Once;
 
@@ -162,7 +161,7 @@ struct BigAllocMeta {
 // DO NOT TOUCH HEADER POSITIONING, RSEQ DEPENDS ON IT
 #[cfg(not(feature = "extended-header"))]
 #[repr(C, align(16))]
-#[assert_sizes(16)]
+
 struct Header {
     pub next: AtomicPtr<Header>,
     pub flags: Flags,
@@ -174,7 +173,7 @@ struct Header {
 // DO NOT TOUCH HEADER POSITIONING, RSEQ DEPENDS ON IT
 #[cfg(feature = "extended-header")]
 #[repr(C, align(16))]
-#[assert_sizes(32)]
+
 struct Header {
     pub next: AtomicPtr<Header>,
     pub magic: u64,
@@ -182,6 +181,11 @@ struct Header {
     pub life_time: u32,
     pub class: u8,
 }
+
+#[cfg(not(feature = "extended-header"))]
+const _: () = assert!(size_of::<Header>() == 16);
+#[cfg(feature = "extended-header")]
+const _: () = assert!(size_of::<Header>() == 32);
 
 impl Header {
     pub const SIZE: usize = size_of::<Self>();

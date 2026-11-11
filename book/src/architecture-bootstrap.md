@@ -41,7 +41,7 @@ Frontend translation is meaningful. For example, the optional `Allocator` slice 
 
 `src/frontend/mod.rs` selects the C ABI with `preload`. Without it, the legacy and v2 Rust frontends are built. `src/lib.rs` re-exports v2 only in non-preload builds; therefore adding `preload` to a Rust dependency is not a way to enable both integration examples simultaneously.
 
-The default build is stable Rust. `allocator-api` adds the optional unstable trait interface; `native-allocation-api` independently exposes the stable native interface. Feature resolution is additive across dependencies, so the final feature set matters more than one dependency declaration.
+The default build is stable Rust. `allocator-api` adds the optional trait interface, stable on Rust 1.100 and newer; `native-allocation-api` independently exposes the stable native interface. Feature resolution is additive across dependencies, so the final feature set matters more than one dependency declaration.
 
 Legacy `RSMallocConfig` converts through `legacy_config_to_v2!` where applicable. The conversion preserves ordinary tuning but rejects fixed magic, ignored foreign pointers, and incompatible arena alignment. It uses the v2 big trim default because the legacy configuration has no separate big threshold. Compatibility conversion is not silent permission to weaken protection.
 

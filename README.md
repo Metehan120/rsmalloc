@@ -1,4 +1,4 @@
-# <img src="img/logo.png" alt="" width="64" height="64" align="absmiddle"> RSMalloc (Rust/RSEQ Slab memory allocator)
+# <img src="img/logo.png" alt="" width="64" height="64" align="absmiddle"> RSMalloc (Rust/RSEQ memory allocator)
 
 An RSEQ-based memory allocator for Rust and C applications on Linux `x86_64`. RSMalloc focuses on low-overhead concurrent allocation for real workloads: small-allocation caches belong to CPUs, not threads, and reusable blocks can move between CPUs as demand changes. Larger allocations use a NUMA-aware segmented-bitmap backend or direct mappings.
 

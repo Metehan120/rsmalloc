@@ -27,7 +27,7 @@ Do not disable libc RSEQ registration as a workaround for this allocator. `abort
 
 ## The application is slower
 
-1. Verify an optimized build with diagnostic features disabled. Review `target-cpu=native` when running repository-built artifacts on a different machine.
+1. Verify an optimized build with diagnostic features disabled. Review the configured CPU target when running repository-built artifacts on a different machine.
 2. Confirm integration and compare identical workloads in alternating allocator A/B runs. Keep warm-up, memory-touch behavior, CPU restrictions, and THP policy comparable.
 3. Profile the whole application, including page faults, syscalls, and scheduling where tooling permits. An allocator-symbol sample alone may miss first-touch costs paid later.
 4. Use a separate [diagnostic run](./diagnostics.md) to distinguish cache hits, refills, transfers, large allocations, ownership checks, and reclaim activity.

@@ -21,7 +21,7 @@ LD_PRELOAD="$PWD/target/release/librsmalloc.so" /usr/bin/printf 'preload smoke t
 
 For an actual workload, replace `/usr/bin/printf` and its arguments with the program you want to test. `$PWD` makes the library path absolute when launched from the repository root. Use that resolved absolute path in a service manager or when launching from a different directory; ensure both `LD_PRELOAD` and tuning variables reach the workload process. Child processes can inherit them, so keep experiments scoped to one command rather than exporting preload into your whole shell session.
 
-Cargo emits the shared library because the crate declares `cdylib` alongside `rlib` and `staticlib`. No nightly feature is required. The repository's `.cargo/config.toml` sets `target-cpu=native`: repository builds are optimized for the build CPU. Review or override that configuration before distributing a library to other CPUs.
+Cargo emits the shared library because the crate declares `cdylib` alongside `rlib` and `staticlib`. No nightly feature is required. The repository's `.cargo/config.toml` sets `target-cpu=x86-64-v3`. Review or override that configuration before distributing a library to CPUs without that feature level.
 
 To remove this integration, run the command without this `LD_PRELOAD` assignment. Do not load or unload the allocator midway through a workload and assume outstanding pointers can migrate to another allocator.
 

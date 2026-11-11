@@ -4,6 +4,23 @@ This directory contains development benchmark snapshots for RSMalloc and several
 
 For the concurrent database comparison, see [**MariaDB benchmark results**](mariadb_results.md). The reproducible MariaDB/sysbench memory harness is available under [`mariadb/`](mariadb/README.md).
 
+## Build benchmarks for the host CPU
+
+From the repository root, use the native-target wrapper for the Rust benchmarks:
+
+```sh
+./benchmarks/cargo-native.sh bench --bench book_speed
+./benchmarks/cargo-native.sh bench --bench rstress
+```
+
+For preload benchmarks, build the library with:
+
+```sh
+./benchmarks/cargo-native.sh build --release --features preload
+```
+
+The wrapper uses `target-cpu=native` and retains the repository's linker and unwind-table flags. These builds are specific to the benchmark host; the normal repository target is `x86-64-v3`. Record build flags when publishing new results.
+
 ## Important Warning
 
 These results are development signals, not general performance guarantees. CPU topology, kernel and libc versions, compiler flags, preload mode, THP policy, NUMA layout, background activity, and allocator configuration can materially change the results.

@@ -12,7 +12,7 @@ rustc --version
 
 Expect Linux `x86_64` and libc-provided RSEQ registration, such as glibc 2.35+. Version output is useful context, not proof that registration is available in a particular process. Disabled RSEQ, unsupported libc layouts, or an incompatible execution environment can prevent bootstrap. RSMalloc reads `/sys/devices/system/cpu/possible` to size its CPU-indexed caches and falls back to the configured CPU count if the list is unavailable.
 
-Rust 1.96 or newer is required. The optional `allocator-api` interface works on stable Rust 1.100 and newer; on earlier versions, use nightly with `allocator-api-feature-gate` or upgrade. When building from this repository, review `.cargo/config.toml`: `target-cpu=native` makes artifacts specific to the build CPU's capabilities. Use suitable target flags before distributing them to other machines.
+Rust 1.96 or newer is required. The optional `allocator-api` interface works on stable Rust 1.100 and newer; on earlier versions, use nightly with `allocator-api-feature-gate` or upgrade. When building from this repository, review `.cargo/config.toml`: `target-cpu=x86-64-v3` requires compatible CPU capabilities. Use suitable target flags before distributing artifacts to other machines.
 
 ## 2. Choose one integration path
 

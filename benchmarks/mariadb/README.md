@@ -42,7 +42,7 @@ MARIADB_ADMIN=mysqladmin \
 From the repository root:
 
 ```sh
-cargo build --release --features preload
+./benchmarks/cargo-native.sh build --release --features preload
 ```
 
 The resulting preload library is normally:
@@ -51,7 +51,7 @@ The resulting preload library is normally:
 target/release/librsmalloc.so
 ```
 
-Use an optimized non-debug build for memory and throughput comparisons. Diagnostic features change timing and can allocate memory for reporting.
+The wrapper targets the benchmark host's native CPU and preserves the repository's other Rust flags. Use an optimized non-debug build for memory and throughput comparisons. Diagnostic features change timing and can allocate memory for reporting.
 
 ## Prepare the database
 

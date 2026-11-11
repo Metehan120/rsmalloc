@@ -56,7 +56,7 @@ The preload build provides `malloc`, `calloc`, `realloc`, `reallocarray`, `recal
 
 Preload tuning uses [environment variables](#runtime-environment-variables-preload-builds). Rust allocator builds use the v2 configuration API. These are separate ways to configure the same allocator internals.
 
-**Build portability:** This repository's `.cargo/config.toml` uses `target-cpu=native`. Repository builds are optimized for the build machine; review that setting before distributing binaries to different CPUs.
+**Build portability:** This repository's `.cargo/config.toml` targets `x86-64-v3`. Repository-built binaries require a compatible CPU; benchmark builds can opt into `target-cpu=native` using `benchmarks/cargo-native.sh`.
 
 ## Design Approach
 

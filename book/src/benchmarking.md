@@ -4,7 +4,7 @@ Measure application outcomes first and allocator mechanisms second. A realistic 
 
 ## Match the integration and build
 
-Use non-diagnostic release builds for timing. Compare the same application work, compiler settings, protection level, and access pattern. Record allocator version/commit and every Cargo feature. Repository `target-cpu=native` builds need compatible hardware.
+Use non-diagnostic release builds for timing. Compare the same application work, compiler settings, protection level, and access pattern. Record allocator version/commit and every Cargo feature. The repository defaults to `x86-64-v3`. To benchmark with `target-cpu=native`, run Cargo through `./benchmarks/cargo-native.sh` from the repository root; such builds need a compatible host CPU.
 
 For preload, compare the same executable with and without RSMalloc interposition, and confirm loading **and call routing**. For Rust global allocation, build an otherwise equivalent system-allocator variant. A debug or hardened result is a separate configuration, not interchangeable with default release data.
 

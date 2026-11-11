@@ -58,7 +58,7 @@ Page arenas use anonymous mappings with a null address hint, allowing Linux mmap
 
 ## Operational guidance
 
-Keep the allocator commit/version, enabled features, compiler/profile, configuration, and matching symbols reproducible. Repository builds use `target-cpu=native`; review CPU compatibility before deploying the resulting binary elsewhere.
+Keep the allocator commit/version, enabled features, compiler/profile, configuration, and matching symbols reproducible. Repository builds use `target-cpu=x86-64-v3`; review CPU compatibility before deploying the resulting binary elsewhere.
 
 Exercise failures as well as steady state: allocation pressure, allocator-boundary mistakes, thread and process lifecycle changes, and bursts followed by idle periods. Compare [diagnostic builds](./diagnostics.md) with the original reproducer, since instrumentation changes timing and can hide races. Successful stress runs are useful evidence, not proof of safety.
 

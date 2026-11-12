@@ -1,3 +1,9 @@
+# Project sunset: RSMalloc was a hobby project and is no longer maintained. No future updates (including security updates) or fixes are planned.
+
+**From the maintainer**: RSMalloc was a hobby project of mine that I coded for fun yes I love pain and how rewarding it is when you get it running but there is one (1) thing: after r/rust deleting the post (I have zero idea why probably "no code dump" rule but it was not a code dump either... honestly I dont really care) I realized how many projects I wanna work on... and I have school and classes to work on, and yes I am still a student so its a cherry on top. There is also extra reasons for example: I wanna spend time with my family and friends as well and I realized that working on a project like RSMalloc keeping me away from talking to them. This is why I am sunsetting RSMalloc. I wish a great day to y'all.
+
+**A note for readers**: If you have experience developing memory allocators and maintaining open-source projects, feel free to reach out to me about transferring ownership of RSMalloc. Email: metehanzafer@pm.me
+
 # RSMalloc (Rust/RSEQ memory allocator)
 
 An RSEQ-based memory allocator for Rust and C applications on Linux `x86_64`. RSMalloc focuses on low-overhead concurrent allocation for real workloads: small-allocation caches belong to CPUs, not threads, and reusable blocks can move between CPUs as demand changes. Larger allocations use a NUMA-aware segmented-bitmap backend or direct mappings.
